@@ -1547,6 +1547,10 @@ int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 // If the file was desynchronized, it is now marked as synchronized. It will
 // now recieve file updates and syncs on close.
 //
+// Readonly files have nothing to write and never touch disk. If a readonly
+// file was desynchronized, it catches up with the file on storage, as with
+// lfs3_file_resync.
+//
 // Returns a negative error code on failure.
 int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
 

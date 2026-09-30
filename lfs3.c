@@ -14571,6 +14571,12 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     }
 
     #ifndef LFS3_RDONLY
+    // readonly? we have nothing to write, but we may need to catch up
+    // with disk if we were desynced
+    if (lfs3_o_isrdonly(file->b.h.flags)) {
+        return lfs3_file_resync(lfs3, file);
+    }
+
     // can we get away with a small file flush?
     //
     // this merges the data flush with metadata sync in a single commit
