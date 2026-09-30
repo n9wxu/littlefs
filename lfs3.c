@@ -12237,8 +12237,9 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
 
     // then seek to the requested offset
     //
-    // note the -2 to adjust for dot entries
-    lfs3_off_t off_ = off - 2;
+    // note the -2 to adjust for dot entries, rewind already leaves
+    // the mid at the first real entry
+    lfs3_off_t off_ = lfs3_smax(off - 2, 0);
     while (off_ > 0) {
         // next mdir?
         if (lfs3_mrid(lfs3, dir->h.mdir.mid)
