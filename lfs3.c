@@ -14754,13 +14754,13 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     // make sure any incomplete are at least grafted
     err = lfs3_file_graft(lfs3, file);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // checkpoint the allocator
     err = lfs3_alloc_ckpoint(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // truncate our btree
@@ -14844,13 +14844,13 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     // make sure any incomplete are at least grafted
     err = lfs3_file_graft(lfs3, file);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // checkpoint the allocator
     err = lfs3_alloc_ckpoint(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // fruncate our btree

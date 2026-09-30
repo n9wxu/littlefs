@@ -6096,3 +6096,75 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test that truncate/fruncate errors desync the file, so close doesn't
+# write anything
+[cases.test_badblocks_truncate_desync]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+defines.FRUNCATE = [false, true]
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    '4*BLOCK_SIZE',
+]
+defines.SEED = 42
+code = '''
+    // test all possible bad blocks
+    for (lfs3_block_t badblock = 0; badblock < BLOCK_COUNT; badblock++) {
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        // write and sync a file
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t sim[SIZE];
+        uint32_t prng = SEED;
+        for (lfs3_size_t i = 0; i < SIZE; i++) {
+            sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+        lfs3_file_sync(&lfs3, &file) => 0;
+
+        // rewrite without syncing, this leaves data to be flushed
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t i = 0; i < SIZE; i++) {
+            wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_rewind(&lfs3, &file) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+
+        // mark our badblock as bad
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+
+        // truncate/fruncate
+        int err = (FRUNCATE)
+                ? lfs3_file_fruncate(&lfs3, &file, SIZE/3)
+                : lfs3_file_truncate(&lfs3, &file, SIZE/3);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (!err) {
+            // not our problem
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_emubd_mkgood(CFG, badblock) => 0;
+            continue;
+        }
+        printf("--- badblock: 0x%x ---\n", badblock);
+
+        // an error should desync our file, so close has nothing to do
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // the file on disk should be unchanged
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => SIZE;
+        uint8_t rbuf[2*SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+        assert(memcmp(rbuf, sim, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
