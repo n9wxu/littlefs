@@ -479,11 +479,11 @@ def punescape(s, attrs=None, start=None, end=None, submatch=None):
                 '|' 'x..'
                 '|' 'u....'
                 '|' 'U........'
-                '|' '\((?P<field>[^)]*)\)'
-                    '(?P<format>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])'
-                '|' '\{'
-                '|' '\}'
-                    '(?P<subformat>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])' ')')
+                '|' '\\((?P<field>[^)]*)\\)'
+                    '(?P<format>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])'
+                '|' '\\{'
+                '|' '\\}'
+                    '(?P<subformat>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])' ')')
 
     def format(f, v):
         if f[-1] in 'dboxX':
@@ -572,11 +572,11 @@ def psplit(s, start=None, end=None, submatch=None):
                 '|' 'x..'
                 '|' 'u....'
                 '|' 'U........'
-                '|' '\((?P<field>[^)]*)\)'
-                    '(?P<format>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])'
-                '|' '\{'
-                '|' '\}'
-                    '(?P<subformat>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])' ')')
+                '|' '\\((?P<field>[^)]*)\\)'
+                    '(?P<format>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])'
+                '|' '\\{'
+                '|' '\\}'
+                    '(?P<subformat>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])' ')')
 
     s_ = []
     i = start or 0

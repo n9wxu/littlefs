@@ -62,20 +62,20 @@ L.lex('MEMCMP',         r'\bmemcmp\b', r'\b__builtin_memcmp\b')
 L.lex('STRCMP',         r'\bstrcmp\b', r'\b__builtin_strcmp\b')
 L.lex('ARROW',          '=>')
 L.lex('STR',            r'"(?:\\.|[^"])*"', r"'(?:\\.|[^'])\'")
-L.lex('LPAREN',         '\(')
-L.lex('RPAREN',         '\)')
+L.lex('LPAREN',         '\\(')
+L.lex('RPAREN',         '\\)')
 L.lex('ZERO',           '\\b0\\b')
 L.lex('CMP',            *CMP.keys())
-L.lex('LOGIC',          '\&\&', '\|\|')
-L.lex('TERN',           '\?', ':')
+L.lex('LOGIC',          '\\&\\&', '\\|\\|')
+L.lex('TERN',           '\\?', ':')
 L.lex('COMMA',          ',')
-L.lex('TERM',           ';', '\{', '\}')
-L.lex('STUFF',          '[^;{}?:,()"\'=!<>\-&|/#]+',
+L.lex('TERM',           ';', '\\{', '\\}')
+L.lex('STUFF',          '[^;{}?:,()"\'=!<>\\-&|/#]+',
                         # these need special handling because we're only
                         # using regex
                         '->', '>>', '<<', '-(?!>)',
-                        '=(?![=>])', '!(?!=)', '&(?!&)', '\|(?!\|)',
-                        '/(?!/)', '/(?!\*)')
+                        '=(?![=>])', '!(?!=)', '&(?!&)', '\\|(?!\\|)',
+                        '/(?!/)', '/(?!\\*)')
 
 
 # open with '-' for stdin/stdout
@@ -253,7 +253,7 @@ def mkunreachable(f):
 #
 # basically just because memoryview doesn't support strs
 class Parser:
-    def __init__(self, data, ws='\s*', ws_flags=0):
+    def __init__(self, data, ws='\\s*', ws_flags=0):
         self.data = data
         self.i = 0
         self.m = None

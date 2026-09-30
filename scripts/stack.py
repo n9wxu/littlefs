@@ -41,9 +41,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -183,7 +183,7 @@ def openio(path, mode='r', buffering=-1):
 #
 # basically just because memoryview doesn't support strs
 class Parser:
-    def __init__(self, data, ws='\s*', ws_flags=0):
+    def __init__(self, data, ws='\\s*', ws_flags=0):
         self.data = data
         self.i = 0
         self.m = None
@@ -283,7 +283,7 @@ def collect_callgraph(ci_path,
             node = {}
             while True:
                 # key?
-                if not p.match('[^\s:{}]+'):
+                if not p.match('[^\\s:{}]+'):
                     break
                 k = p.chomp()
                 p.chompmatch(':')
@@ -292,7 +292,7 @@ def collect_callgraph(ci_path,
                 if p.match('"((?:\\.|[^"])*)"'):
                     v = p.chomp(1)
                 # keyword?
-                elif p.match('[^\s:{}]+'):
+                elif p.match('[^\\s:{}]+'):
                     v = p.chomp()
                 # child node?
                 elif p.match('{'):
@@ -320,7 +320,7 @@ def collect_callgraph(ci_path,
             if len(label) < 3:
                 continue
             file = label[1].split(':', 1)[0]
-            m = re.match('([0-9]+) bytes \((.*)\)', label[2])
+            m = re.match('([0-9]+) bytes \\((.*)\\)', label[2])
             size = int(m.group(1))
             qualifiers = [q.strip() for q in m.group(2).split(',')]
             cg_[name] = CGNode(name, file, size, qualifiers)

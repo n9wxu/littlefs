@@ -487,11 +487,11 @@ def punescape(s, attrs=None, start=None, end=None, submatch=None):
                 '|' 'x..'
                 '|' 'u....'
                 '|' 'U........'
-                '|' '\((?P<field>[^)]*)\)'
-                    '(?P<format>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])'
-                '|' '\{'
-                '|' '\}'
-                    '(?P<subformat>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])' ')')
+                '|' '\\((?P<field>[^)]*)\\)'
+                    '(?P<format>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])'
+                '|' '\\{'
+                '|' '\\}'
+                    '(?P<subformat>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])' ')')
 
     def format(f, v):
         if f[-1] in 'dboxX':
@@ -580,11 +580,11 @@ def psplit(s, start=None, end=None, submatch=None):
                 '|' 'x..'
                 '|' 'u....'
                 '|' 'U........'
-                '|' '\((?P<field>[^)]*)\)'
-                    '(?P<format>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])'
-                '|' '\{'
-                '|' '\}'
-                    '(?P<subformat>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])' ')')
+                '|' '\\((?P<field>[^)]*)\\)'
+                    '(?P<format>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])'
+                '|' '\\{'
+                '|' '\\}'
+                    '(?P<subformat>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])' ')')
 
     s_ = []
     i = start or 0
@@ -1242,38 +1242,38 @@ def main(path='-', *,
     # precompute trace regexes
     init_pattern = re.compile(
             '^(?P<file>[^ :]*):(?P<line>[0-9]+):trace:'
-                '.*?bd_createcfg\('
-                    '\s*(?P<ctx>\w+)'
+                '.*?bd_createcfg\\('
+                    '\\s*(?P<ctx>\\w+)'
                     '(?:'
-                        'block_size=(?P<block_size>\w+)'
-                        '|' 'block_count=(?P<block_count>\w+)'
-                        '|' '.*?' ')*' '\)')
+                        'block_size=(?P<block_size>\\w+)'
+                        '|' 'block_count=(?P<block_count>\\w+)'
+                        '|' '.*?' ')*' '\\)')
     read_pattern = re.compile(
             '^(?P<file>[^ :]*):(?P<line>[0-9]+):trace:'
-                '.*?bd_read\('
-                    '\s*(?P<ctx>\w+)' '\s*,'
-                    '\s*(?P<block>\w+)' '\s*,'
-                    '\s*(?P<off>\w+)' '\s*,'
-                    '\s*(?P<buffer>\w+)' '\s*,'
-                    '\s*(?P<size>\w+)' '\s*\)')
+                '.*?bd_read\\('
+                    '\\s*(?P<ctx>\\w+)' '\\s*,'
+                    '\\s*(?P<block>\\w+)' '\\s*,'
+                    '\\s*(?P<off>\\w+)' '\\s*,'
+                    '\\s*(?P<buffer>\\w+)' '\\s*,'
+                    '\\s*(?P<size>\\w+)' '\\s*\\)')
     prog_pattern = re.compile(
             '^(?P<file>[^ :]*):(?P<line>[0-9]+):trace:'
-                '.*?bd_prog\('
-                    '\s*(?P<ctx>\w+)' '\s*,'
-                    '\s*(?P<block>\w+)' '\s*,'
-                    '\s*(?P<off>\w+)' '\s*,'
-                    '\s*(?P<buffer>\w+)' '\s*,'
-                    '\s*(?P<size>\w+)' '\s*\)')
+                '.*?bd_prog\\('
+                    '\\s*(?P<ctx>\\w+)' '\\s*,'
+                    '\\s*(?P<block>\\w+)' '\\s*,'
+                    '\\s*(?P<off>\\w+)' '\\s*,'
+                    '\\s*(?P<buffer>\\w+)' '\\s*,'
+                    '\\s*(?P<size>\\w+)' '\\s*\\)')
     erase_pattern = re.compile(
             '^(?P<file>[^ :]*):(?P<line>[0-9]+):trace:'
-                '.*?bd_erase\('
-                    '\s*(?P<ctx>\w+)' '\s*,'
-                    '\s*(?P<block>\w+)'
-                    '(?:\s*\(\s*(?P<size>\w+)\s*\))?' '\s*\)')
+                '.*?bd_erase\\('
+                    '\\s*(?P<ctx>\\w+)' '\\s*,'
+                    '\\s*(?P<block>\\w+)'
+                    '(?:\\s*\\(\\s*(?P<size>\\w+)\\s*\\))?' '\\s*\\)')
     sync_pattern = re.compile(
             '^(?P<file>[^ :]*):(?P<line>[0-9]+):trace:'
-                '.*?bd_sync\('
-                    '\s*(?P<ctx>\w+)' '\s*\)')
+                '.*?bd_sync\\('
+                    '\\s*(?P<ctx>\\w+)' '\\s*\\)')
 
     def trace__(line):
         nonlocal readed

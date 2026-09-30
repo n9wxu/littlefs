@@ -239,8 +239,8 @@ class TestSuite:
             code_linenos = []
             for i, line in enumerate(f):
                 match = re.match(
-                        '(?P<case>\[\s*cases\s*\.\s*(?P<name>\w+)\s*\])'
-                            '|' '(?P<code>code\s*=)',
+                        '(?P<case>\\[\\s*cases\\s*\\.\\s*(?P<name>\\w+)\\s*\\])'
+                            '|' '(?P<code>code\\s*=)',
                         line)
                 if match and match.group('case'):
                     case_linenos.append((i+1, match.group('name')))
@@ -479,11 +479,11 @@ def compile(test_paths, **args):
                     if case.ifdef or case.ifndef:
                         for ifdef in case.ifdef:
                             f.writeln('#if (%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifdef))
                         for ifndef in case.ifndef:
                             f.writeln('#if !(%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifndef))
                         f.writeln()
 
@@ -555,11 +555,11 @@ def compile(test_paths, **args):
                 if suite.ifdef or suite.ifndef:
                     for ifdef in suite.ifdef:
                         f.writeln('#if (%s)' % re.sub(
-                                '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                 ifdef))
                     for ifndef in suite.ifndef:
                         f.writeln('#if !(%s)' % re.sub(
-                                '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                 ifndef))
                     f.writeln()
 
@@ -621,11 +621,11 @@ def compile(test_paths, **args):
                             or 0))
                 for ifdef in suite.ifdef:
                     f.writeln(4*' '+'#if (%s)' % re.sub(
-                            '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                            '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                             ifdef))
                 for ifndef in suite.ifndef:
                     f.writeln(4*' '+'#if !(%s)' % re.sub(
-                            '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                            '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                             ifndef))
                 # create suite defines
                 if suite.defines:
@@ -657,11 +657,11 @@ def compile(test_paths, **args):
                                     or 0))
                         for ifdef in it.chain(suite.ifdef, case.ifdef):
                             f.writeln(12*' '+'#if (%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifdef))
                         for ifndef in it.chain(suite.ifndef, case.ifndef):
                             f.writeln(12*' '+'#if !(%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifndef))
                         # create case defines
                         if case.defines:
@@ -732,11 +732,11 @@ def compile(test_paths, **args):
                     if suite.ifdef or suite.ifndef:
                         for ifdef in suite.ifdef:
                             f.writeln('#if (%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifdef))
                         for ifndef in suite.ifndef:
                             f.writeln('#if !(%s)' % re.sub(
-                                    '[a-zA-Z_0-9]+', 'defined(\g<0>)',
+                                    '[a-zA-Z_0-9]+', 'defined(\\g<0>)',
                                     ifndef))
                         f.writeln()
 
@@ -883,9 +883,9 @@ def find_perms(runner, test_ids=[], **args):
             errors='replace',
             close_fds=False)
     pattern = re.compile(
-            '^(?P<case>[^\s]+)'
-                '\s+(?P<flags>[^\s]+)'
-                '\s+(?P<filtered>\d+)/(?P<perms>\d+)')
+            '^(?P<case>[^\\s]+)'
+                '\\s+(?P<flags>[^\\s]+)'
+                '\\s+(?P<filtered>\\d+)/(?P<perms>\\d+)')
     # skip the first line
     for line in it.islice(proc.stdout, 1, None):
         m = pattern.match(line)
@@ -911,8 +911,8 @@ def find_perms(runner, test_ids=[], **args):
             errors='replace',
             close_fds=False)
     pattern = re.compile(
-            '^(?P<case>[^\s]+)'
-                '\s+(?P<path>[^:]+):(?P<lineno>\d+)')
+            '^(?P<case>[^\\s]+)'
+                '\\s+(?P<path>[^:]+):(?P<lineno>\\d+)')
     # skip the first line
     for line in it.islice(proc.stdout, 1, None):
         m = pattern.match(line)
@@ -953,8 +953,8 @@ def find_path(runner, id, **args):
             errors='replace',
             close_fds=False)
     pattern = re.compile(
-            '^(?P<case>[^\s]+)'
-                '\s+(?P<path>[^:]+):(?P<lineno>\d+)')
+            '^(?P<case>[^\\s]+)'
+                '\\s+(?P<path>[^:]+):(?P<lineno>\\d+)')
     # skip the first line
     for line in it.islice(proc.stdout, 1, None):
         m = pattern.match(line)
@@ -980,7 +980,7 @@ def find_defines(runner, id, **args):
             errors='replace',
             close_fds=False)
     defines = co.OrderedDict()
-    pattern = re.compile('^(?P<define>\w+)=(?P<value>.+)')
+    pattern = re.compile('^(?P<define>\\w+)=(?P<value>.+)')
     for line in proc.stdout:
         m = pattern.match(line)
         if m:
@@ -1160,8 +1160,8 @@ def run_stage(offset, name, runner, test_ids,
 
     pattern = re.compile('^(?:'
                 '(?P<op>running|finished|skipped|powerloss) '
-                    '(?P<id>(?P<case>[^:]+)[^\s]*)'
-                '|' '(?P<path>[^:]+):(?P<lineno>\d+):(?P<op_>assert):'
+                    '(?P<id>(?P<case>[^:]+)[^\\s]*)'
+                '|' '(?P<path>[^:]+):(?P<lineno>\\d+):(?P<op_>assert):'
                     ' *(?P<message>.*)'
             ')$')
     locals = th.local()
