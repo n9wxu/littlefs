@@ -13653,6 +13653,17 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             return block_;
         }
 
+        // fruncate keeps our block alignment, so our block may start
+        // before our file (block_pos < 0), there's nothing to rewrite
+        // there, so shift our crystal to start at our file
+        if ((lfs3_soff_t)block_pos < 0) {
+            crystal_limit = lfs3_min(
+                    crystal_limit - block_pos,
+                    lfs3_max(
+                        pos + size,
+                        file->b.b.r.weight));
+            block_pos = 0;
+        }
         off_ = 0;
         pos_ = block_pos;
         lfs3->pcksum = 0;

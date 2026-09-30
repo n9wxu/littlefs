@@ -5986,3 +5986,113 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# test a block going bad while we append to it after fruncate
+#
+# fruncate keeps the physical block alignment of the file's leaf, so the
+# block can start before the file, relocation needs to handle this
+[cases.test_badblocks_fruncate_append]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_PROGFLIP',
+]
+# we need prog checking to detect silent prog errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_PROGERROR'
+defines.PROG_SIZE = [1, 16]
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    'BLOCK_SIZE-CRYSTAL_THRESH',
+    'BLOCK_SIZE',
+    '3*BLOCK_SIZE/2',
+]
+defines.CUT = [
+    '1',
+    'CRYSTAL_THRESH',
+    'BLOCK_SIZE/4',
+    'BLOCK_SIZE+CRYSTAL_THRESH',
+]
+defines.APPEND = [
+    'FCACHE_SIZE/2',
+    '64',
+    'CRYSTAL_THRESH',
+    'BLOCK_SIZE',
+]
+defines.SEED = 42
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    'CUT < SIZE',
+]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0),
+            CFG) => 0;
+
+    // write a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    uint8_t sim[SIZE+APPEND];
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < SIZE+APPEND; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // fruncate
+    lfs3_file_fruncate(&lfs3, &file, SIZE-CUT) => 0;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // our leaf's block goes bad, mark the first unwritten bit so
+    // flipping progs hit it
+    if (lfs3_bptr_isbptr(&file.leaf.bptr)) {
+        lfs3_emubd_mkbadbit(CFG,
+                lfs3_bptr_block(&file.leaf.bptr),
+                8*lfs3_bptr_cksize(&file.leaf.bptr)) => 0;
+    }
+
+    // append
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], APPEND) => APPEND;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_size(&lfs3, &file) => SIZE-CUT+APPEND;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3,
+                    LFS3_M_RDWR
+                        | ((CKPROGS)
+                            ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1)
+                            : 0),
+                    CFG) => 0;
+        }
+
+        // check our file with stat
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == SIZE-CUT+APPEND);
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => SIZE-CUT+APPEND;
+        uint8_t rbuf[2*(SIZE+APPEND)];
+        memset(rbuf, 0xaa, 2*(SIZE+APPEND));
+        lfs3_file_read(&lfs3, &file, rbuf, 2*(SIZE+APPEND))
+                => SIZE-CUT+APPEND;
+        assert(memcmp(rbuf, &sim[CUT], SIZE-CUT+APPEND) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
