@@ -1733,7 +1733,7 @@ static lfs3_scmp_t lfs3_data_cmp(lfs3_t *lfs3, const lfs3_data_t *data,
             int cmp = lfs3_bd_cmpck(lfs3,
                     // note the 0 hint, we don't usually use any
                     // following data
-                    data.u.disk.block, data.u.disk.off, 0,
+                    data->u.disk.block, data->u.disk.off, 0,
                     buffer, d,
                     lfs3_data_cksize(data), lfs3_data_cksum(data));
             if (cmp != LFS3_CMP_EQ) {
@@ -1805,7 +1805,7 @@ static int lfs3_bd_progdata(lfs3_t *lfs3,
                 false)) {
             #ifdef LFS3_CKDATACKSUMS
             int err = lfs3_bd_cpyck(lfs3, block, off,
-                    data.u.disk.block, data.u.disk.off, lfs3_data_size(data),
+                    data->u.disk.block, data->u.disk.off, lfs3_data_size(data),
                     lfs3_data_size(data),
                     lfs3_data_cksize(data), lfs3_data_cksum(data),
                     cksum);
