@@ -118,6 +118,56 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that set respects the file limit
+[cases.test_kv_set_fbig]
+defines.LIMIT = ['FCACHE_SIZE', 'BLOCK_SIZE']
+defines.SIZE = ['LIMIT', 'LIMIT+1', '2*BLOCK_SIZE']
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.file_limit = LIMIT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    uint8_t wbuf[SIZE];
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    // try to update an existing file and create a new file, these
+    // should fail if we exceed our file limit
+    lfs3_set(&lfs3, "a", "old", 3) => 0;
+    lfs3_set(&lfs3, "a", wbuf, SIZE) => (SIZE <= LIMIT) ? 0 : LFS3_ERR_FBIG;
+    lfs3_set(&lfs3, "b", wbuf, SIZE) => (SIZE <= LIMIT) ? 0 : LFS3_ERR_FBIG;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        uint8_t rbuf[SIZE];
+        if (SIZE <= LIMIT) {
+            lfs3_size(&lfs3, "a") => SIZE;
+            lfs3_get(&lfs3, "a", rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_size(&lfs3, "b") => SIZE;
+            lfs3_get(&lfs3, "b", rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        } else {
+            lfs3_size(&lfs3, "a") => 3;
+            lfs3_get(&lfs3, "a", rbuf, SIZE) => 3;
+            assert(memcmp(rbuf, "old", 3) == 0);
+            lfs3_size(&lfs3, "b") => LFS3_ERR_NOENT;
+            lfs3_get(&lfs3, "b", rbuf, SIZE) => LFS3_ERR_NOENT;
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that updating kv files works
 [cases.test_kv_set_update]
 # update based on this mask

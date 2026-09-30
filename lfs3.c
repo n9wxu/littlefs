@@ -15055,6 +15055,14 @@ lfs3_ssize_t lfs3_size(lfs3_t *lfs3, const char *path) {
 #ifndef LFS3_RDONLY
 int lfs3_set(lfs3_t *lfs3, const char *path,
         const void *buffer, lfs3_size_t size) {
+    // would this make our file larger than our file limit?
+    //
+    // wrset passes our data via the file cache, so lfs3_file_write
+    // never gets a chance to check this
+    if (size > lfs3->file_limit) {
+        return LFS3_ERR_FBIG;
+    }
+
     // LFS3_o_WRSET is a special mode specifically to make lfs3_set work
     // atomically when possible
     //
