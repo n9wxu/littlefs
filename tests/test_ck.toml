@@ -4013,7 +4013,7 @@ code = '''
                     || err == LFS3_ERR_NOSPC
                     || (err == LFS3_ERR_CORRUPT
                         && (METHOD == 2 || METHOD == 3)));
-            if (err == LFS3_ERR_NOSPC || LFS3_ERR_CORRUPT) {
+            if (err == LFS3_ERR_NOSPC || err == LFS3_ERR_CORRUPT) {
                 goto corrupt_mounted;
             }
 
