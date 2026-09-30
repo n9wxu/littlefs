@@ -3508,7 +3508,7 @@ static int lfs3_rbyd_appendrattr_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
                     .blocks[0] = args[0],
                     .trunk = args[1],
                     .cksum = args[2]},
-                ctx.u.ecksum.buf);
+                ctx.u.branch.buf);
         datas = &ctx.u.branch.data;
         data_count = 1;
 
