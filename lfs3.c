@@ -12808,11 +12808,14 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
     LFS3_ASSERT(!lfs3_o_isrdonly(flags) || !lfs3_o_isexcl(flags));
     LFS3_ASSERT(!lfs3_o_isrdonly(flags) || !lfs3_o_istrunc(flags));
     for (lfs3_size_t i = 0; i < cfg->attr_count; i++) {
-        // these flags require a writable attr
-        LFS3_ASSERT(!lfs3_o_isrdonly(cfg->attrs[i].flags)
-                || !lfs3_o_iscreat(cfg->attrs[i].flags));
-        LFS3_ASSERT(!lfs3_o_isrdonly(cfg->attrs[i].flags)
-                || !lfs3_o_isexcl(cfg->attrs[i].flags));
+        // don't allow the forbidden mode!
+        LFS3_ASSERT((cfg->attrs[i].flags & 3) != 3);
+        // unknown attr flags?
+        LFS3_ASSERT((cfg->attrs[i].flags & ~(
+                LFS3_A_RDONLY
+                    | LFS3_A_WRONLY
+                    | LFS3_A_RDWR
+                    | LFS3_A_LAZY)) == 0);
     }
     #endif
 

@@ -3136,7 +3136,7 @@ code = '''
 
 # test that rdonly attrs have no effect on disk
 [cases.test_attrs_fattr_rdonly]
-defines.MODE = ['LFS3_A_RDONLY']
+defines.MODE = ['LFS3_A_RDONLY', 'LFS3_A_RDONLY | LFS3_A_LAZY']
 defines.MUTSIZE = [false, true]
 code = '''
     lfs3_t lfs3;
