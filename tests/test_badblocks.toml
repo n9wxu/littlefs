@@ -5241,7 +5241,7 @@ code = '''
                         memmove(&sim_prngs[k+1], &sim_prngs[k],
                                 (sim_size-1-k)*sizeof(uint32_t));
                         memmove(&sim_isstickys[k+1], &sim_isstickys[k],
-                                (sim_size-k)*sizeof(bool));
+                                (sim_size-1-k)*sizeof(bool));
                         sim[k] = y;
                         sim_prngs[k] = wprng;
                         sim_isstickys[k] = sticky;
@@ -5728,9 +5728,9 @@ code = '''
                         memmove(&sim_prngs[k+1], &sim_prngs[k],
                                 (sim_size-1-k)*sizeof(uint32_t));
                         memmove(&sim_isstickys[k+1], &sim_isstickys[k],
-                                (sim_size-k)*sizeof(bool));
+                                (sim_size-1-k)*sizeof(bool));
                         memmove(&sim_isdirs[k+1], &sim_isdirs[k],
-                                (sim_size-k)*sizeof(bool));
+                                (sim_size-1-k)*sizeof(bool));
                         sim[k] = y;
                         sim_prngs[k] = wprng;
                         sim_isstickys[k] = sticky;
