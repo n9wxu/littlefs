@@ -5986,3 +5986,155 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# test that a stuck mroot doesn't leave a half-applied gcksum/grm behind
+[cases.test_badblocks_mrootanchor_stuck]
+defines.BADBLOCKS = [0x1, 0x2]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# OP=0 => setattr, stresses the gcksum
+# OP=1 => rename, stresses the grm
+defines.OP = [0, 1]
+# we need prog checking to detect read errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_M_RDWR
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0),
+            CFG) => 0;
+
+    if (BADBLOCKS & 0x1) {
+        lfs3_emubd_mkbad(CFG, 0) => 0;
+    }
+    if (BADBLOCKS & 0x2) {
+        lfs3_emubd_mkbad(CFG, 1) => 0;
+    }
+
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0),
+            CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "a",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "hello", 5) => 5;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // update our mroot until it gets stuck
+    const char *names[2] = {"a", "b"};
+    lfs3_size_t i = 0;
+    while (true) {
+        // this should eventually fail
+        assert(i <= BLOCK_COUNT);
+
+        int err;
+        if (OP == 0) {
+            err = lfs3_setattr(&lfs3, "a", 'x', &i, sizeof(i));
+        } else {
+            err = lfs3_rename(&lfs3, names[i%2], names[(i+1)%2]);
+        }
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err == LFS3_ERR_NOSPC) {
+            break;
+        }
+        i += 1;
+    }
+
+    // the failed update should have no effect
+    struct lfs3_info info;
+    lfs3_size_t attr;
+    if (OP == 0) {
+        lfs3_stat(&lfs3, "a", &info) => 0;
+        if (i > 0) {
+            lfs3_getattr(&lfs3, "a", 'x', &attr, sizeof(attr))
+                    => sizeof(attr);
+            assert(attr == i-1);
+        } else {
+            lfs3_getattr(&lfs3, "a", 'x', &attr, sizeof(attr))
+                    => LFS3_ERR_NOATTR;
+        }
+    } else {
+        lfs3_stat(&lfs3, names[i%2], &info) => 0;
+        lfs3_stat(&lfs3, names[(i+1)%2], &info) => LFS3_ERR_NOENT;
+    }
+
+    // if our bad blocks recover, we should be able to keep going
+    if (BADBLOCKS & 0x1) {
+        lfs3_emubd_mkgood(CFG, 0) => 0;
+    }
+    if (BADBLOCKS & 0x2) {
+        lfs3_emubd_mkgood(CFG, 1) => 0;
+    }
+
+    lfs3_mkdir(&lfs3, "c") => 0;
+    lfs3_stat(&lfs3, "c", &info) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, CFG) => 0;
+    lfs3_stat(&lfs3, "c", &info) => 0;
+    const char *name = (OP == 0) ? "a" : names[i%2];
+    lfs3_stat(&lfs3, name, &info) => 0;
+    if (OP == 1) {
+        lfs3_stat(&lfs3, names[(i+1)%2], &info) => LFS3_ERR_NOENT;
+    }
+    uint8_t rbuf[5];
+    lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 5) => 5;
+    assert(memcmp(rbuf, "hello", 5) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that a failed sync doesn't leave a half-applied grm/gcksum behind
+[cases.test_badblocks_badsync]
+defines.RENAME = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "a",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "hello", 5) => 5;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // fail a commit's sync
+    lfs3_emubd_mkbadsync(CFG) => 0;
+    if (RENAME) {
+        lfs3_rename(&lfs3, "a", "b") => LFS3_ERR_IO;
+    } else {
+        lfs3_mkdir(&lfs3, "b") => LFS3_ERR_IO;
+    }
+    lfs3_emubd_mkgoodsync(CFG) => 0;
+
+    // the failed commit should have no effect
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "a", &info) => 0;
+    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+
+    // and we should be able to keep going
+    lfs3_mkdir(&lfs3, "c") => 0;
+    lfs3_stat(&lfs3, "a", &info) => 0;
+    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+    lfs3_stat(&lfs3, "c", &info) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, CFG) => 0;
+    lfs3_stat(&lfs3, "a", &info) => 0;
+    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+    lfs3_stat(&lfs3, "c", &info) => 0;
+    uint8_t rbuf[5];
+    lfs3_file_open(&lfs3, &file, "a", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 5) => 5;
+    assert(memcmp(rbuf, "hello", 5) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''

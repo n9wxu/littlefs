@@ -9313,7 +9313,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
-                    return LFS3_ERR_NOSPC;
+                    err = LFS3_ERR_NOSPC;
                 }
                 goto failed;
             }
@@ -9333,7 +9333,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
-                    return LFS3_ERR_NOSPC;
+                    err = LFS3_ERR_NOSPC;
                 }
                 goto failed;
             }
@@ -9343,7 +9343,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // sync on-disk state
     err = lfs3_bd_sync(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     ///////////////////////////////////////////////////////////////////////
