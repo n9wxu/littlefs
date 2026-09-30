@@ -9651,11 +9651,17 @@ static inline bool lfs3_path_isdir(const char *path) {
 // - LFS3_ERR_NOENT, islast(path), isdir(path)  => dir not found
 // - LFS3_ERR_NOENT, !islast(path)              => parent not found
 // - LFS3_ERR_NOTDIR                            => parent not a dir
+// - LFS3_ERR_INVAL                             => parent under ancestor
 //
 // if not found, mdir/did_ will be set to the parent's mdir/did, all
 // ready for file creation
 //
-static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
+// ancestor is the mid of a dir the path must not descend through, this
+// is how rename refuses to move a dir into itself, -1 (root) never
+// matches
+//
+static lfs3_stag_t lfs3_mtree_pathlookup_(lfs3_t *lfs3, const char **path,
+        lfs3_smid_t ancestor,
         lfs3_mdir_t *mdir_, lfs3_did_t *did_) {
     // setup root
     *mdir_ = lfs3->mroot;
@@ -9731,6 +9737,10 @@ static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
 
         // read the next did from the mdir if this is not the root
         if (mdir_->mid != -1) {
+            if (mdir_->mid == ancestor) {
+                return LFS3_ERR_INVAL;
+            }
+
             lfs3_data_t data;
             tag = lfs3_mdir_lookup(lfs3, mdir_, LFS3_TAG_DID,
                     &data);
@@ -9766,6 +9776,11 @@ static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
         path_ += name_len;
     next:;
     }
+}
+
+static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
+        lfs3_mdir_t *mdir_, lfs3_did_t *did_) {
+    return lfs3_mtree_pathlookup_(lfs3, path, -1, mdir_, did_);
 }
 
 
@@ -11857,10 +11872,11 @@ int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
         return LFS3_ERR_BUSY;
     }
 
-    // lookup new entry
+    // lookup new entry, a dir can't be moved into its own subtree
     lfs3_mdir_t new_mdir;
     lfs3_did_t new_did;
-    lfs3_stag_t new_tag = lfs3_mtree_pathlookup(lfs3, &new_path,
+    lfs3_stag_t new_tag = lfs3_mtree_pathlookup_(lfs3, &new_path,
+            old_mdir.mid,
             &new_mdir, &new_did);
     if (new_tag < 0
             && !(new_tag == LFS3_ERR_NOENT

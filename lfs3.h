@@ -1459,8 +1459,10 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 //
 // If the destination exists, it must match the source in type.
 // If the destination is a directory, the directory must be empty.
+// A directory can not be moved into itself or one of its children.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if the destination is inside the source
+// directory, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path);
 #endif

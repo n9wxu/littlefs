@@ -4687,6 +4687,98 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that we catch moving a directory into its own subtree
+[cases.test_dirs_mv_subtree]
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // make directories
+    err = lfs3_mkdir(&lfs3, "ardvark");
+    assert(!err || (TEST_PLS && err == LFS3_ERR_EXIST));
+    err = lfs3_mkdir(&lfs3, "ardvark/banana");
+    assert(!err || (TEST_PLS && err == LFS3_ERR_EXIST));
+    err = lfs3_mkdir(&lfs3, "ardvark/banana/cat");
+    assert(!err || (TEST_PLS && err == LFS3_ERR_EXIST));
+
+    // try to rename into a child
+    lfs3_rename(&lfs3, "ardvark", "ardvark/dog") => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/banana") => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/./dog") => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/cat/../dog") => LFS3_ERR_INVAL;
+    // try to rename into a deeper descendant
+    lfs3_rename(&lfs3, "ardvark", "ardvark/banana/dog") => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/banana/cat") => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/banana/cat/dog")
+            => LFS3_ERR_INVAL;
+    lfs3_rename(&lfs3, "ardvark/banana", "ardvark/banana/cat/dog")
+            => LFS3_ERR_INVAL;
+    // renaming onto ourself is still a noop
+    lfs3_rename(&lfs3, "ardvark", "ardvark/") => 0;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/.") => 0;
+    lfs3_rename(&lfs3, "ardvark", "ardvark/banana/..") => 0;
+    lfs3_rename(&lfs3, "ardvark/banana", "ardvark/banana/cat/..") => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // grm should be zero here
+        assert(lfs3.grm_p[0] == 0);
+
+        // check that nothing moved
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "ardvark", &info) => 0;
+        assert(strcmp(info.name, "ardvark") == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_stat(&lfs3, "ardvark/banana", &info) => 0;
+        assert(strcmp(info.name, "banana") == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_stat(&lfs3, "ardvark/banana/cat", &info) => 0;
+        assert(strcmp(info.name, "cat") == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_stat(&lfs3, "ardvark/dog", &info) => LFS3_ERR_NOENT;
+        lfs3_stat(&lfs3, "ardvark/banana/dog", &info) => LFS3_ERR_NOENT;
+        lfs3_stat(&lfs3, "ardvark/banana/cat/dog", &info) => LFS3_ERR_NOENT;
+
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "ardvark") == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+
+        lfs3_dir_open(&lfs3, &dir, "ardvark") => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "banana") == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that dir existance is the same before/after mkconsistent
 [cases.test_dirs_mv_consistent]
 defines.REMOUNT = [false, true]
