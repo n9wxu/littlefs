@@ -47,9 +47,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
