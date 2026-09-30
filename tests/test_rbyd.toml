@@ -4358,12 +4358,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[4];
@@ -4670,12 +4670,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -4762,12 +4762,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // create the rbyd tree
@@ -5476,12 +5476,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[4];
@@ -5931,12 +5931,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -6047,12 +6047,12 @@ code = '''
         .weight = 0,
     };
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_rbyd_t rbyd;
     lfs3_data_t data;
@@ -6187,12 +6187,12 @@ code = '''
         .weight = 0,
     };
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_rbyd_t rbyd;
     lfs3_stag_t tag_;
@@ -6398,12 +6398,12 @@ code = '''
         .weight = 0,
     };
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_rbyd_t rbyd;
     lfs3_data_t data;
@@ -6533,12 +6533,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // create the rbyd tree
@@ -6626,12 +6626,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[4];
@@ -6775,12 +6775,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[4];
@@ -11093,12 +11093,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[6];
@@ -11259,12 +11259,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[6];
@@ -11464,12 +11464,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -11596,12 +11596,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -12058,12 +12058,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[6];
@@ -12206,12 +12206,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_data_t data;
     uint8_t buffer[6];
@@ -12856,12 +12856,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -12948,12 +12948,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14011,12 +14011,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14131,12 +14131,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14261,12 +14261,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14400,12 +14400,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14553,12 +14553,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14717,12 +14717,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -14856,12 +14856,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -15009,12 +15009,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -15172,12 +15172,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -15348,12 +15348,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
     lfs3_stag_t tag_;
     lfs3_ssize_t rid_;
@@ -15912,12 +15912,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16002,12 +16002,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16148,12 +16148,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16296,12 +16296,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16388,12 +16388,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16543,12 +16543,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16700,12 +16700,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16788,12 +16788,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -16935,12 +16935,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -17075,12 +17075,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -17164,12 +17164,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][4] = {
-        "\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee",
-        "\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
@@ -17311,12 +17311,12 @@ code = '''
     };
     lfs3_rbyd_t rbyd;
     const uint8_t names[6][6] = {
-        "\xaa\xaa\xaa\xaa\xaa\xaa",
-        "\xbb\xbb\xbb\xbb\xbb\xbb",
-        "\xcc\xcc\xcc\xcc\xcc\xcc",
-        "\xdd\xdd\xdd\xdd\xdd\xdd",
-        "\xee\xee\xee\xee\xee\xee",
-        "\xff\xff\xff\xff\xff\xff",
+        {0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa},
+        {0xbb, 0xbb, 0xbb, 0xbb, 0xbb, 0xbb},
+        {0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc},
+        {0xdd, 0xdd, 0xdd, 0xdd, 0xdd, 0xdd},
+        {0xee, 0xee, 0xee, 0xee, 0xee, 0xee},
+        {0xff, 0xff, 0xff, 0xff, 0xff, 0xff},
     };
 
     // test all permutations of a given size
