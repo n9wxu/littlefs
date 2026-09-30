@@ -1240,7 +1240,8 @@ code = '''
     lfs3_mdir_commit(&lfs3, &file.b.h.mdir, LFS3_RATTRS(
             LFS3_RATTR(2, LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
                 LFS3_FROM_BTREE),
-            LFS3_RATTR_ARG(&file.b.b))) => 0;
+            LFS3_RATTR_ARG(&file.b.b),
+            LFS3_RATTR_NULL)) => 0;
 
     lfs3_file_close(&lfs3, &file) => 0;
 
