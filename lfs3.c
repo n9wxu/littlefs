@@ -14129,21 +14129,21 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         return 0;
     }
 
+    // update pos if we are appending
+    lfs3_off_t pos = file->pos;
+    if (lfs3_o_isappend(file->b.h.flags)) {
+        pos = lfs3_file_size_(file);
+    }
+
     // would this write make our file larger than our file limit?
     int err;
-    if (size > lfs3->file_limit - file->pos) {
+    if (size > lfs3->file_limit - pos) {
         err = LFS3_ERR_FBIG;
         goto failed;
     }
 
     // mark as unsynced in case we fail
     file->b.h.flags |= LFS3_o_UNSYNC;
-
-    // update pos if we are appending
-    lfs3_off_t pos = file->pos;
-    if (lfs3_o_isappend(file->b.h.flags)) {
-        pos = lfs3_file_size_(file);
-    }
 
     const uint8_t *buffer_ = buffer;
     lfs3_size_t written = 0;

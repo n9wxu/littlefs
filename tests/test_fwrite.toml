@@ -5233,6 +5233,92 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that appends respect the file limit, appends ignore pos
+[cases.test_fwrite_append_fbig]
+defines.LIMIT = [
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.MODE = ['LFS3_O_WRONLY', 'LFS3_O_RDWR']
+if = [
+    'SIZE <= LIMIT',
+    # this just saves testing time
+    'LIMIT <= 4*1024*FRAGMENT_SIZE',
+]
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.file_limit = LIMIT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // simulate our file in ram
+    uint8_t sim[LIMIT];
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < LIMIT; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    // create a file, seeking to the file limit shouldn't prevent
+    // appends
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            MODE | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    lfs3_file_seek(&lfs3, &file, LIMIT, LFS3_SEEK_SET) => LIMIT;
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // seeking to the start shouldn't let appends exceed the file limit
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], LIMIT-SIZE+1)
+            => LFS3_ERR_FBIG;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // but we should be able to append up to the file limit
+    lfs3_file_open(&lfs3, &file, "hello", MODE | LFS3_O_APPEND) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], LIMIT-SIZE) => LIMIT-SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], 1) => LFS3_ERR_FBIG;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        // check our file with stat
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(strcmp(info.name, "hello") == 0);
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == LIMIT);
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        // is size correct?
+        lfs3_file_size(&lfs3, &file) => LIMIT;
+        // try reading
+        uint8_t rbuf[2*LIMIT];
+        memset(rbuf, 0xaa, 2*LIMIT);
+        lfs3_file_read(&lfs3, &file, rbuf, 2*LIMIT) => LIMIT;
+        // does our file match our simulation?
+        assert(memcmp(rbuf, sim, LIMIT) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 # heavy fuzz test with rw seeks, truncate, and fruncate
 [cases.test_fwrite_rwtf_fuzz]
