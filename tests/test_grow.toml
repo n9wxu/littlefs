@@ -1886,8 +1886,8 @@ code = '''
                         wbuf, SIZE);
                 assert(d == SIZE || d == LFS3_ERR_NOSPC);
                 if (d == LFS3_ERR_NOSPC) {
-                    free(sim_files[j]);
                     lfs3_file_close(&lfs3, &sim_files[j]->file) => 0;
+                    free(sim_files[j]);
                     goto grow;
                 }
             }
