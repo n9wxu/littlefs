@@ -496,10 +496,10 @@ static inline void lfs3_tole32(uint32_t word, void *buffer) {
 }
 
 static inline uint32_t lfs3_fromle32(const void *buffer) {
-    return (((uint8_t*)buffer)[0] <<  0)
-         | (((uint8_t*)buffer)[1] <<  8)
-         | (((uint8_t*)buffer)[2] << 16)
-         | (((uint8_t*)buffer)[3] << 24);
+    return ((uint32_t)((uint8_t*)buffer)[0] <<  0)
+         | ((uint32_t)((uint8_t*)buffer)[1] <<  8)
+         | ((uint32_t)((uint8_t*)buffer)[2] << 16)
+         | ((uint32_t)((uint8_t*)buffer)[3] << 24);
 }
 
 // Convert to/from leb128 encoding
