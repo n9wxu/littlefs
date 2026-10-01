@@ -529,6 +529,11 @@ rdonly-runner: $(RDONLY_RUNNER)
 test: test-runner
 	./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
 
+## Run the tests with emubd's prog-once check
+.PHONY: test-progonce
+test-progonce: test-runner
+	./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS) -DCKPROGONCE=1
+
 ## Check that LFS3_RDONLY builds read images written by full builds
 #
 # The default and LFS3_YES_GBMAP builds write images with the cases in
