@@ -830,6 +830,128 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that pre-erasing at mount on a nearly full disk doesn't
+# allocate without an allocator checkpoint, and that we still find the
+# disk full afterwards
+[cases.test_gc_preerase_ckpoint_full]
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# how many blocks to free, spread out so pre-erasing fragments the gbmap
+defines.FREE = [4, 16, 64]
+if = 'GBMAP'
+ifdef = ['LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+in = 'lfs3.c'
+code = '''
+    // fill the disk, and then free a few blocks
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | LFS3_F_GBMAP,
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+    uint8_t wbuf[BLOCK_SIZE];
+    lfs3_size_t n = 0;
+    while (true) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n);
+        memset(wbuf, 'a'+(n % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        n += 1;
+    }
+    for (lfs3_size_t i = 0; i < FREE; i++) {
+        char name[256];
+        sprintf(name, "fly%04d", (int)(i*(n/FREE)));
+        lfs3_remove(&lfs3, name) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // pre-erase at mount, before anything else checkpoints the
+    // allocator, and without a lookahead scan
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | LFS3_M_REVPERTURB
+                | LFS3_M_PREERASE,
+            CFG) => 0;
+    assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+
+    // write until we run out of space again, this should not take more
+    // than the disk
+    lfs3_size_t m = 0;
+    while (true) {
+        assert(m < 2*BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n+m);
+        memset(wbuf, 'a'+((n+m) % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        m += 1;
+    }
+    // we only freed FREE blocks
+    assert(m <= FREE);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n+m; i++) {
+            if (i < FREE*(n/FREE) && i % (n/FREE) == 0) {
+                continue;
+            }
+            char name[256];
+            sprintf(name, "fly%04d", i);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            uint8_t rbuf[BLOCK_SIZE];
+            lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+            memset(wbuf, 'a'+(i % 26), BLOCK_SIZE);
+            assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that as we increase gc_preerase_count, late-erases generally
 # decreases
 [cases.test_gc_preerase_decreasing]
