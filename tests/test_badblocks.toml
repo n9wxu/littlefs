@@ -6138,3 +6138,116 @@ code = '''
     lfs3_file_close(&lfs3, &file) => 0;
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test that bad blocks don't stop pre-erasing
+[cases.test_badblocks_preerase]
+# MODE=0 => pre-erase with lfs3_fs_gc
+# MODE=1 => pre-erase with LFS3_M_PREERASE
+# MODE=2 => pre-erase with LFS3_F_PREERASE
+defines.MODE = [0, 1, 2]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+defines.GC_FLAGS = 'LFS3_IFDEF_PREERASE(LFS3_GC_PREERASE, 0)'
+defines.GC_PREERASE_COUNT = ['-1', 'BLOCK_COUNT/4']
+defines.N = 16
+defines.SIZE = 'BLOCK_SIZE'
+# we need prog checking to detect read errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    'LFS3_IFDEF_GC(true, MODE != 0)',
+]
+ifdef = ['LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+code = '''
+    // mark every other block after the mroot anchor and gbmap as bad,
+    // this guarantees the pre-eraser runs into bad blocks
+    lfs3_t lfs3;
+    if (MODE == 2) {
+        for (lfs3_block_t i = 3; i < BLOCK_COUNT; i += 2) {
+            lfs3_emubd_mkbad(CFG, i) => 0;
+        }
+    }
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0)
+                | LFS3_F_GBMAP
+                | ((MODE == 2) ? LFS3_F_PREERASE : 0),
+            CFG) => 0;
+    if (MODE != 2) {
+        for (lfs3_block_t i = 3; i < BLOCK_COUNT; i += 2) {
+            lfs3_emubd_mkbad(CFG, i) => 0;
+        }
+    }
+
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                // note preerasing needs revperturb
+                | LFS3_M_REVPERTURB
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0)
+                | ((MODE == 1) ? LFS3_M_PREERASE : 0),
+            CFG) => 0;
+
+    #ifdef LFS3_GC
+    if (MODE == 0) {
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_PREERASE);
+
+        // run gc until we're done pre-erasing
+        for (lfs3_block_t i = 0;; i++) {
+            // a bit hacky, but this catches infinite loops
+            assert(i < 2*BLOCK_COUNT);
+
+            lfs3_fs_gc(&lfs3) => 0;
+
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            if (!(fsinfo.flags & LFS3_I_PREERASE)) {
+                break;
+            }
+        }
+    }
+    #endif
+
+    // we should still be able to write files
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // and read them back
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKDATA, CFG) => 0;
+    prng = 42;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        uint8_t rbuf[SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''

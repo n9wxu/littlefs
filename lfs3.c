@@ -11414,15 +11414,24 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
 
         // erase!
         int err = lfs3_bd_erase(lfs3, block);
-        if (err) {
+        if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
 
         // calculate erased-state checksum
         lfs3_ecksum_t ecksum;
-        err = lfs3_ecksum_read(lfs3, &ecksum, block, 0);
-        if (err) {
-            return err;
+        if (!err) {
+            err = lfs3_ecksum_read(lfs3, &ecksum, block, 0);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+        }
+
+        // bad erase/read? skip this block, lfs3_alloc_ will notice if
+        // it ever tries to use it
+        if (err == LFS3_ERR_CORRUPT) {
+            lfs3->gbmap.preeraser.known += 1;
+            continue;
         }
 
         // commit into gbmap
