@@ -22,6 +22,34 @@ __attribute__((unused))
 static void test_bd_powerloss_longjmp(void *data) {
     longjmp(*(jmp_buf*)data, 1);
 }
+
+// children for test_death
+__attribute__((unused))
+static void test_bd_death_survive(void *data) {
+    (void)data;
+}
+
+__attribute__((unused))
+static void test_bd_death_abort(void *data) {
+    (void)data;
+    abort();
+}
+
+__attribute__((unused))
+static void test_bd_death_assert(void *data) {
+    (void)data;
+    int test_bd_death_marker = 1;
+    assert(test_bd_death_marker == 2);
+}
+
+__attribute__((unused))
+static void test_bd_death_prog(void *data) {
+    const struct lfs3_cfg *cfg = data;
+    uint8_t buffer[cfg->prog_size];
+    memset(buffer, 'x', cfg->prog_size);
+    cfg->prog(cfg, 0, 0, buffer, cfg->prog_size) => 0;
+    assert(false);
+}
 '''
 
 [cases.test_bd_one_block]
@@ -717,4 +745,154 @@ code = '''
         lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
         TEST_MALLOCS_LIVE() => 0;
     }
+'''
+
+# test_death reports how a child died, and the child's counters, without
+# its writes reaching the parent
+[cases.test_bd_death]
+code = '''
+    test_death(CFG, "", test_bd_death_survive, NULL) => TEST_DEATH_SURVIVED;
+    test_death(CFG, "", test_bd_death_abort, NULL) => TEST_DEATH_KILLED;
+
+    // match any assert, the report, or the source line
+    test_death(CFG, "", test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "assert failed with 1",
+            test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "test_bd_death_marker == 2",
+            test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "test_bd_death_marker == 3",
+            test_bd_death_assert, NULL) => TEST_DEATH_MISMATCH;
+
+    CFG->erase(CFG, 0) => 0;
+    lfs3_emubd_sio_t progged = lfs3_emubd_progged(CFG);
+    test_death(CFG, "", test_bd_death_prog, (void*)CFG) => TEST_DEATH_DIED;
+    assert(TEST_DEATH.progged == (uint64_t)progged + PROG_SIZE);
+    lfs3_emubd_progged(CFG) => progged;
+
+    // the block is still erased here
+    uint8_t buffer[PROG_SIZE];
+    memset(buffer, 'y', PROG_SIZE);
+    CFG->prog(CFG, 0, 0, buffer, PROG_SIZE) => 0;
+'''
+
+# a death case passes when the permutation dies on a matching assert, and
+# its death_code sees the child's counters since lfs3_emubd_simreset
+[cases.test_bd_death_case]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+death = 'test_bd_death_case_marker'
+code = '''
+    uint8_t buffer[SIZE];
+    CFG->erase(CFG, 0) => 0;
+    memset(buffer, 'a', SIZE);
+    CFG->prog(CFG, 0, 0, buffer, SIZE) => 0;
+    CFG->read(CFG, 0, 0, buffer, SIZE) => 0;
+    lfs3_emubd_simreset(CFG) => 0;
+
+    CFG->prog(CFG, 0, SIZE, buffer, SIZE) => 0;
+    bool test_bd_death_case_marker = false;
+    assert(test_bd_death_case_marker);
+'''
+death_code = '''
+    assert(TEST_DEATH.progged == SIZE);
+    assert(TEST_DEATH.readed == 0);
+    assert(TEST_DEATH.erased == 0);
+'''
+
+# with ck_progonce, a prog over programmed bytes fails the test, even
+# bytes programmed with the erase value, and before the prog counts
+[cases.test_bd_death_progonce]
+defines.CKPROGONCE = true
+defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
+defines.MKPROGGED = [false, true]
+death = 'prog-once check failed'
+code = '''
+    uint8_t buffer[PROG];
+    memset(buffer, (uint8_t)ERASE_VALUE, PROG);
+    CFG->erase(CFG, 0) => 0;
+    if (MKPROGGED) {
+        lfs3_emubd_mkprogged(CFG, 0) => 0;
+    } else {
+        CFG->prog(CFG, 0, 0, buffer, PROG) => 0;
+    }
+
+    lfs3_emubd_simreset(CFG) => 0;
+    CFG->prog(CFG, 0, 0, buffer, PROG) => 0;
+'''
+death_code = '''
+    assert(TEST_DEATH.progged == 0);
+'''
+
+# an interrupted prog that writes something marks what it wrote, so
+# programming the same range again fails
+[cases.test_bd_death_progonce_powerloss]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.PROG = '4*PROG_SIZE'
+death = 'prog-once check failed'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    memset(buffer, 'a', PROG);
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+'''
+
+# an interrupted prog that writes nothing marks nothing
+[cases.test_bd_progonce_interrupted]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.PROG = '4*PROG_SIZE'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    memset(buffer, 'a', PROG);
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+    lfs3_emubd_blockprogs(&cfg, 0) => 1;
+
+    lfs3_emubd_destroy(&cfg) => 0;
 '''

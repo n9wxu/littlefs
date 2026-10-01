@@ -22,6 +22,7 @@
 #include <execinfo.h>
 #include <signal.h>
 #include <stddef.h>
+#include <sys/wait.h>
 
 
 // some helpers
@@ -1566,6 +1567,275 @@ static void query_implicit_define(void) {
 
 
 
+// death tests
+test_death_t TEST_DEATH;
+
+static const struct lfs3_cfg *test_death_cfg = NULL;
+static int test_death_fd = -1;
+
+// in the child, report our counters to the parent before dying
+static void test_death_handler(int sig) {
+    test_death_t death = {0};
+    #ifndef TEST_KIWIBD
+    if (test_death_cfg && test_death_cfg->context) {
+        const lfs3_emubd_t *bd = test_death_cfg->context;
+        death.reads   = bd->reads;
+        death.progs   = bd->progs;
+        death.erases  = bd->erases;
+        death.readed  = bd->readed;
+        death.progged = bd->progged;
+        death.erased  = bd->erased;
+    }
+    #endif
+    ssize_t res = write(test_death_fd, &death, sizeof(death));
+    (void)res;
+
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
+// parse an assert report, path:line:assert: message, or path:line:
+// unreachable: message
+static bool test_death_parse(const char *line,
+        size_t *path_len, intmax_t *lineno) {
+    const char *colon = strchr(line, ':');
+    if (!colon || colon == line) {
+        return false;
+    }
+
+    char *parsed;
+    intmax_t lineno_ = strtoimax(colon+1, &parsed, 10);
+    if (parsed == colon+1 || *parsed != ':') {
+        return false;
+    }
+
+    if (strncmp(parsed, ":assert:", strlen(":assert:")) != 0
+            && strncmp(parsed, ":unreachable:",
+                strlen(":unreachable:")) != 0) {
+        return false;
+    }
+
+    *path_len = colon - line;
+    *lineno = lineno_;
+    return true;
+}
+
+// does the assert's report or source line contain death?
+static bool test_death_match(const char *assert_, const char *death) {
+    if (strstr(assert_, death)) {
+        return true;
+    }
+
+    size_t path_len;
+    intmax_t lineno;
+    if (!test_death_parse(assert_, &path_len, &lineno)) {
+        return false;
+    }
+
+    char *path = malloc(path_len+1);
+    memcpy(path, assert_, path_len);
+    path[path_len] = '\0';
+    FILE *f = fopen(path, "r");
+    free(path);
+    if (!f) {
+        return false;
+    }
+
+    // find the source line
+    char *line = NULL;
+    size_t line_len = 0;
+    size_t line_cap = 0;
+    intmax_t l = 1;
+    int c;
+    while ((c = fgetc(f)) != EOF && l <= lineno) {
+        if (c == '\n') {
+            l += 1;
+        } else if (l == lineno) {
+            *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = c;
+        }
+    }
+    *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = '\0';
+    fclose(f);
+
+    bool match = (strstr(line, death) != NULL);
+    free(line);
+    return match;
+}
+
+// forward a line of the child's output, holding back its assert report,
+// which would otherwise read as our own failure
+static void test_death_line(char *line, size_t len, char **assert_) {
+    size_t path_len;
+    intmax_t lineno;
+    line[len] = '\0';
+    if (test_death_parse(line, &path_len, &lineno)) {
+        free(*assert_);
+        *assert_ = malloc(len);
+        memcpy(*assert_, line, len-1);
+        (*assert_)[len-1] = '\0';
+        return;
+    }
+
+    fwrite(line, 1, len, stdout);
+}
+
+int test_death(const struct lfs3_cfg *cfg, const char *death,
+        void (*fn)(void *data), void *data) {
+    memset(&TEST_DEATH, 0, sizeof(TEST_DEATH));
+
+    // pipes for the child's output and its counters
+    int out[2];
+    int counters[2];
+    if (pipe(out) || pipe(counters)) {
+        fprintf(stderr, "error: death: could not create pipe: %d\n", -errno);
+        exit(-1);
+    }
+
+    fflush(NULL);
+    pid_t pid = fork();
+    if (pid < 0) {
+        fprintf(stderr, "error: death: could not fork: %d\n", -errno);
+        exit(-1);
+    }
+
+    if (pid == 0) {
+        close(out[0]);
+        close(counters[0]);
+        dup2(out[1], STDOUT_FILENO);
+        dup2(out[1], STDERR_FILENO);
+        close(out[1]);
+
+        test_death_cfg = cfg;
+        test_death_fd = counters[1];
+        signal(SIGABRT, test_death_handler);
+        signal(SIGILL, test_death_handler);
+        signal(SIGTRAP, test_death_handler);
+
+        fn(data);
+
+        // survived
+        fflush(NULL);
+        _exit(0);
+    }
+
+    close(out[1]);
+    close(counters[1]);
+
+    // forward the child's output line by line
+    char *assert_ = NULL;
+    char *line = NULL;
+    size_t line_len = 0;
+    size_t line_cap = 0;
+    while (true) {
+        char buf[256];
+        ssize_t res = read(out[0], buf, sizeof(buf));
+        if (res < 0 && errno == EINTR) {
+            continue;
+        }
+        if (res <= 0) {
+            break;
+        }
+
+        for (ssize_t i = 0; i < res; i++) {
+            *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = buf[i];
+            if (buf[i] == '\n') {
+                // leave room for a terminator
+                mappend((void**)&line, 1, &line_len, &line_cap);
+                test_death_line(line, line_len-1, &assert_);
+                line_len = 0;
+            }
+        }
+    }
+    if (line_len > 0) {
+        *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = '\n';
+        mappend((void**)&line, 1, &line_len, &line_cap);
+        test_death_line(line, line_len-1, &assert_);
+    }
+    free(line);
+    close(out[0]);
+
+    int status;
+    while (waitpid(pid, &status, 0) < 0) {
+        if (errno != EINTR) {
+            fprintf(stderr, "error: death: could not wait: %d\n", -errno);
+            exit(-1);
+        }
+    }
+
+    ssize_t res = read(counters[0], &TEST_DEATH, sizeof(TEST_DEATH));
+    if (res != sizeof(TEST_DEATH)) {
+        memset(&TEST_DEATH, 0, sizeof(TEST_DEATH));
+    }
+    close(counters[0]);
+
+    // how did the child die?
+    int result;
+    if (!WIFSIGNALED(status)) {
+        result = TEST_DEATH_SURVIVED;
+    } else if ((WTERMSIG(status) == SIGABRT
+                || WTERMSIG(status) == SIGILL
+                || WTERMSIG(status) == SIGTRAP)
+            && assert_) {
+        result = (test_death_match(assert_, death))
+                ? TEST_DEATH_DIED
+                : TEST_DEATH_MISMATCH;
+    } else {
+        result = TEST_DEATH_KILLED;
+    }
+
+    // show where the child died, without reading as an assert
+    if (assert_) {
+        size_t path_len;
+        intmax_t lineno;
+        test_death_parse(assert_, &path_len, &lineno);
+        const char *message = strchr(&assert_[path_len+1], ':') + 1;
+        message = strchr(message, ':') + 1;
+        printf("%.*s:%jd:died:%s\n",
+                (int)path_len, assert_, lineno, message);
+        free(assert_);
+    } else if (WIFSIGNALED(status)) {
+        printf("died with signal %d\n", WTERMSIG(status));
+    }
+
+    return result;
+}
+
+struct test_death_case {
+    const struct test_case *case_;
+    const struct lfs3_cfg *cfg;
+};
+
+static void test_death_run(void *data) {
+    const struct test_death_case *d = data;
+    d->case_->run(d->cfg);
+}
+
+// run a death case, failing like an assert if it doesn't die as expected
+static void test_death_case(
+        const struct test_case *case_,
+        const struct lfs3_cfg *cfg) {
+    int result = test_death(cfg, case_->death,
+            test_death_run,
+            &(struct test_death_case){case_, cfg});
+    if (result != TEST_DEATH_DIED) {
+        printf("%s:assert: expected death on an assert matching \"%s\", "
+                    "but the case %s\n",
+                case_->path,
+                case_->death,
+                (result == TEST_DEATH_SURVIVED) ? "survived"
+                    : (result == TEST_DEATH_MISMATCH)
+                        ? "died on another assert"
+                        : "died without an assert");
+        fflush(NULL);
+        abort();
+    }
+
+    if (case_->death_run) {
+        case_->death_run(cfg);
+    }
+}
+
+
 // scenarios to run tests under powerloss
 
 static void run_powerloss_none(
@@ -1634,7 +1904,11 @@ static void run_powerloss_none(
     perm_printid(suite, case_, NULL, 0);
     printf("\n");
 
-    case_->run(CFG);
+    if (case_->death) {
+        test_death_case(case_, CFG);
+    } else {
+        case_->run(CFG);
+    }
 
     printf("finished ");
     perm_printid(suite, case_, NULL, 0);
