@@ -6334,6 +6334,9 @@ code = '''
         // this should eventually fail
         assert(i <= BLOCK_COUNT);
 
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+
         int err;
         if (OP == 0) {
             err = lfs3_setattr(&lfs3, "a", 'x', &i, sizeof(i));
@@ -6342,6 +6345,10 @@ code = '''
         }
         assert(!err || err == LFS3_ERR_NOSPC);
         if (err == LFS3_ERR_NOSPC) {
+            // in-RAM state should still match disk
+            uint32_t cksum_;
+            lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+            assert(cksum_ == cksum);
             break;
         }
         i += 1;
