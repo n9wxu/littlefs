@@ -41,9 +41,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -181,9 +181,9 @@ def collect_dwarf_files(obj_path, *,
         objdump_path=OBJDUMP_PATH,
         **args):
     line_pattern = re.compile(
-            '^\s*(?P<no>[0-9]+)'
-                '(?:\s+(?P<dir>[0-9]+))?'
-                '.*\s+(?P<path>[^\s]+)\s*$')
+            '^\\s*(?P<no>[0-9]+)'
+                '(?:\\s+(?P<dir>[0-9]+))?'
+                '.*\\s+(?P<path>[^\\s]+)\\s*$')
 
     # find source paths
     dirs = co.OrderedDict()
@@ -332,12 +332,12 @@ def collect_dwarf_info(obj_path, tags=None, *,
         objdump_path=OBJDUMP_PATH,
         **args):
     info_pattern = re.compile(
-            '^\s*<(?P<level>[^>]*)>'
-                    '\s*<(?P<off>[^>]*)>'
-                    '.*\(\s*(?P<tag>[^)]*?)\s*\)\s*$'
-                '|' '^\s*<(?P<off_>[^>]*)>'
-                    '\s*(?P<at>[^>:]*?)'
-                    '\s*:(?P<v>.*)\s*$')
+            '^\\s*<(?P<level>[^>]*)>'
+                    '\\s*<(?P<off>[^>]*)>'
+                    '.*\\(\\s*(?P<tag>[^)]*?)\\s*\\)\\s*$'
+                '|' '^\\s*<(?P<off_>[^>]*)>'
+                    '\\s*(?P<at>[^>:]*?)'
+                    '\\s*:(?P<v>.*)\\s*$')
 
     # collect dwarf entries
     info = co.OrderedDict()
@@ -403,7 +403,7 @@ def collect_structs(obj_paths, *,
                 break
         else:
             # guess from obj path
-            file = re.sub('(\.o)?$', '.c', obj_path, 1)
+            file = re.sub('(\\.o)?$', '.c', obj_path, 1)
 
         # simplify path
         if os.path.commonpath([

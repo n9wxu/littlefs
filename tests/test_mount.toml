@@ -248,13 +248,14 @@ code = '''
 
     // fail every read during mount, one at a time
     for (uint32_t i = 1;; i++) {
-        lfs3_emubd_setbadread(CFG, i) => 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, i, 0) => 0;
         int err = lfs3_mount(&lfs3,
                 (RDONLY) ? LFS3_M_RDONLY : LFS3_M_RDWR,
                 CFG);
         // our read error should never be swallowed
-        assert(err == LFS3_ERR_IO || (!err && lfs3_emubd_badread(CFG) > 0));
-        lfs3_emubd_setbadread(CFG, 0) => 0;
+        assert(err == LFS3_ERR_IO || (!err
+                && lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_READ) > 0));
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, 0, 0) => 0;
         if (!err) {
             break;
         }

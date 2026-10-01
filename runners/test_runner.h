@@ -57,8 +57,10 @@ void test_trace(const char *fmt, ...);
 #define LFS3_KIWIBD_TRACE(...)
 #endif
 
-// override lfs3_malloc so tests can inject allocation failures
+// override lfs3_malloc/lfs3_free so tests can count allocations and
+// inject allocation failures
 #define LFS3_MALLOC test_malloc
+#define LFS3_FREE test_free
 
 
 // note these are indirectly included in any generated files
@@ -122,6 +124,10 @@ struct test_case {
 
     bool (*if_)(void);
     void (*run)(const struct lfs3_cfg *cfg);
+
+    // death tests
+    const char *death;
+    void (*death_run)(const struct lfs3_cfg *cfg);
 };
 
 struct test_suite {
@@ -144,10 +150,21 @@ extern const size_t test_suite_count;
 // current test permutation, this is useful for both tests and debugging
 extern volatile test_powercycles_t TEST_PLS;
 
-// lfs3_malloc goes through test_malloc, setting test_malloc_fail=n fails
-// the nth allocation from now, 0 never fails
+// lfs3_malloc and lfs3_free go through test_malloc and test_free, which
+// see littlefs's allocations but not the runner's or emubd's
+//
+// - test_malloc_fail=n fails the nth lfs3_malloc from now, only that
+//   call fails, 0 never fails
+// - test_malloc_count counts lfs3_malloc calls, including failed calls
+// - test_malloc_live counts allocations not yet lfs3_free'd
+//
+// All three reset for every permutation, and lfs3_free of more than was
+// allocated fails the test.
 void *test_malloc(size_t size);
+void test_free(void *p);
 extern size_t test_malloc_fail;
+extern size_t test_malloc_count;
+extern size_t test_malloc_live;
 
 // deterministic prng for pseudo-randomness in tests
 uint32_t test_prng(uint32_t *state);
@@ -167,6 +184,41 @@ void test_trace_resume(void);
 
 #define TEST_TRACE_PAUSE() test_trace_pause()
 #define TEST_TRACE_RESUME() test_trace_resume()
+
+// death tests
+//
+// A case with death = 'text' runs each permutation in a forked child, and
+// passes only if the child dies on an assert whose report
+// (path:line:assert: message) or source line contains text, '' matches
+// any assert. The case's optional death_code then runs in the parent,
+// with TEST_DEATH holding the child's emubd counters when it died, so
+// lfs3_emubd_simreset in the child marks where counting starts. Death
+// cases can't be reentrant.
+//
+// test_death runs fn(data) the same way from inside a test, reporting
+// cfg's emubd counters in TEST_DEATH. The child's writes, including to a
+// -d disk file, don't reach the parent's device.
+//
+typedef struct test_death {
+    uint64_t reads;
+    uint64_t progs;
+    uint64_t erases;
+    uint64_t readed;
+    uint64_t progged;
+    uint64_t erased;
+} test_death_t;
+
+extern test_death_t TEST_DEATH;
+
+enum test_death_result {
+    TEST_DEATH_DIED     = 0, // died on a matching assert
+    TEST_DEATH_SURVIVED = 1, // returned
+    TEST_DEATH_MISMATCH = 2, // died on an assert that doesn't match
+    TEST_DEATH_KILLED   = 3, // died without an assert
+};
+
+int test_death(const struct lfs3_cfg *cfg, const char *death,
+        void (*fn)(void *data), void *data);
 
 
 // declare implicit defines as global intmax_ts

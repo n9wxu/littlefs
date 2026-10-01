@@ -70,9 +70,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -178,9 +178,9 @@ class CsvFloat(co.namedtuple('CsvFloat', 'a')):
                 a = float(a)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -572,7 +572,7 @@ class CsvGStddev(CsvFold):
 #
 # basically just because memoryview doesn't support strs
 class Parser:
-    def __init__(self, data, ws='\s*', ws_flags=0):
+    def __init__(self, data, ws='\\s*', ws_flags=0):
         self.data = data
         self.i = 0
         self.m = None
@@ -1516,15 +1516,15 @@ class CsvExpr:
         # parse the expression into a tree
         def p_expr(p, prec=0):
             # parens
-            if p.match('\('):
+            if p.match('\\('):
                 p.chomp()
                 a = p_expr(p)
-                if not p.match('\)'):
+                if not p.match('\\)'):
                     raise CsvExpr.Error("mismatched parens? %s" % p)
                 p.chomp()
 
             # floats
-            elif p.match('[+-]?(?:[_0-9]*\.(?:[_0-9]|[eE][+-]?)*|nan)'):
+            elif p.match('[+-]?(?:[_0-9]*\\.(?:[_0-9]|[eE][+-]?)*|nan)'):
                 a = CsvExpr.FloatLit(CsvFloat(p.chomp()))
 
             # ints
@@ -1535,14 +1535,14 @@ class CsvExpr:
             elif p.match('[_a-zA-Z][_a-zA-Z0-9]*'):
                 a = p.chomp()
 
-                if p.match('\('):
+                if p.match('\\('):
                     p.chomp()
                     if a not in CsvExpr.funcs:
                         raise CsvExpr.Error("unknown function? %s" % a)
                     by = None
                     args = []
                     while True:
-                        if not p.match('\)'):
+                        if not p.match('\\)'):
                             b = p_expr(p)
                             args.append(b)
                             if p.match(','):
@@ -1552,7 +1552,7 @@ class CsvExpr:
                                 by, args = args, []
                                 p.chomp()
                                 continue
-                        if not p.match('\)'):
+                        if not p.match('\\)'):
                             raise CsvExpr.Error("mismatched parens? %s" % p)
                         p.chomp()
                         a = CsvExpr.funcs[a](*args, by=by)
@@ -1717,11 +1717,11 @@ def punescape(s, attrs=None, start=None, end=None, submatch=None):
                 '|' 'x..'
                 '|' 'u....'
                 '|' 'U........'
-                '|' '\((?P<field>[^)]*)\)'
-                    '(?P<format>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])'
-                '|' '\{'
-                '|' '\}'
-                    '(?P<subformat>[<^>+\- #0-9\.]*[siIdboxXfFeEgG])' ')')
+                '|' '\\((?P<field>[^)]*)\\)'
+                    '(?P<format>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])'
+                '|' '\\{'
+                '|' '\\}'
+                    '(?P<subformat>[<^>+\\- #0-9\\.]*[siIdboxXfFeEgG])' ')')
 
     def format(f, v):
         if f[-1] in 'dboxX':
@@ -2868,7 +2868,7 @@ def list_eval(fields_, results, Result, **args):
         elif k in Result._mods:
             # bit of a hack, but we don't usually know mod deps
             # until eval time
-            deps_.update(re.findall('(?<!%)%\(([^)]*)\)', Result._mods[k]))
+            deps_.update(re.findall('(?<!%)%\\(([^)]*)\\)', Result._mods[k]))
         else:
             # by default, dep is the field itself
             deps_ = {k}
