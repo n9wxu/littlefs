@@ -273,6 +273,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
     'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
 code = '''
@@ -374,6 +375,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
     'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
 code = '''
@@ -603,4 +605,68 @@ code = '''
     for (lfs3_off_t j = 0; j < SIZE; j++) {
         assert(buffer[j] == 'b');
     }
+'''
+
+# a torn tail leaves the first prog_size bytes erased and progs a run of
+# the bytes after them, with one bit flipped
+[cases.test_bd_torntail]
+defines.PROG = ['PROG_SIZE', '2*PROG_SIZE', '16*PROG_SIZE']
+defines.BD_SEED = 'range(4)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_TORNTAIL,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .seed = BD_SEED,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t wbuf[PROG];
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        wbuf[j] = 'a' + j%26;
+    }
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, wbuf, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    uint8_t rbuf[PROG];
+    cfg.read(&cfg, 0, 0, rbuf, PROG) => 0;
+    // the head is erased
+    for (lfs3_off_t j = 0; j < PROG_SIZE; j++) {
+        assert(rbuf[j] == ERASE_VALUE);
+    }
+    if (PROG == PROG_SIZE) {
+        lfs3_emubd_blockprogs(&cfg, 0) => 0;
+    } else {
+        // then a run of progged bytes with one flipped bit, then erased
+        // bytes
+        lfs3_off_t j = PROG_SIZE;
+        lfs3_size_t flipped = 0;
+        while (j < PROG && rbuf[j] != ERASE_VALUE) {
+            flipped += lfs3_popc(rbuf[j] ^ wbuf[j]);
+            j += 1;
+        }
+        assert(j > PROG_SIZE);
+        assert(flipped == 1);
+        for (; j < PROG; j++) {
+            assert(rbuf[j] == ERASE_VALUE);
+        }
+        lfs3_emubd_blockprogs(&cfg, 0) => 1;
+    }
+
+    // the head was not programmed, so it can be programmed
+    cfg.prog(&cfg, 0, 0, wbuf, PROG_SIZE) => 0;
+
+    lfs3_emubd_destroy(&cfg) => 0;
 '''

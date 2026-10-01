@@ -48,7 +48,13 @@ typedef enum lfs3_emubd_powerloss_behavior {
     LFS3_EMUBD_POWERLOSS_MOSTBITS    = 2, // All-but-one bit is progged
     LFS3_EMUBD_POWERLOSS_OOO         = 3, // Blocks are written out-of-order
     LFS3_EMUBD_POWERLOSS_METASTABLE  = 4, // Reads may flip a bit
+    LFS3_EMUBD_POWERLOSS_TORNTAIL    = 5, // Tail is progged, head is not
 } lfs3_emubd_powerloss_behavior_t;
+
+// LFS3_EMUBD_POWERLOSS_TORNTAIL leaves the first prog_size bytes of the
+// interrupted prog erased, progs a random-length run of the bytes after
+// them, and flips one bit in that run. A prog of only prog_size bytes is
+// lost whole, and erases are atomic.
 
 // Operations that lfs3_emubd_mkioerror can make fail
 typedef enum lfs3_emubd_op {

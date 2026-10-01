@@ -734,6 +734,54 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                         return err;
                     }
                 }
+
+            // emulating a torn tail? leave the first prog_size bytes
+            // erased, prog some of the bytes after them, and flip a bit
+            // in those
+            } else if (bd->cfg->powerloss_behavior
+                        == LFS3_EMUBD_POWERLOSS_TORNTAIL
+                    && size > cfg->prog_size) {
+                // mutate the block
+                lfs3_emubd_block_t *b = lfs3_emubd_mutblock(cfg,
+                        bd->blocks[block]);
+                if (!b) {
+                    LFS3_EMUBD_TRACE("lfs3_emubd_prog -> %d", LFS3_ERR_NOMEM);
+                    return LFS3_ERR_NOMEM;
+                }
+                bd->blocks[block] = b;
+
+                // prog part of the tail
+                lfs3_off_t toff = off + cfg->prog_size;
+                lfs3_size_t tsize = 1 + lfs3_emubd_prng_(&bd->prng)
+                        % (size - cfg->prog_size);
+                lfs3_emubd_memprog(cfg, &b->data[toff],
+                        (const uint8_t*)buffer + cfg->prog_size,
+                        tsize);
+
+                // flip bit
+                lfs3_size_t bit = lfs3_emubd_prng_(&bd->prng)
+                        % (tsize*8);
+                b->data[toff + (bit/8)] ^= 1 << (bit%8);
+                lfs3_emubd_markprog(cfg, b, toff, tsize, &written);
+
+                // mirror to disk file?
+                if (bd->disk) {
+                    off_t res1 = lseek(bd->disk->fd,
+                            (off_t)block*cfg->block_size + (off_t)off,
+                            SEEK_SET);
+                    if (res1 < 0) {
+                        int err = -errno;
+                        LFS3_EMUBD_TRACE("lfs3_emubd_prog -> %d", err);
+                        return err;
+                    }
+
+                    ssize_t res2 = write(bd->disk->fd, &b->data[off], size);
+                    if (res2 < 0) {
+                        int err = -errno;
+                        LFS3_EMUBD_TRACE("lfs3_emubd_prog -> %d", err);
+                        return err;
+                    }
+                }
             }
 
             // powerloss!
