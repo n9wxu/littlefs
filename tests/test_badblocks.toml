@@ -7656,3 +7656,125 @@ done:;
     free(wbuf);
     free(rbuf);
 '''
+
+# test pre-erasing blocks whose erases silently do nothing
+#
+# pre-erasing can't tell these apart from good blocks, so we only find
+# out when we write to them, with prog checking we should relocate,
+# without we should at least never return bad data without an error
+[cases.test_badblocks_preerase_erasenoop]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_ERASENOOP'
+defines.CKPROGS = [false, true]
+defines.GC_PREERASE_COUNT = -1
+defines.N = 32
+defines.SIZE = 'BLOCK_SIZE'
+defines.SEED = 42
+ifdef = ['LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE', 'LFS3_CKPROGS']
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            // note preerasing needs revperturb
+            | LFS3_M_REVPERTURB
+            | ((CKPROGS) ? LFS3_M_CKPROGS : 0);
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, flags | LFS3_F_GBMAP, CFG) => 0;
+
+    // mark every other free block in the gbmap's known window as bad
+    for (lfs3_block_t i = 3; i < BLOCK_COUNT; i += 2) {
+        lfs3_emubd_mkbad(CFG, i) => 0;
+    }
+
+    // pre-erase at mount
+    lfs3_mount(&lfs3, flags | LFS3_M_PREERASE, CFG) => 0;
+    // we should have pre-erased the bad blocks too
+    assert(lfs3.gbmap.preeraser.count > BLOCK_COUNT/4);
+
+    // write until we use the pre-erased blocks, without prog checking
+    // any write may find the bad data
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE];
+    bool synced[N];
+    bool mounted = true;
+    lfs3_size_t detected = 0;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        uint32_t prng = SEED + i;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        synced[i] = false;
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+            assert(d == SIZE || (!CKPROGS && d == LFS3_ERR_CORRUPT));
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+            synced[i] = (d == SIZE && !err);
+        }
+        detected += !synced[i];
+
+        // keep pre-erasing
+        #ifdef LFS3_GC
+        err = lfs3_fs_gc(&lfs3);
+        assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+        #endif
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            int err = lfs3_mount(&lfs3, flags, CFG);
+            assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+            if (err) {
+                detected += 1;
+                mounted = false;
+                break;
+            }
+        }
+
+        // with prog checking every file should be intact, without every
+        // read should be right or error
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t prng = SEED + i;
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            lfs3_file_t file;
+            int err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+            assert(!err
+                    || (!CKPROGS && err == LFS3_ERR_CORRUPT)
+                    || (!synced[i] && err == LFS3_ERR_NOENT));
+            if (err) {
+                detected += (err == LFS3_ERR_CORRUPT);
+                continue;
+            }
+            err = lfs3_file_ck(&lfs3, &file,
+                    LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+            assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+            if (!err) {
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+                assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            } else {
+                detected += 1;
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        // with prog checking everything should pass a check
+        int err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+        assert(!err || (!CKPROGS && err == LFS3_ERR_CORRUPT));
+    }
+
+    // without prog checking we should have found something
+    printf("detected: %d\n", detected);
+    assert(CKPROGS || detected > 0);
+    if (mounted) {
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
