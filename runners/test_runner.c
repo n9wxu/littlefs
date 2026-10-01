@@ -594,35 +594,17 @@ void test_trace_resume(void) {
 }
 
 
-// test prng
-uint32_t test_prng(uint32_t *state) {
-    // A simple xorshift32 generator, easily reproducible. Keep in mind
-    // determinism is much more important than actual randomness here.
-    uint32_t x = *state;
-    // must be non-zero, use uintmax here so that seed=0 is different
-    // from seed=1 and seed=range(0,n) makes a bit more sense
-    if (x == 0) {
-        x = -1;
-    }
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    *state = x;
-    return x;
-}
-
-// allocator hooks
-static size_t test_malloc_count = 0;
-static size_t test_malloc_live = 0;
-static size_t test_malloc_fail = 0;
+// allocation counting and failure injection
+size_t test_malloc_fail = 0;
+size_t test_malloc_count = 0;
+size_t test_malloc_live = 0;
 
 void *test_malloc(size_t size) {
     test_malloc_count += 1;
 
-    // fail this allocation?
-    if (test_malloc_fail > 0) {
+    if (test_malloc_fail) {
         test_malloc_fail -= 1;
-        if (test_malloc_fail == 0) {
+        if (!test_malloc_fail) {
             return NULL;
         }
     }
@@ -643,22 +625,28 @@ void test_free(void *p) {
     free(p);
 }
 
-size_t test_mallocs(void) {
-    return test_malloc_count;
-}
-
-size_t test_mallocs_live(void) {
-    return test_malloc_live;
-}
-
-void test_failmalloc(size_t n) {
-    test_malloc_fail = n;
-}
-
 static void test_malloc_reset(void) {
+    test_malloc_fail = 0;
     test_malloc_count = 0;
     test_malloc_live = 0;
-    test_malloc_fail = 0;
+}
+
+
+// test prng
+uint32_t test_prng(uint32_t *state) {
+    // A simple xorshift32 generator, easily reproducible. Keep in mind
+    // determinism is much more important than actual randomness here.
+    uint32_t x = *state;
+    // must be non-zero, use uintmax here so that seed=0 is different
+    // from seed=1 and seed=range(0,n) makes a bit more sense
+    if (x == 0) {
+        x = -1;
+    }
+    x ^= x << 13;
+    x ^= x >> 17;
+    x ^= x << 5;
+    *state = x;
+    return x;
 }
 
 // test factorial

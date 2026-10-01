@@ -215,6 +215,71 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# seeking to a saved tell, including the dot entries, should read every
+# remaining entry, no matter where the dir was when we seeked
+[cases.test_dread_seek_tell]
+defines.N = [0, 1, 2, 4, 8, 16, 32, 64]
+defines.PARENT = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    if (PARENT) {
+        lfs3_mkdir(&lfs3, "pricklypear") => 0;
+    }
+
+    // make this many directories
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "%s/dir%03x", ((PARENT) ? "pricklypear" : ""), i);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, ((PARENT) ? "pricklypear" : "/")) => 0;
+    struct lfs3_info info;
+
+    // j = entry whose tell we save, k = entry we seek back from
+    for (lfs3_size_t j = 0; j < 2+N+1; j++) {
+        lfs3_dir_rewind(&lfs3, &dir) => 0;
+        for (lfs3_size_t i = 0; i < j; i++) {
+            lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        }
+        lfs3_soff_t off = lfs3_dir_tell(&lfs3, &dir);
+        assert(off >= 0);
+
+        for (lfs3_size_t k = 0; k < 2+N+1; k++) {
+            lfs3_dir_rewind(&lfs3, &dir) => 0;
+            for (lfs3_size_t i = 0; i < k; i++) {
+                lfs3_dir_read(&lfs3, &dir, &info) => 0;
+            }
+
+            lfs3_dir_seek(&lfs3, &dir, off) => 0;
+            lfs3_dir_tell(&lfs3, &dir) => off;
+            for (lfs3_size_t i = j; i < 2+N; i++) {
+                char name[256];
+                if (i == 0) {
+                    strcpy(name, ".");
+                } else if (i == 1) {
+                    strcpy(name, "..");
+                } else {
+                    sprintf(name, "dir%03x", i-2);
+                }
+                lfs3_dir_read(&lfs3, &dir, &info) => 0;
+                assert(strcmp(info.name, name) == 0);
+                assert(info.type == LFS3_TYPE_DIR);
+                assert(info.size == 0);
+            }
+            lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        }
+    }
+
+    lfs3_dir_close(&lfs3, &dir) => 0;
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test we don't ever get extra entries back after we reach
 # the end of a directory
 [cases.test_dread_read_idempotent]

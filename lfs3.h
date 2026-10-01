@@ -675,6 +675,11 @@ struct lfs3_cfg {
     // larger names except the size of the info struct which is controlled by
     // the LFS3_NAME_MAX define. Defaults to LFS3_NAME_MAX when zero. Stored in
     // superblock and must be respected by other littlefs drivers.
+    //
+    // Names must also fit in a metadata commit, which limits them to roughly
+    // block_size/2 - 124 bytes (132 bytes with 512-byte blocks, 1 KiB blocks
+    // and larger are not limited below LFS3_NAME_MAX). lfs3_fs_stat reports
+    // the effective limit, longer names error with LFS3_ERR_NAMETOOLONG.
     #ifndef LFS3_RDONLY
     lfs3_size_t name_limit;
     #endif
@@ -825,6 +830,9 @@ struct lfs3_file_cfg {
     // these attributes will be kept up to date with the attributes on-disk.
     // If writeable, these attributes will be written to disk atomically on
     // every file sync or close.
+    //
+    // Like lfs3_setattr, attributes must fit in the file's metadata block,
+    // sync and close return LFS3_ERR_NOSPC if they don't.
     struct lfs3_attr *attrs;
 
     // Number of custom attributes in the list
@@ -850,8 +858,6 @@ enum lfs3_tag {
     LFS3_TAG_GEOMETRY       = 0x0138,
     LFS3_TAG_NAMELIMIT      = 0x0139,
     LFS3_TAG_FILELIMIT      = 0x013a,
-    // in-device only, to help find unknown config tags
-    LFS3_tag_UNKNOWNCONFIG  = 0x013b,
 
     // global-state tags
     LFS3_TAG_GDELTA         = 0x0200,
@@ -1484,8 +1490,10 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 //
 // If the destination exists, it must match the source in type.
 // If the destination is a directory, the directory must be empty.
+// A directory can not be moved into itself or one of its children.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if the destination is inside the source
+// directory, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path);
 #endif
@@ -1511,7 +1519,11 @@ lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 
 // Set a custom attributes
 //
-// Returns a negative error code on failure.
+// Custom attributes are stored inline in metadata, so an attribute must fit
+// in a metadata block together with the file's name and other attributes.
+//
+// Returns LFS3_ERR_NOSPC if the attribute does not fit, or a negative error
+// code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         const void *buffer, lfs3_size_t size);
@@ -1860,7 +1872,9 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags);
 //
 // Note: This is irreversible.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if block_count is less than the current block
+// count (shrinking is not supported) or more than the configured
+// block_count, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count);
 #endif

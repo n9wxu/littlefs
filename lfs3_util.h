@@ -91,6 +91,14 @@
 #define LFS3_BLEAFCACHE
 #endif
 
+// LFS3_RDONLY leaves out write-only features
+#ifdef LFS3_RDONLY
+#undef LFS3_REVPERTURB
+#undef LFS3_REVNOISE
+#undef LFS3_CKPROGS
+#undef LFS3_PREERASE
+#endif
+
 // LFS3_NO_LOG disables all logging macros
 #ifdef LFS3_NO_LOG
 #ifndef LFS3_NO_DEBUG
@@ -712,7 +720,7 @@ static inline char *lfs3_strcchr(const char *a, int c) {
     return NULL;
 }
 
-// Find length of a that does not contain any char in cs
+// Find length of a that only contains chars in cs
 #ifndef LFS3_NO_STRINGH
 #define lfs3_strspn strspn
 #else
@@ -720,11 +728,13 @@ static inline size_t lfs3_strspn(const char *a, const char *cs) {
     const char *a_ = a;
     while (*a_) {
         const char *cs_ = cs;
-        while (*cs_) {
-            if (*a_ != *cs_) {
-                return a_ - a;
-            }
+        while (*cs_ && *cs_ != *a_) {
             cs_++;
+        }
+
+        // not in cs?
+        if (!*cs_) {
+            return a_ - a;
         }
 
         a_++;
@@ -734,7 +744,7 @@ static inline size_t lfs3_strspn(const char *a, const char *cs) {
 }
 #endif
 
-// Find length of a that only contains chars in cs
+// Find length of a that does not contain any char in cs
 #ifndef LFS3_NO_STRINGH
 #define lfs3_strcspn strcspn
 #else
@@ -780,12 +790,11 @@ static inline uint32_t lfs3_crc32c_cube(uint32_t a) {
 
 // Allocate memory, only used if buffers are not provided to littlefs
 //
-// Define LFS3_MALLOC to use another allocator.
-#ifndef LFS3_NO_MALLOC
-#ifndef LFS3_MALLOC
-#define LFS3_MALLOC(size) malloc(size)
-#endif
-#define lfs3_malloc(size) LFS3_MALLOC(size)
+// LFS3_MALLOC can name a replacement for malloc
+#if defined(LFS3_MALLOC)
+#define lfs3_malloc LFS3_MALLOC
+#elif !defined(LFS3_NO_MALLOC)
+#define lfs3_malloc malloc
 #else
 static inline void *lfs3_malloc(size_t size) {
     (void)size;
@@ -795,12 +804,11 @@ static inline void *lfs3_malloc(size_t size) {
 
 // Deallocate memory, only used if buffers are not provided to littlefs
 //
-// Define LFS3_FREE to use another allocator.
-#ifndef LFS3_NO_MALLOC
-#ifndef LFS3_FREE
-#define LFS3_FREE(p) free(p)
-#endif
-#define lfs3_free(p) LFS3_FREE(p)
+// LFS3_FREE can name a replacement for free
+#if defined(LFS3_FREE)
+#define lfs3_free LFS3_FREE
+#elif !defined(LFS3_NO_MALLOC)
+#define lfs3_free free
 #else
 static inline void lfs3_free(void *p) {
     (void)p;

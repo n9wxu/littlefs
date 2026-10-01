@@ -57,16 +57,10 @@ void test_trace(const char *fmt, ...);
 #define LFS3_KIWIBD_TRACE(...)
 #endif
 
-// route lfs3_malloc/lfs3_free through the runner's allocator hooks
-#include <stddef.h>
-void *test_malloc(size_t size);
-void test_free(void *p);
-#ifndef LFS3_MALLOC
-#define LFS3_MALLOC(size) test_malloc(size)
-#endif
-#ifndef LFS3_FREE
-#define LFS3_FREE(p) test_free(p)
-#endif
+// override lfs3_malloc/lfs3_free so tests can count allocations and
+// inject allocation failures
+#define LFS3_MALLOC test_malloc
+#define LFS3_FREE test_free
 
 
 // note these are indirectly included in any generated files
@@ -156,6 +150,22 @@ extern const size_t test_suite_count;
 // current test permutation, this is useful for both tests and debugging
 extern volatile test_powercycles_t TEST_PLS;
 
+// lfs3_malloc and lfs3_free go through test_malloc and test_free, which
+// see littlefs's allocations but not the runner's or emubd's
+//
+// - test_malloc_fail=n fails the nth lfs3_malloc from now, only that
+//   call fails, 0 never fails
+// - test_malloc_count counts lfs3_malloc calls, including failed calls
+// - test_malloc_live counts allocations not yet lfs3_free'd
+//
+// All three reset for every permutation, and lfs3_free of more than was
+// allocated fails the test.
+void *test_malloc(size_t size);
+void test_free(void *p);
+extern size_t test_malloc_fail;
+extern size_t test_malloc_count;
+extern size_t test_malloc_live;
+
 // deterministic prng for pseudo-randomness in tests
 uint32_t test_prng(uint32_t *state);
 
@@ -174,23 +184,6 @@ void test_trace_resume(void);
 
 #define TEST_TRACE_PAUSE() test_trace_pause()
 #define TEST_TRACE_RESUME() test_trace_resume()
-
-// allocator hooks, these see every lfs3_malloc and lfs3_free, but not
-// the runner's or emubd's own allocations, and reset for every
-// permutation
-//
-// - TEST_MALLOCS() - number of lfs3_malloc calls, including failed calls
-// - TEST_MALLOCS_LIVE() - number of allocations not yet lfs3_free'd
-// - TEST_FAILMALLOC(n) - make the nth lfs3_malloc from now return NULL,
-//   only that call fails, 0 disables
-//
-size_t test_mallocs(void);
-size_t test_mallocs_live(void);
-void test_failmalloc(size_t n);
-
-#define TEST_MALLOCS() test_mallocs()
-#define TEST_MALLOCS_LIVE() test_mallocs_live()
-#define TEST_FAILMALLOC(n) test_failmalloc(n)
 
 // death tests
 //

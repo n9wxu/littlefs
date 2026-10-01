@@ -703,47 +703,46 @@ code = '''
 # them and can fail the nth lfs3_malloc
 [cases.test_bd_malloc]
 code = '''
-    TEST_MALLOCS() => 0;
-    TEST_MALLOCS_LIVE() => 0;
+    assert(test_malloc_count == 0);
+    assert(test_malloc_live == 0);
     void *p = lfs3_malloc(16);
     assert(p);
-    TEST_MALLOCS() => 1;
-    TEST_MALLOCS_LIVE() => 1;
+    assert(test_malloc_count == 1);
+    assert(test_malloc_live == 1);
     lfs3_free(p);
     lfs3_free(NULL);
-    TEST_MALLOCS() => 1;
-    TEST_MALLOCS_LIVE() => 0;
+    assert(test_malloc_count == 1);
+    assert(test_malloc_live == 0);
 
     // only the nth call fails
-    TEST_FAILMALLOC(2);
+    test_malloc_fail = 2;
     void *a = lfs3_malloc(16);
     void *b = lfs3_malloc(16);
     void *c = lfs3_malloc(16);
     assert(a && !b && c);
-    TEST_MALLOCS() => 4;
-    TEST_MALLOCS_LIVE() => 2;
+    assert(test_malloc_count == 4);
+    assert(test_malloc_live == 2);
     lfs3_free(a);
     lfs3_free(c);
-    TEST_MALLOCS_LIVE() => 0;
+    assert(test_malloc_live == 0);
 
     // littlefs's own allocations go through the hooks
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
-    size_t mallocs = TEST_MALLOCS();
+    size_t mallocs = test_malloc_count;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
-    size_t n = TEST_MALLOCS() - mallocs;
+    size_t n = test_malloc_count - mallocs;
     assert(n > 0);
-    TEST_MALLOCS_LIVE() => n;
+    assert(test_malloc_live == n);
     lfs3_unmount(&lfs3) => 0;
-    TEST_MALLOCS_LIVE() => 0;
+    assert(test_malloc_live == 0);
 
-    // so failing any of them fails the mount, zero the lfs3_t since a
-    // failed init frees buffers it never allocated
+    // so failing any of them fails the mount, without leaking
     for (size_t i = 1; i <= n; i++) {
-        memset(&lfs3, 0, sizeof(lfs3));
-        TEST_FAILMALLOC(i);
+        memset(&lfs3, 0xab, sizeof(lfs3));
+        test_malloc_fail = i;
         lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
-        TEST_MALLOCS_LIVE() => 0;
+        assert(test_malloc_live == 0);
     }
 '''
 
