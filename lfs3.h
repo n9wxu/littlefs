@@ -1541,6 +1541,12 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 // Readonly and desynchronized files do not touch disk and will always
 // return 0.
 //
+// Note an error in an earlier write, flush, sync, truncate, fruncate, or
+// read that needed to flush, desynchronizes the file, so close does not
+// write out, and cannot report, any data lost to that error. Check the
+// result of lfs3_file_sync before closing to know if data reached
+// storage.
+//
 // Returns a negative error code on failure.
 int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 
