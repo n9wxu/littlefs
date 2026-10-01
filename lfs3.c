@@ -15246,6 +15246,14 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     // copy block_count so we can mutate it
     lfs3->block_count = lfs3->cfg->block_count;
 
+    // zero our buffers first, lfs3_deinit frees whatever was allocated if
+    // an allocation fails
+    lfs3->rcache.buffer = NULL;
+    #ifndef LFS3_RDONLY
+    lfs3->pcache.buffer = NULL;
+    lfs3->lookahead.buffer = NULL;
+    #endif
+
     // setup read cache
     lfs3->rcache.block = 0;
     lfs3->rcache.off = 0;

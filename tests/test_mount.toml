@@ -116,6 +116,31 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that failing to allocate our buffers errors cleanly
+[cases.test_mount_nomem]
+# which allocation fails: rcache, pcache, or lookahead
+defines.FAIL = [1, 2, 3]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+
+    // init should not depend on what's in lfs3_t
+    memset(&lfs3, 0xab, sizeof(lfs3));
+    test_malloc_fail = FAIL;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+
+    memset(&lfs3, 0xab, sizeof(lfs3));
+    test_malloc_fail = FAIL;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+
+    // the filesystem should still be fine
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "badger") => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that various format flags don't assert or anything
 # 
 # these end up passed to mount internally
