@@ -11434,6 +11434,10 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
             continue;
         }
 
+        // lfs3_gbmap_set may allocate, so checkpoint the lookahead
+        // buffer
+        lfs3_alloc_ckpoint_(lfs3);
+
         // commit into gbmap
         //
         // note this relies on lfs3_gbmap_commit being atomic
