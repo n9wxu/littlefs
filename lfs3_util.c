@@ -207,7 +207,7 @@ uint32_t lfs3_crc32c(uint32_t crc, const void *buffer, size_t size) {
         // align to 32-bits
         if ((uintptr_t)&buffer_[i] % sizeof(uint32_t) == 0
                 && i+sizeof(uint32_t) < size) {
-            crc = crc ^ lfs3_fromle32_(&buffer_[i]);
+            crc = crc ^ lfs3_fromle32(&buffer_[i]);
             crc = lfs3_pmul(
                         lfs3_pmul(crc, 0xdea713f1),
                         0x82f63b78)
