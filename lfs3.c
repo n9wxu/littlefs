@@ -27,6 +27,13 @@ typedef int lfs3_scmp_t;
 // this is just a hint that the function returns a bool + err union
 typedef int lfs3_sbool_t;
 
+// internally used error codes, these must never leave lfs3.c
+enum lfs3_ierr {
+    // a copy could not read its source, unlike LFS3_ERR_CORRUPT this
+    // says nothing about the destination, so relocating can't help
+    LFS3_ERR_SRCCORRUPT = -0x1054,
+};
+
 
 /// Simple bd wrappers (asserts go here) ///
 
@@ -680,7 +687,7 @@ static int lfs3_bd_cpy(lfs3_t *lfs3,
         err = lfs3_bd_read(lfs3, src_block, src_off_, hint_,
                 buffer__, size__);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
         }
 
         // optional checksum
@@ -971,7 +978,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
             &hint_,
             &cksum__);
     if (err) {
-        return err;
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
     }
 
     // copy the data while simultaneously updating our checksum
@@ -995,7 +1002,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
         err = lfs3_bd_read(lfs3, src_block, src_off_, hint__,
                 buffer__, size__);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
         }
 
         // validating checksum
@@ -1017,7 +1024,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
             src_cksize, src_cksum,
             cksum__);
     if (err) {
-        return err;
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
     }
 
     return 0;
@@ -4732,7 +4739,7 @@ static int lfs3_rbyd_appendcompactrbyd(lfs3_t *lfs3, lfs3_rbyd_t *rbyd_,
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
-            return tag;
+            return (tag == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : tag;
         }
         // end of range? note the use of rid+1 and unsigned comparison here to
         // treat end_rid=-1 as "unbounded" in such a way that rid=-1 is still
@@ -6207,7 +6214,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE) {
         LFS3_ASSERT(err != LFS3_ERR_EXIST);
-        return err;
+        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
     }
 
     // needs a new root?
@@ -6215,7 +6222,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
         err = lfs3_btree_commitroot_(lfs3, &btree_, btree,
                 &bcommit);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
         }
     }
 
@@ -6935,7 +6942,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_EXIST) {
-        return err;
+        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
     }
 
     // when btree is shrubbed or split, lfs3_btree_commit_ stops at the
@@ -6962,7 +6969,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             err = lfs3_btree_commitroot_(lfs3, &bshrub->b_, &bshrub->b,
                     &bcommit);
             if (err) {
-                return err;
+                return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
             }
         }
     }
@@ -8279,7 +8286,9 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
                         if (tag == LFS3_ERR_NOENT) {
                             break;
                         }
-                        return tag;
+                        return (tag == LFS3_ERR_CORRUPT)
+                                ? LFS3_ERR_SRCCORRUPT
+                                : tag;
                     }
 
                     // found an inlined shrub? we need to compact the shrub
@@ -8289,7 +8298,9 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
                         int err = lfs3_data_readshrub(lfs3, mdir__, &data,
                                 &shrub);
                         if (err) {
-                            return err;
+                            return (err == LFS3_ERR_CORRUPT)
+                                    ? LFS3_ERR_SRCCORRUPT
+                                    : err;
                         }
 
                         // compact our shrub
@@ -8613,7 +8624,7 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
-            return tag;
+            return (tag == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : tag;
         }
         // end of range? note the use of rid+1 and unsigned comparison here to
         // treat end_rid=-1 as "unbounded" in such a way that rid=-1 is still
@@ -8629,7 +8640,7 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             int err = lfs3_data_readshrub(lfs3, mdir, &data,
                     &shrub);
             if (err) {
-                return err;
+                return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
             }
 
             // compact our shrub
@@ -9501,7 +9512,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
 failed:;
     // revert gstate to on-disk state
     lfs3_fs_revertgdelta(lfs3);
-    return err;
+    return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
 }
 #endif
 
@@ -13598,7 +13609,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                         if (err == LFS3_ERR_CORRUPT) {
                             goto relocate;
                         }
-                        return err;
+                        return (err == LFS3_ERR_SRCCORRUPT)
+                                ? LFS3_ERR_CORRUPT
+                                : err;
                     }
 
                     pos_ += d_;
@@ -13664,7 +13677,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                         if (err == LFS3_ERR_CORRUPT) {
                             goto relocate;
                         }
-                        return err;
+                        return (err == LFS3_ERR_SRCCORRUPT)
+                                ? LFS3_ERR_CORRUPT
+                                : err;
                     }
 
                     pos_ += d_;
