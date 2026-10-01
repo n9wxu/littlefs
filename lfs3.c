@@ -8958,8 +8958,10 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // attempt to commit/compact the mdir normally
     lfs3_mdir_t mdir_[2];
     lfs3_srid_t split_rid;
+    bool splittable = true;
+commit:;
     int err = lfs3_mdir_commit__(lfs3, &mdir_[0], mdir, -2, -2,
-            &split_rid,
+            (splittable) ? &split_rid : NULL,
             mdir->mid, rattrs);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_NOENT) {
@@ -8978,9 +8980,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // need to split?
     if (err == LFS3_ERR_RANGE) {
         // an mroot with an mtree has nothing to split, its mdir-level
-        // attrs just don't fit
-        if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
-                && lfs3->mtree.r.weight != 0) {
+        // attrs just don't fit, and if we couldn't split, we don't fit
+        // either
+        if (!splittable
+                || (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                    && lfs3->mtree.r.weight != 0)) {
             err = LFS3_ERR_NOSPC;
             goto failed;
         }
@@ -9009,6 +9013,30 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             err = lfs3_mdir_alloc___(lfs3, &mdir_[i^l],
                     lfs3_smax(mdir->mid, 0), relocated);
             if (err) {
+                // no blocks to split into? compact in place instead,
+                // this works as long as we fit in one block, and lets a
+                // full disk still remove things
+                if (err == LFS3_ERR_NOSPC && i == 0 && !relocated) {
+                    // unconsume our gstate, compacting keeps it, note
+                    // this is just an xor
+                    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0) {
+                        err = lfs3_fs_consumegdelta(lfs3, mdir);
+                        if (err) {
+                            goto failed;
+                        }
+                    }
+
+                    // restage any bshrubs
+                    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
+                        if (lfs3_o_type(h->flags) == LFS3_TYPE_REG) {
+                            ((lfs3_bshrub_t*)h)->b_
+                                    = ((lfs3_bshrub_t*)h)->b.r;
+                        }
+                    }
+
+                    splittable = false;
+                    goto commit;
+                }
                 goto failed;
             }
             relocated = true;
