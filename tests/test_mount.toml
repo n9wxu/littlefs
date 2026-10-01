@@ -216,6 +216,27 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that format refuses a device too small for the mroot anchor (and
+# the gbmap) before touching the device
+[cases.test_mount_format_tiny]
+defines.TINY_BLOCK_COUNT = [1, 2]
+if = 'TINY_BLOCK_COUNT < ((GBMAP) ? 3 : 2)'
+death = 'block_count'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = TINY_BLOCK_COUNT;
+    lfs3_emubd_simreset(CFG) => 0;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg);
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
 # test that every mutating call on a rdonly mount asserts before
 # writing anything
 #
