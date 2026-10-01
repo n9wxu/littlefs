@@ -653,6 +653,11 @@ struct lfs3_cfg {
     // larger names except the size of the info struct which is controlled by
     // the LFS3_NAME_MAX define. Defaults to LFS3_NAME_MAX when zero. Stored in
     // superblock and must be respected by other littlefs drivers.
+    //
+    // Names must also fit in a metadata commit, which limits them to roughly
+    // block_size/2 - 124 bytes (132 bytes with 512-byte blocks, 1 KiB blocks
+    // and larger are not limited below LFS3_NAME_MAX). lfs3_fs_stat reports
+    // the effective limit, longer names error with LFS3_ERR_NAMETOOLONG.
     #ifndef LFS3_RDONLY
     lfs3_size_t name_limit;
     #endif
@@ -800,6 +805,9 @@ struct lfs3_file_cfg {
     // these attributes will be kept up to date with the attributes on-disk.
     // If writeable, these attributes will be written to disk atomically on
     // every file sync or close.
+    //
+    // Like lfs3_setattr, attributes must fit in the file's metadata block,
+    // sync and close return LFS3_ERR_NOSPC if they don't.
     struct lfs3_attr *attrs;
 
     // Number of custom attributes in the list
@@ -1488,7 +1496,11 @@ lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 
 // Set a custom attributes
 //
-// Returns a negative error code on failure.
+// Custom attributes are stored inline in metadata, so an attribute must fit
+// in a metadata block together with the file's name and other attributes.
+//
+// Returns LFS3_ERR_NOSPC if the attribute does not fit, or a negative error
+// code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         const void *buffer, lfs3_size_t size);

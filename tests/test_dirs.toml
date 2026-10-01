@@ -7207,3 +7207,92 @@ code = '''
     free(sim);
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# names need to fit in metadata commits, so small blocks limit names below
+# name_limit, test that we report and enforce this limit
+[cases.test_dirs_name_limit]
+defines.BLOCK_SIZE = [512, 1024, 4096]
+defines.NAME_SIZE = [64, 128, 184, 200, 255]
+# OP=0 => mkdir
+# OP=1 => file create
+# OP=2 => rename
+defines.OP = [0, 1, 2]
+defines.N = 32
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.name_limit <= LFS3_NAME_MAX);
+    // common geometries should not be limited
+    assert(fsinfo.name_limit == LFS3_NAME_MAX || BLOCK_SIZE < 1024);
+    bool fits = (NAME_SIZE <= fsinfo.name_limit);
+
+    lfs3_mkdir(&lfs3, "pricklypear") => 0;
+
+    // create enough names to split mdirs and grow the mtree
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[512];
+        sprintf(name, "pricklypear/%03x", i);
+        memset(name+15, 'a'+(i % 26), NAME_SIZE-3);
+        name[15+NAME_SIZE-3] = '\0';
+
+        int err;
+        if (OP == 0) {
+            err = lfs3_mkdir(&lfs3, name);
+        } else if (OP == 1) {
+            lfs3_file_t file;
+            err = lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+            if (!err) {
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        } else {
+            char old_name[256];
+            sprintf(old_name, "pricklypear/%03x", i);
+            lfs3_mkdir(&lfs3, old_name) => 0;
+            err = lfs3_rename(&lfs3, old_name, name);
+            if (err) {
+                lfs3_remove(&lfs3, old_name) => 0;
+            }
+        }
+        assert(err == ((fits) ? 0 : LFS3_ERR_NAMETOOLONG));
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "pricklypear") => 0;
+        struct lfs3_info info;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        for (lfs3_size_t i = 0; i < ((fits) ? N : 0); i++) {
+            char name[512];
+            sprintf(name, "%03x", i);
+            memset(name+3, 'a'+(i % 26), NAME_SIZE-3);
+            name[NAME_SIZE] = '\0';
+            lfs3_dir_read(&lfs3, &dir, &info) => 0;
+            assert(strcmp(info.name, name) == 0);
+            assert(info.type == ((OP == 1) ? LFS3_TYPE_REG : LFS3_TYPE_DIR));
+
+            char path[512];
+            sprintf(path, "pricklypear/%s", name);
+            lfs3_stat(&lfs3, path, &info) => 0;
+        }
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''

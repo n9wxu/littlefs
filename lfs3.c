@@ -8731,7 +8731,13 @@ compact:;
     }
 
     // TODO do we need to include mdir commit overhead here? in rbyd_estimate?
-    if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2) {
+    //
+    // only split if we can, mroot commits and an mroot with an mtree have
+    // nothing to split, so these compact as long as they fit
+    if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2
+            && split_rid_
+            && !(lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                && lfs3->mtree.r.weight != 0)) {
         return LFS3_ERR_RANGE;
     }
 
@@ -8761,10 +8767,10 @@ compact:;
             start_rid_ = lfs3_smax(start_rid_, -1);
         }
 
-        // compact our mdir
+        // compact our mdir, this can only overflow if we skipped
+        // splitting above
         err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 overrecyclable &= relocated;
@@ -8775,12 +8781,12 @@ compact:;
 
         // now try to commit again
         //
-        // upper layers should make sure this can't fail by limiting the
-        // maximum commit size
+        // this can still fail with LFS3_ERR_RANGE if the commit is
+        // larger than what compaction freed, in which case our caller
+        // can try splitting
         err = lfs3_mdir_commit___(lfs3, mdir_, start_rid_, end_rid,
                 mid, rattrs);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 overrecyclable &= relocated;
@@ -8959,9 +8965,13 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     lfs3_btree_t mtree_ = lfs3->mtree;
     // need to split?
     if (err == LFS3_ERR_RANGE) {
-        // this should not happen unless we can't fit our mroot's metadata
-        LFS3_ASSERT(lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0
-                || lfs3->mtree.r.weight == 0);
+        // an mroot with an mtree has nothing to split, its mdir-level
+        // attrs just don't fit
+        if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                && lfs3->mtree.r.weight != 0) {
+            err = LFS3_ERR_NOSPC;
+            goto failed;
+        }
 
         // if we're not the mroot, we need to consume the gstate so
         // we don't lose any info during the split
@@ -9009,7 +9019,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     ((i^l) == 0) ? split_rid :        -1,
                     mdir->mid, rattrs);
             if (err && err != LFS3_ERR_NOENT) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
+                // still too big? an entry can't be split
+                if (err == LFS3_ERR_RANGE) {
+                    err = LFS3_ERR_NOSPC;
+                    goto failed;
+                }
                 // bad prog? try another block
                 if (err == LFS3_ERR_CORRUPT) {
                     goto split_relocate;
@@ -9231,7 +9245,10 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_RATTR_ARG(rattrs),
                     LFS3_RATTR_NULL));
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // mroot can't split, mdir-level attrs just don't fit
+            if (err == LFS3_ERR_RANGE) {
+                err = LFS3_ERR_NOSPC;
+            }
             goto failed;
         }
     }
@@ -15776,6 +15793,18 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
     }
 
     lfs3->name_limit = name_limit;
+
+    // names also end up as bnames in the mtree, and a btree split must fit
+    // a bname, two branches, and their tags in the half block left after
+    // compaction, so block_size limits the names we can create
+    #ifndef LFS3_RDONLY
+    lfs3->name_limit = lfs3_min(lfs3->name_limit, lfs3_smax(
+            (lfs3_ssize_t)(lfs3->cfg->block_size/2)
+                - 3*lfs3->rattr_estimate
+                - 2*LFS3_BRANCH_DSIZE
+                - LFS3_LEB128_DSIZE,
+            0));
+    #endif
 
     // read the file limit
     lfs3_off_t file_limit = 0x7fffffff;
