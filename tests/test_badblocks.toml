@@ -13,6 +13,22 @@ after = [
 
 defines.FORMAT_BLOCK_COUNT = 'LFS3_IFYES_GBMAP(3, 2, 2)'
 
+code = '''
+// count successful syncs, so we know when a commit made it to disk
+static int (*test_badblocks_sync_)(const struct lfs3_cfg *cfg);
+static lfs3_size_t test_badblocks_syncs;
+
+static int test_badblocks_sync(const struct lfs3_cfg *cfg) {
+    int err = test_badblocks_sync_(cfg);
+    if (err) {
+        return err;
+    }
+
+    test_badblocks_syncs += 1;
+    return 0;
+}
+'''
+
 
 ## Single-block badblock tests
 #
@@ -6863,4 +6879,274 @@ code = '''
     lfs3_stat(&lfs3, "hi", &info) => 0;
     assert(info.type == LFS3_TYPE_DIR);
     lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that an error from the n-th read, prog, erase or sync reaches the
+# caller unchanged, and that we can keep going afterwards
+#
+# operations that commit more than once may be left complete, but never
+# half-done
+[cases.test_badblocks_ioerror]
+defines.OP = [
+    'LFS3_EMUBD_OP_READ',
+    'LFS3_EMUBD_OP_PROG',
+    'LFS3_EMUBD_OP_ERASE',
+    'LFS3_EMUBD_OP_SYNC',
+]
+defines.M = 16
+defines.K = 64
+defines.GC_COMPACT_THRESH = 'BLOCK_SIZE/2'
+code = '''
+    // count syncs with our own sync wrapper
+    struct lfs3_cfg cfg = *CFG;
+    test_badblocks_sync_ = CFG->sync;
+    cfg.sync = test_badblocks_sync;
+    // start small so we can grow
+    struct lfs3_cfg cfg_ = cfg;
+    cfg_.block_count = BLOCK_COUNT/2;
+
+    // the operations we want to fail
+    enum {
+        OP_FORMAT,
+        OP_MOUNT,
+        OP_CREAT,
+        OP_MKDIR,
+        OP_RENAME,
+        OP_SETATTR,
+        OP_FSYNC,
+        OP_COMPACT,
+        OP_GROW,
+        OP_REMOVE,
+        OP_REMOUNT,
+        OP_CK,
+        OP_COUNT,
+    };
+
+    for (uint32_t n = 1;; n++) {
+        // fail the n-th op
+        lfs3_emubd_mkioerror(CFG, OP, n, 0) => 0;
+        bool fired = false;
+
+        lfs3_t lfs3;
+        lfs3_file_t file;
+        bool opened = false;
+        bool written = false;
+        bool mounted = false;
+        uint8_t wbuf[BLOCK_SIZE];
+        memset(wbuf, 'b', BLOCK_SIZE);
+        for (int op = 0; op < OP_COUNT; op++) {
+            // some operations are repeated
+            lfs3_size_t count = (op == OP_MKDIR) ? M
+                    : (op == OP_SETATTR) ? K
+                    : 1;
+            for (lfs3_size_t i = 0; i < count; i++) {
+                for (int retry = 0;; retry++) {
+                    // only one op should fail
+                    assert(retry <= 1);
+
+                    int32_t remaining = lfs3_emubd_ioerror(CFG, OP);
+                    lfs3_size_t syncs = test_badblocks_syncs;
+                    uint32_t cksum = 0;
+                    if (mounted) {
+                        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+                    }
+
+                    char name[256];
+                    struct lfs3_info info;
+                    int err;
+                    switch (op) {
+                    case OP_FORMAT:;
+                        err = lfs3_format(&lfs3, LFS3_F_RDWR, &cfg_);
+                        break;
+
+                    case OP_MOUNT:;
+                    case OP_REMOUNT:;
+                        if (op == OP_REMOUNT && retry == 0) {
+                            lfs3_unmount(&lfs3) => 0;
+                            mounted = false;
+                        }
+                        err = lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg);
+                        mounted = !err;
+                        break;
+
+                    case OP_CREAT:;
+                        if (!opened) {
+                            err = lfs3_file_open(&lfs3, &file, "a",
+                                    LFS3_O_WRONLY
+                                        | LFS3_O_CREAT
+                                        | LFS3_O_EXCL);
+                            if (err) {
+                                break;
+                            }
+                            opened = true;
+                            lfs3_file_write(&lfs3, &file, "hello", 5) => 5;
+                            lfs3_fs_cksum(&lfs3, &cksum) => 0;
+                        }
+                        err = lfs3_file_sync(&lfs3, &file);
+                        break;
+
+                    case OP_MKDIR:;
+                        sprintf(name, "d%03x", i);
+                        err = lfs3_mkdir(&lfs3, name);
+                        break;
+
+                    case OP_RENAME:;
+                        err = lfs3_rename(&lfs3, "a", "b");
+                        break;
+
+                    case OP_SETATTR:;
+                        err = lfs3_setattr(&lfs3, "b", 'x', &i, sizeof(i));
+                        break;
+
+                    case OP_FSYNC:;
+                        if (!opened) {
+                            err = lfs3_file_open(&lfs3, &file, "b",
+                                    LFS3_O_WRONLY | LFS3_O_TRUNC);
+                            if (err) {
+                                break;
+                            }
+                            opened = true;
+                        }
+                        if (!written) {
+                            lfs3_file_rewind(&lfs3, &file) => 0;
+                            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                                    wbuf, BLOCK_SIZE);
+                            if (d < 0) {
+                                err = d;
+                                break;
+                            }
+                            assert(d == BLOCK_SIZE);
+                            written = true;
+                            lfs3_fs_cksum(&lfs3, &cksum) => 0;
+                        }
+                        err = lfs3_file_sync(&lfs3, &file);
+                        break;
+
+                    case OP_COMPACT:;
+                        err = lfs3_fs_ck(&lfs3, LFS3_CK_COMPACT);
+                        break;
+
+                    case OP_GROW:;
+                        err = lfs3_fs_grow(&lfs3, BLOCK_COUNT);
+                        break;
+
+                    case OP_REMOVE:;
+                        err = lfs3_remove(&lfs3, "d000");
+                        break;
+
+                    case OP_CK:;
+                        err = lfs3_fs_ck(&lfs3,
+                                LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+                        break;
+
+                    default:;
+                        LFS3_UNREACHABLE();
+                    }
+
+                    // did our error fire?
+                    if (!(remaining > 0
+                            && lfs3_emubd_ioerror(CFG, OP) == 0)) {
+                        assert(err == 0);
+                        if (opened) {
+                            lfs3_file_close(&lfs3, &file) => 0;
+                            opened = false;
+                        }
+                        break;
+                    }
+                    assert(!fired);
+                    fired = true;
+
+                    // the error should reach us unchanged, except that
+                    // rename and remove only log errors from their grm
+                    // cleanup, by then they have committed
+                    if (!err && (op == OP_RENAME || op == OP_REMOVE)) {
+                        assert(test_badblocks_syncs > syncs);
+                        break;
+                    }
+                    assert(err == LFS3_ERR_IO);
+
+                    // if nothing reached disk, nothing should have changed
+                    if (mounted && test_badblocks_syncs == syncs) {
+                        uint32_t cksum_;
+                        lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+                        assert(cksum_ == cksum);
+                    }
+
+                    // failed syncs should desync our file
+                    if (opened) {
+                        assert(file.b.h.flags & LFS3_O_DESYNC);
+                    }
+
+                    // operations should be complete or not at all, skip
+                    // completed operations
+                    if (op == OP_MKDIR) {
+                        err = lfs3_stat(&lfs3, name, &info);
+                        assert(!err || err == LFS3_ERR_NOENT);
+                        if (!err) {
+                            break;
+                        }
+                    } else if (op == OP_RENAME) {
+                        int err_a = lfs3_stat(&lfs3, "a", &info);
+                        int err_b = lfs3_stat(&lfs3, "b", &info);
+                        assert((!err_a && err_b == LFS3_ERR_NOENT)
+                                || (err_a == LFS3_ERR_NOENT && !err_b));
+                        if (!err_b) {
+                            break;
+                        }
+                    } else if (op == OP_REMOVE) {
+                        err = lfs3_stat(&lfs3, "d000", &info);
+                        assert(!err || err == LFS3_ERR_NOENT);
+                        if (err == LFS3_ERR_NOENT) {
+                            break;
+                        }
+                    } else if (op == OP_GROW) {
+                        struct lfs3_fsinfo fsinfo;
+                        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+                        assert(fsinfo.block_count == BLOCK_COUNT/2
+                                || fsinfo.block_count == BLOCK_COUNT);
+                    }
+                }
+            }
+        }
+
+        // check that everything made it to disk
+        lfs3_emubd_mkioerror(CFG, OP, 0, 0) => 0;
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, &cfg) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.block_count == BLOCK_COUNT);
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "a", &info) => LFS3_ERR_NOENT;
+        lfs3_stat(&lfs3, "b", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == BLOCK_SIZE);
+        lfs3_size_t attr;
+        lfs3_getattr(&lfs3, "b", 'x', &attr, sizeof(attr)) => sizeof(attr);
+        assert(attr == K-1);
+        uint8_t rbuf[BLOCK_SIZE];
+        lfs3_file_open(&lfs3, &file, "b", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+        assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        for (lfs3_size_t i = 0; i < M; i++) {
+            char name[256];
+            sprintf(name, "d%03x", i);
+            int err = lfs3_stat(&lfs3, name, &info);
+            if (i == 0) {
+                assert(err == LFS3_ERR_NOENT);
+            } else {
+                assert(err == 0);
+                assert(info.type == LFS3_TYPE_DIR);
+            }
+        }
+        lfs3_unmount(&lfs3) => 0;
+
+        // done once our error stops firing
+        if (!fired) {
+            printf("ops: %d\n", n-1);
+            break;
+        }
+    }
 '''
