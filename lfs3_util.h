@@ -720,7 +720,7 @@ static inline char *lfs3_strcchr(const char *a, int c) {
     return NULL;
 }
 
-// Find length of a that does not contain any char in cs
+// Find length of a that only contains chars in cs
 #ifndef LFS3_NO_STRINGH
 #define lfs3_strspn strspn
 #else
@@ -728,11 +728,13 @@ static inline size_t lfs3_strspn(const char *a, const char *cs) {
     const char *a_ = a;
     while (*a_) {
         const char *cs_ = cs;
-        while (*cs_) {
-            if (*a_ != *cs_) {
-                return a_ - a;
-            }
+        while (*cs_ && *cs_ != *a_) {
             cs_++;
+        }
+
+        // not in cs?
+        if (!*cs_) {
+            return a_ - a;
         }
 
         a_++;
@@ -742,7 +744,7 @@ static inline size_t lfs3_strspn(const char *a, const char *cs) {
 }
 #endif
 
-// Find length of a that only contains chars in cs
+// Find length of a that does not contain any char in cs
 #ifndef LFS3_NO_STRINGH
 #define lfs3_strcspn strcspn
 #else
