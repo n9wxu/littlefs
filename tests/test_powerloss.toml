@@ -818,3 +818,82 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+
+# Format under powerloss
+#
+# A format interrupted by powerloss leaves a mix of the old and new
+# filesystem on disk, which must not stop the next format and mount
+#
+[cases.test_powerloss_format_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.GBMAP = [false, true]
+defines.N = 8
+defines.SIZE = ['8', 'BLOCK_SIZE/2']
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+reentrant = true
+code = '''
+    // format unless we find a complete filesystem
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    assert(!err || err == LFS3_ERR_CORRUPT);
+    if (!err) {
+        struct lfs3_info info;
+        err = lfs3_stat(&lfs3, "done", &info);
+        assert(!err || err == LFS3_ERR_NOENT || err == LFS3_ERR_CORRUPT);
+        if (err) {
+            lfs3_unmount(&lfs3) => 0;
+        }
+    }
+    if (err) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // create some files
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "amethyst%03x", i);
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+    }
+    lfs3_set(&lfs3, "done", "done", 4) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        // check our files
+        prng = 42;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "amethyst%03x", i);
+            uint8_t wbuf[SIZE];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            uint8_t rbuf[SIZE+1];
+            lfs3_get(&lfs3, name, rbuf, SIZE+1) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        }
+        uint8_t rbuf[5];
+        lfs3_get(&lfs3, "done", rbuf, 5) => 4;
+        assert(memcmp(rbuf, "done", 4) == 0);
+
+        // and check the filesystem
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
