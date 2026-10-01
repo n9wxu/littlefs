@@ -37,9 +37,10 @@ ssize_t lfs3_toleb128(uint32_t word, void *buffer, size_t size) {
 ssize_t lfs3_fromleb128(uint32_t *word, const void *buffer, size_t size) {
     const uint8_t *data = buffer;
 
-    int32_t word_ = 0;
-    for (size_t i = 0; i < size; i++) {
-        int32_t dat = data[i];
+    // 32-bit words need at most 5 bytes, past that we overflow
+    uint32_t word_ = 0;
+    for (size_t i = 0; i < size && i < 5; i++) {
+        uint32_t dat = data[i];
         word_ |= (dat & 0x7f) << 7*i;
         if (!(dat & 0x80)) {
             // did we overflow?
@@ -52,7 +53,7 @@ ssize_t lfs3_fromleb128(uint32_t *word, const void *buffer, size_t size) {
         }
     }
 
-    // truncated?
+    // truncated or overflowed?
     return LFS3_ERR_CORRUPT;
 }
 
