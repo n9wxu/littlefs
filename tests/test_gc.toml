@@ -1062,6 +1062,133 @@ code = '''
     free(progs);
 '''
 
+# test that pre-erased blocks are never progged without an erase when
+# mounted without revperturb, where the pre-erase can't be trusted
+[cases.test_gc_preerase_norevperturb]
+defines.GC_FLAGS = 'LFS3_GC_PREERASE'
+defines.GC_STEPS = -1
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# check that nothing is progged twice, and count erases
+defines.CKPROGONCE = true
+defines.ERASE_CYCLES = 0xffffffff
+if = ['GBMAP', 'LFS3_IFYES_REVPERTURB(false, true, true)']
+ifdef = ['LFS3_GC', 'LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | LFS3_F_GBMAP,
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+
+    // pre-erase everything we can
+    lfs3_emubd_swear_t *wear = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    lfs3_emubd_sio_t *progs = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_sio_t));
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        wear[b] = lfs3_emubd_wear(CFG, b);
+        progs[b] = lfs3_emubd_blockprogs(CFG, b);
+    }
+    for (lfs3_block_t i = 0;; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < 2*BLOCK_COUNT);
+
+        lfs3_fs_gc(&lfs3) => 0;
+
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        if (!(fsinfo.flags & LFS3_I_PREERASE)) {
+            break;
+        }
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // make any prog of a pre-erased block before its next erase fail
+    // the test
+    bool *preerased = malloc(BLOCK_COUNT*sizeof(bool));
+    lfs3_block_t count = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        preerased[b] = lfs3_emubd_wear(CFG, b) > wear[b]
+                && lfs3_emubd_blockprogs(CFG, b) == progs[b];
+        if (preerased[b]) {
+            lfs3_emubd_mkprogged(CFG, b) => 0;
+            count += 1;
+        }
+        wear[b] = lfs3_emubd_wear(CFG, b);
+        progs[b] = lfs3_emubd_blockprogs(CFG, b);
+    }
+    assert(count > 0);
+
+    // mount without revperturb, and fill the disk
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint8_t wbuf[BLOCK_SIZE];
+    lfs3_size_t n = 0;
+    while (true) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n);
+        memset(wbuf, 'a'+(n % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        n += 1;
+    }
+
+    // every pre-erased block that was progged must have been erased
+    // first
+    lfs3_block_t used = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        if (preerased[b] && lfs3_emubd_blockprogs(CFG, b) > progs[b]) {
+            assert(lfs3_emubd_wear(CFG, b) > wear[b]);
+            used += 1;
+        }
+    }
+    // and we should have used at least some of them
+    assert(used > 0);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "fly%04d", i);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            uint8_t rbuf[BLOCK_SIZE];
+            lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+            memset(wbuf, 'a'+(i % 26), BLOCK_SIZE);
+            assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(preerased);
+    free(wear);
+    free(progs);
+'''
+
 # test that as we increase gc_preerase_count, late-erases generally
 # decreases
 [cases.test_gc_preerase_decreasing]
