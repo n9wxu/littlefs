@@ -9594,6 +9594,33 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
         LFS3_ASSERT(tag == LFS3_TAG_MNAME
                 || tag == LFS3_TAG_MDIR);
 
+        // smaller than every mname in the subtree we were routed to?
+        //
+        // bnames are only lower bounds, they outlive the first mdir they
+        // named when that mdir is dropped, and names routed through them
+        // land in the mdirs before the subtree, so walk back to the last
+        // mname <= our name
+        //
+        // the first mdir has no mname, so this always terminates
+        while (cmp == LFS3_CMP_GT) {
+            LFS3_ASSERT(bid >= (lfs3_bid_t)(1 << lfs3->mbits));
+            bid -= (1 << lfs3->mbits);
+            tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MNAME,
+                    &data);
+            if (tag < 0 && tag != LFS3_ERR_NOENT) {
+                return tag;
+            }
+
+            cmp = (tag == LFS3_ERR_NOENT)
+                    ? LFS3_CMP_LT
+                    : lfs3_data_namecmp(lfs3, &data, did, name, name_len);
+            if (cmp < 0) {
+                return cmp;
+            }
+            // lookup this mdir below
+            tag = LFS3_TAG_MNAME;
+        }
+
         // if we found an mname, lookup the mdir
         if (tag == LFS3_TAG_MNAME) {
             tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MDIR,

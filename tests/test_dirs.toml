@@ -7044,3 +7044,166 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# long names on small blocks make for small mdirs and a deep mtree, so
+# mdirs get split and dropped under the mtree's bnames, make sure name
+# lookup still finds everything
+[cases.test_dirs_mvrm_fuzz_long]
+defines.BLOCK_SIZE = [512, 1024]
+defines.NAME_SIZE = [64, 128]
+defines.N = [64, 256]
+# do more ops than dirs to encourage rename collisions
+defines.OPS = '4*N'
+defines.PARENT = [false, true]
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    if (PARENT) {
+        lfs3_mkdir(&lfs3, "pricklypear") => 0;
+    }
+
+    // pad names out to NAME_SIZE, the dir%03x prefix keeps them ordered
+    char pad[256];
+    memset(pad, 'a', NAME_SIZE-6);
+    pad[NAME_SIZE-6] = '\0';
+
+    // set up a simulation to compare against
+    lfs3_size_t *sim = malloc(N*sizeof(lfs3_size_t));
+    lfs3_size_t sim_size = 0;
+
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < OPS; i++) {
+        // choose a pseudo-random op, either mkdir, remove, or rename
+        uint8_t op = TEST_PRNG(&prng) % 3;
+
+        if (op == 0 || sim_size == 0) {
+            // choose a pseudo-random number
+            lfs3_size_t x = TEST_PRNG(&prng) % N;
+            // insert into our sim
+            for (lfs3_size_t j = 0;; j++) {
+                if (j >= sim_size || sim[j] >= x) {
+                    // already seen?
+                    if (j < sim_size && sim[j] == x) {
+                        // do nothing
+                    } else {
+                        // insert
+                        memmove(&sim[j+1], &sim[j],
+                                (sim_size-j)*sizeof(lfs3_size_t));
+                        sim_size += 1;
+                        sim[j] = x;
+                    }
+                    break;
+                }
+            }
+
+            // create a directory here
+            char name[512];
+            sprintf(name, "%s/dir%03x%s",
+                    ((PARENT) ? "pricklypear" : ""), x, pad);
+            int err = lfs3_mkdir(&lfs3, name);
+            assert(!err || err == LFS3_ERR_EXIST);
+
+        } else if (op == 1) {
+            // choose a pseudo-random entry to delete
+            lfs3_size_t j = TEST_PRNG(&prng) % sim_size;
+            lfs3_size_t x = sim[j];
+            // delete from our sim
+            memmove(&sim[j], &sim[j+1],
+                    (sim_size-(j+1))*sizeof(lfs3_size_t));
+            sim_size -= 1;
+
+            // remove this directory
+            char name[512];
+            sprintf(name, "%s/dir%03x%s",
+                    ((PARENT) ? "pricklypear" : ""), x, pad);
+            lfs3_remove(&lfs3, name) => 0;
+
+        } else {
+            // choose a pseudo-random entry to rename, and a pseudo-random
+            // number to rename to
+            lfs3_size_t j = TEST_PRNG(&prng) % sim_size;
+            lfs3_size_t x = sim[j];
+            lfs3_size_t y = TEST_PRNG(&prng) % N;
+            for (lfs3_size_t k = 0;; k++) {
+                if (k >= sim_size || sim[k] >= y) {
+                    // already seen and not a noop?
+                    if (k < sim_size && sim[k] == y && x != y) {
+                        // just delete the original entry
+                        memmove(&sim[j], &sim[j+1],
+                                (sim_size-(j+1))*sizeof(lfs3_size_t));
+                        sim_size -= 1;
+                    } else {
+                        // first delete
+                        memmove(&sim[j], &sim[j+1],
+                                (sim_size-(j+1))*sizeof(lfs3_size_t));
+                        if (k > j) {
+                            k -= 1;
+                        }
+                        // then insert
+                        memmove(&sim[k+1], &sim[k],
+                                (sim_size-1-k)*sizeof(lfs3_size_t));
+                        sim[k] = y;
+                    }
+                    break;
+                }
+            }
+
+            // rename this directory
+            char old_name[512];
+            sprintf(old_name, "%s/dir%03x%s",
+                    ((PARENT) ? "pricklypear" : ""), x, pad);
+            char new_name[512];
+            sprintf(new_name, "%s/dir%03x%s",
+                    ((PARENT) ? "pricklypear" : ""), y, pad);
+            lfs3_rename(&lfs3, old_name, new_name) => 0;
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // test that our directories match our simulation
+        for (lfs3_size_t j = 0; j < sim_size; j++) {
+            char name[512];
+            sprintf(name, "%s/dir%03x%s",
+                    ((PARENT) ? "pricklypear" : ""), sim[j], pad);
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, name, &info) => 0;
+            char name2[512];
+            sprintf(name2, "dir%03x%s", sim[j], pad);
+            assert(strcmp(info.name, name2) == 0);
+            assert(info.type == LFS3_TYPE_DIR);
+            assert(info.size == 0);
+        }
+
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, ((PARENT) ? "pricklypear" : "/")) => 0;
+        struct lfs3_info info;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        for (lfs3_size_t j = 0; j < sim_size; j++) {
+            char name[512];
+            sprintf(name, "dir%03x%s", sim[j], pad);
+            lfs3_dir_read(&lfs3, &dir, &info) => 0;
+            assert(strcmp(info.name, name) == 0);
+            assert(info.type == LFS3_TYPE_DIR);
+            assert(info.size == 0);
+        }
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+    }
+
+    // clean up sim/lfs3
+    free(sim);
+    lfs3_unmount(&lfs3) => 0;
+'''
