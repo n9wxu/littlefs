@@ -10885,6 +10885,11 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
         if (err && err != LFS3_ERR_NOSPC) {
             return err;
         }
+        // the failed repopulation may leave a partial commit in the
+        // pcache, which must never reach disk
+        if (err) {
+            lfs3_bd_droppcache(lfs3);
+        }
 
         // checkpoint the allocator again
         lfs3_alloc_ckpoint_(lfs3);
