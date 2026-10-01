@@ -906,6 +906,50 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that lookgbmap_thresh repopulates the gbmap when known blocks
+# <= lookgbmap_thresh
+[cases.test_gbmap_lookgbmap_thresh]
+defines.LOOKGBMAP_THRESH = ['0', '1', 'BLOCK_COUNT/4']
+defines.SIZE = '2*BLOCK_SIZE'
+defines.WRAPAROUND = 3
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    // note the gbmap flag
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // rewrite a file repeatedly until we're sure we've wrapped around
+    // a few times
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0;
+            i < (WRAPAROUND*BLOCK_COUNT) / (SIZE/BLOCK_SIZE);
+            i++) {
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "jellyfish",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // checkpointing should repopulate the gbmap if known blocks
+        // <= lookgbmap_thresh, and only then
+        lfs3_block_t known = lfs3.gbmap.known;
+        lfs3_alloc_ckpoint(&lfs3) => 0;
+        if (known <= LOOKGBMAP_THRESH) {
+            assert(lfs3.gbmap.known > LOOKGBMAP_THRESH);
+        } else {
+            assert(lfs3.gbmap.known == known);
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that the gbmap with gc generally works
 [cases.test_gbmap_gc_files]
 defines.COUNT = [

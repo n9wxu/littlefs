@@ -10801,9 +10801,9 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
     #ifdef LFS3_GBMAP
     // do we need to repopulate the gbmap?
     if (lfs3_f_isgbmap(lfs3->flags)
-            && lfs3->gbmap.known < lfs3_min(
+            && lfs3->gbmap.known <= lfs3_min(
                 lfs3->cfg->lookgbmap_thresh,
-                lfs3->block_count)) {
+                lfs3->block_count-1)) {
         int err = lfs3_alloc_lookgbmap(lfs3);
         if (err) {
             return err;
