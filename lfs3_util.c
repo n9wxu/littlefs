@@ -8,7 +8,7 @@
 #include "lfs3_util.h"
 
 // Only compile if user does not provide custom config
-#ifndef LFS3_CONFIG
+#ifndef LFS3_CFG
 
 // Need lfs3.h for error codes
 // TODO should we actually move the error codes to lfs3_util.h?
