@@ -1909,3 +1909,225 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# Pre-erasing under powerloss
+#
+# gc pre-erases free blocks between writes, and whole-block writes and
+# small appends claim them for data and metadata. Each file's step is
+# committed with its data as a file-attached attribute. No block may be
+# programmed twice without an erase, unless its erased-state checksum
+# matched, and no block we reference may be free or erased in the
+# gbmap's known window
+#
+[cases.test_powerloss_preerase_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.GC_FLAGS = 'LFS3_GC_PREERASE'
+defines.GC_STEPS = 1
+defines.GC_PREERASE_COUNT = ['4', '-1']
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# no byte may be programmed twice without an erase
+#
+# except that without an erase value, a torn prog can leave its first
+# prog_size bytes equal to the old erased state, which the prog_size-byte
+# erased-state checksums can't tell apart, see gc_preerase_count in lfs3.h
+defines.CKPROGONCE = '''
+    ERASE_VALUE != -1
+        || POWERLOSS_BEHAVIOR != LFS3_EMUBD_POWERLOSS_MOSTBITS
+'''
+defines.N = 2
+defines.SIZE = '2*BLOCK_SIZE'
+defines.CHUNK = 64
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+ifdef = ['LFS3_GC', 'LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+in = 'lfs3.c'
+code = '''
+    // format once per test, note preerasing needs revperturb
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG);
+    if (err) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR | LFS3_F_REVPERTURB | LFS3_F_GBMAP,
+                CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+    }
+
+    // how far did we get?
+    uint32_t steps[N];
+    lfs3_size_t k_ = 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                &steps[x], sizeof(uint32_t));
+        assert(d == sizeof(uint32_t) || d == LFS3_ERR_NOENT);
+        if (d == LFS3_ERR_NOENT) {
+            steps[x] = 0;
+        }
+        k_ += steps[x];
+    }
+    assert(k_ <= OPS);
+
+    // replay our ops in our sim, then continue on disk
+    uint8_t sims[N][SIZE];
+    lfs3_off_t sim_sizes[N];
+    uint32_t counts[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        sim_sizes[x] = 0;
+        counts[x] = 0;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t k = 0;; k++) {
+        // caught up with disk? check that every file matches our sim
+        if (k == k_) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(counts[x] == steps[x]);
+                if (counts[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+                uint8_t rbuf[SIZE+1];
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+                assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            // no block we reference may be free or erased in the
+            // gbmap's known window
+            bool used[BLOCK_COUNT];
+            memset(used, 0, sizeof(used));
+            lfs3_trv_t trv;
+            lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+            while (true) {
+                struct lfs3_tinfo tinfo;
+                int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err == LFS3_ERR_NOENT) {
+                    break;
+                }
+                used[tinfo.block] = true;
+            }
+            lfs3_trv_close(&lfs3, &trv) => 0;
+
+            for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+                lfs3_block_t off = (b + BLOCK_COUNT - lfs3.gbmap.window)
+                        % BLOCK_COUNT;
+                if (used[b] && off < lfs3.gbmap.known) {
+                    lfs3_bid_t bid;
+                    lfs3_stag_t tag = lfs3_gbmap_lookupnext(&lfs3,
+                            &lfs3.gbmap.b, b,
+                            &bid, NULL, NULL);
+                    assert(tag >= 0);
+                    assert(tag != LFS3_TAG_BMFREE
+                            && tag != LFS3_TAG_BMERASED);
+                }
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        if (k == OPS) {
+            break;
+        }
+
+        // choose a file and an op
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 2;
+        uint8_t *sim = sims[x];
+        lfs3_off_t size = sim_sizes[x];
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        // rewrite with whole blocks?
+        if (op == 0 || size + CHUNK > SIZE) {
+            off = 0;
+            chunk = BLOCK_SIZE * (1 + (TEST_PRNG(&prng) % (SIZE/BLOCK_SIZE)));
+            size = 0;
+        // small append?
+        } else {
+            off = size;
+            chunk = 1 + (TEST_PRNG(&prng) % CHUNK);
+        }
+        for (lfs3_size_t j = 0; j < chunk; j++) {
+            sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        size = off+chunk;
+
+        if (k >= k_) {
+            // pre-erase a step
+            lfs3_fs_gc(&lfs3) => 0;
+
+            // write our file
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step = counts[x]+1;
+            struct lfs3_attr attr = {
+                .type = 1,
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(uint32_t),
+            };
+            struct lfs3_file_cfg filecfg = {
+                .attrs = &attr,
+                .attr_count = 1,
+            };
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT
+                        | ((off == 0) ? LFS3_O_TRUNC : LFS3_O_APPEND),
+                    &filecfg) => 0;
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        sim_sizes[x] = size;
+        counts[x] += 1;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step;
+            if (counts[x] == 0) {
+                lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                        => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(step == counts[x]);
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+            uint8_t rbuf[SIZE+1];
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+            assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
