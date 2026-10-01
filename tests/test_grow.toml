@@ -553,6 +553,8 @@ defines.SMALLER_BLOCK_COUNT = [
     'BLOCK_COUNT/2',
     'BLOCK_COUNT/4',
 ]
+# count erases without wearing out blocks
+defines.ERASE_CYCLES = 0xffffffff
 code = '''
     // create a smaller fs
     struct lfs3_cfg cfg = *CFG;
@@ -566,6 +568,7 @@ code = '''
 
     // try to grow past our block device
     lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT+1) => LFS3_ERR_INVAL;
+    lfs3_fs_grow(&lfs3, 2*SMALLER_BLOCK_COUNT) => LFS3_ERR_INVAL;
     lfs3_fs_grow(&lfs3, BLOCK_COUNT) => LFS3_ERR_INVAL;
     // try to shrink
     lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT-1) => LFS3_ERR_INVAL;
@@ -597,6 +600,13 @@ code = '''
     }
     lfs3_file_close(&lfs3, &file);
     lfs3_unmount(&lfs3) => 0;
+
+    // nothing past our block_count should have been touched, note the
+    // block device itself is larger
+    for (lfs3_block_t b = SMALLER_BLOCK_COUNT; b < BLOCK_COUNT; b++) {
+        assert(lfs3_emubd_wear(CFG, b) == 0);
+        assert(lfs3_emubd_blockprogs(CFG, b) == 0);
+    }
 
     // we should still mount with our original config
     lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
