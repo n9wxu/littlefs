@@ -216,6 +216,65 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that every mutating call on a rdonly mount asserts before
+# writing anything
+#
+# note with LFS3_NO_ASSERT these calls are not checked
+[cases.test_mount_rdonly_mutate]
+# OP=0 => mkdir
+# OP=1 => remove
+# OP=2 => rename
+# OP=3 => setattr
+# OP=4 => removeattr
+# OP=5 => set
+# OP=6 => writable file open
+# OP=7 => mkconsistent
+# OP=8 => grow
+defines.OP = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+death = 'lfs3_m_isrdonly'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_setattr(&lfs3, "cat", 'a', "purr", strlen("purr")) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_emubd_simreset(CFG) => 0;
+    if (OP == 0) {
+        lfs3_mkdir(&lfs3, "dog");
+    } else if (OP == 1) {
+        lfs3_remove(&lfs3, "cat");
+    } else if (OP == 2) {
+        lfs3_rename(&lfs3, "cat", "dog");
+    } else if (OP == 3) {
+        lfs3_setattr(&lfs3, "cat", 'a', "hiss", strlen("hiss"));
+    } else if (OP == 4) {
+        lfs3_removeattr(&lfs3, "cat", 'a');
+    } else if (OP == 5) {
+        lfs3_set(&lfs3, "cat", "woof", strlen("woof"));
+    } else if (OP == 6) {
+        lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY);
+    } else if (OP == 7) {
+        lfs3_fs_mkconsistent(&lfs3);
+    } else if (OP == 8) {
+        lfs3_fs_grow(&lfs3, BLOCK_COUNT);
+    }
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
 
 # test that on-mount traversals do what they say they do
 

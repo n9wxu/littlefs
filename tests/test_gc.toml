@@ -1176,6 +1176,40 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that a bad gc_compact_thresh is refused before touching the disk,
+# in every build, since compaction doesn't need LFS3_GC
+[cases.test_gc_compact_thresh_check]
+defines.GC_COMPACT_THRESH = ['1', 'BLOCK_SIZE/2 - 1', 'BLOCK_SIZE+1']
+# OP=0 => format
+# OP=1 => mount
+defines.OP = [0, 1]
+death = 'gc_compact_thresh'
+code = '''
+    lfs3_t lfs3;
+    if (OP == 1) {
+        struct lfs3_cfg cfg = *CFG;
+        cfg.gc_compact_thresh = 0;
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                &cfg) => 0;
+    }
+
+    lfs3_emubd_simreset(CFG) => 0;
+    if (OP == 0) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                CFG);
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    }
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
 
 # test that lfs3_fs_ck doesn't leave its traversal open when fixing
 # a grm finishes all pending work early
