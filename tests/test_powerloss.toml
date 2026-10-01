@@ -1038,3 +1038,218 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# Truncate and fruncate under powerloss
+#
+# Each file's step is committed with its data as a file-attached
+# attribute, and the file's content at each step is a pure function of
+# the seed, so we can rebuild what each file should look like after any
+# powerloss
+#
+[cases.test_powerloss_truncate_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.N = [1, 4]
+defines.SIZE = ['BLOCK_SIZE/2', '4*BLOCK_SIZE']
+defines.CHUNK = 'SIZE/4'
+defines.LIMIT = 'SIZE/2'
+defines.PROG_SIZE = [1, 16]
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // how far did we get?
+    uint32_t steps[N];
+    lfs3_size_t k_ = 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                &steps[x], sizeof(uint32_t));
+        assert(d == sizeof(uint32_t) || d == LFS3_ERR_NOENT);
+        if (d == LFS3_ERR_NOENT) {
+            steps[x] = 0;
+        }
+        k_ += steps[x];
+    }
+    assert(k_ <= OPS);
+
+    // replay our ops in our sim, then continue on disk
+    uint8_t sims[N][SIZE+CHUNK];
+    lfs3_off_t sim_sizes[N];
+    uint32_t counts[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        sim_sizes[x] = 0;
+        counts[x] = 0;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t k = 0;; k++) {
+        // caught up with disk? check that every file matches our sim
+        if (k == k_) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(counts[x] == steps[x]);
+                if (counts[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+                uint8_t rbuf[SIZE+1];
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+                assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        if (k == OPS) {
+            break;
+        }
+
+        // choose a file and an op
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 5;
+        uint8_t *sim = sims[x];
+        lfs3_off_t size = sim_sizes[x];
+
+        bool live = (k >= k_);
+        char name[256];
+        sprintf(name, "file%03x", x);
+        uint32_t step = counts[x]+1;
+        struct lfs3_attr attr = {
+            .type = 1,
+            .flags = LFS3_A_WRONLY,
+            .buffer = &step,
+            .buffer_size = sizeof(uint32_t),
+        };
+        struct lfs3_file_cfg filecfg = {
+            .attrs = &attr,
+            .attr_count = 1,
+        };
+        lfs3_file_t file;
+        if (live) {
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_RDWR | LFS3_O_CREAT,
+                    &filecfg) => 0;
+        }
+
+        // append?
+        if (op <= 1) {
+            lfs3_size_t chunk = lfs3_min(
+                    1 + (TEST_PRNG(&prng) % CHUNK),
+                    SIZE - size);
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                sim[size+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            if (live) {
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                lfs3_file_write(&lfs3, &file, &sim[size], chunk) => chunk;
+            }
+            size += chunk;
+
+        // truncate, shrinking or growing?
+        } else if (op == 2) {
+            lfs3_off_t size_ = TEST_PRNG(&prng) % (SIZE+1);
+            if (size_ > size) {
+                memset(&sim[size], 0, size_-size);
+            }
+            if (live) {
+                lfs3_file_truncate(&lfs3, &file, size_) => 0;
+            }
+            size = size_;
+
+        // fruncate, shrinking or growing?
+        } else if (op == 3) {
+            lfs3_off_t size_ = TEST_PRNG(&prng) % (SIZE+1);
+            if (size_ > size) {
+                memmove(&sim[size_-size], sim, size);
+                memset(sim, 0, size_-size);
+            } else {
+                memmove(sim, &sim[size-size_], size_);
+            }
+            if (live) {
+                lfs3_file_fruncate(&lfs3, &file, size_) => 0;
+            }
+            size = size_;
+
+        // append and fruncate to a limit, like a log
+        } else {
+            lfs3_size_t chunk = 1 + (TEST_PRNG(&prng) % CHUNK);
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                sim[size+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            if (live) {
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                lfs3_file_write(&lfs3, &file, &sim[size], chunk) => chunk;
+            }
+            size += chunk;
+
+            if (size > LIMIT) {
+                memmove(sim, &sim[size-LIMIT], LIMIT);
+                if (live) {
+                    lfs3_file_fruncate(&lfs3, &file, LIMIT) => 0;
+                }
+                size = LIMIT;
+            }
+        }
+
+        if (live) {
+            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        sim_sizes[x] = size;
+        counts[x] += 1;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step;
+            if (counts[x] == 0) {
+                lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                        => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(step == counts[x]);
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+            uint8_t rbuf[SIZE+1];
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+            assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
