@@ -12983,8 +12983,9 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
     // can't read from writeonly files
     LFS3_ASSERT(!lfs3_o_iswronly(file->b.h.flags));
-    LFS3_ASSERT(file->pos + size <= 0x7fffffff);
 
+    // note reads are clamped to our file size, which always fits in
+    // lfs3_ssize_t, so size can be anything
     lfs3_off_t pos_ = file->pos;
     uint8_t *buffer_ = buffer;
     while (size > 0 && pos_ < lfs3_file_size_(file)) {
