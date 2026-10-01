@@ -7,11 +7,20 @@
 #
 
 code = '''
+#include <setjmp.h>
+
 // a powerloss callback that returns, so the interrupted operation
 // continues, the way the exhaustive runner branches
 __attribute__((unused))
 static void test_bd_powerloss_continue(void *data) {
     (void)data;
+}
+
+// a powerloss callback that abandons the interrupted operation, the way
+// the linear runner does
+__attribute__((unused))
+static void test_bd_powerloss_longjmp(void *data) {
+    longjmp(*(jmp_buf*)data, 1);
 }
 '''
 
@@ -475,4 +484,73 @@ code = '''
 
     // only the nth op failed
     lfs3_emubd_ioerror(CFG, OP) => 0;
+'''
+
+# only the nth sync fails, while mkbadsync fails every sync until
+# mkgoodsync
+[cases.test_bd_badsync]
+defines.N = [1, 2, 5]
+defines.ERR = ['0', 'LFS3_ERR_CORRUPT']
+code = '''
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, N, ERR) => 0;
+    lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) => N;
+    for (lfs3_size_t i = 0; i < 2*N; i++) {
+        CFG->sync(CFG) => (i+1 == N) ? ((ERR) ? ERR : LFS3_ERR_IO) : 0;
+    }
+    lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) => 0;
+
+    lfs3_emubd_mkbadsync(CFG) => 0;
+    for (lfs3_size_t i = 0; i < 2*N; i++) {
+        CFG->sync(CFG) => LFS3_ERR_IO;
+    }
+    lfs3_emubd_mkgoodsync(CFG) => 0;
+    CFG->sync(CFG) => 0;
+'''
+
+# a failed sync must not make writes durable, under OOO a later powerloss
+# reverts them
+[cases.test_bd_badsync_ooo]
+defines.BAD = [false, true]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_OOO,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[SIZE];
+    cfg.erase(&cfg, 0) => 0;
+    cfg.erase(&cfg, 1) => 0;
+    cfg.sync(&cfg) => 0;
+
+    memset(buffer, 'b', SIZE);
+    cfg.prog(&cfg, 1, 0, buffer, SIZE) => 0;
+    if (BAD) {
+        lfs3_emubd_mkioerror(&cfg, LFS3_EMUBD_OP_SYNC, 1, 0) => 0;
+        cfg.sync(&cfg) => LFS3_ERR_IO;
+    } else {
+        cfg.sync(&cfg) => 0;
+    }
+
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.erase(&cfg, 0) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.read(&cfg, 1, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == ((BAD) ? ERASE_VALUE : 'b'));
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
 '''

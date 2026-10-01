@@ -1189,6 +1189,13 @@ int lfs3_emubd_sync(const struct lfs3_cfg *cfg) {
         return LFS3_ERR_IO;
     }
 
+    // injected error?
+    int ioerr = lfs3_emubd_ioerror_(cfg, LFS3_EMUBD_OP_SYNC);
+    if (ioerr) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_sync -> %d", ioerr);
+        return ioerr;
+    }
+
     // emulate out-of-order writes? save a snapshot on sync
     if (bd->cfg->powerloss_behavior == LFS3_EMUBD_POWERLOSS_OOO) {
         for (size_t i = 0; i < cfg->block_count; i++) {

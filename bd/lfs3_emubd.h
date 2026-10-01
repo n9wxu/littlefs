@@ -55,6 +55,7 @@ typedef enum lfs3_emubd_op {
     LFS3_EMUBD_OP_READ       = 0, // Read
     LFS3_EMUBD_OP_PROG       = 1, // Prog
     LFS3_EMUBD_OP_ERASE      = 2, // Erase
+    LFS3_EMUBD_OP_SYNC       = 3, // Sync
 } lfs3_emubd_op_t;
 
 // Type for measuring read/program/erase operations
@@ -208,8 +209,8 @@ typedef struct lfs3_emubd {
     // some other test state
     uint32_t prng;
     lfs3_emubd_powercycles_t power_cycles;
-    uint32_t ioerror[3];
-    int ioerror_err[3];
+    uint32_t ioerror[4];
+    int ioerror_err[4];
     bool badsync;
     lfs3_emubd_block_t **ooo_before;
     lfs3_emubd_block_t **ooo_after;
@@ -331,10 +332,12 @@ int lfs3_emubd_flipbit(const struct lfs3_cfg *cfg,
 // Flip all bits marked as bad
 int lfs3_emubd_flip(const struct lfs3_cfg *cfg);
 
-// Error with err on the nth op (read, prog, erase) from now, 0 disables
+// Error with err on the nth op (read, prog, erase, sync) from now, 0
+// disables
 //
 // err=0 errors with LFS3_ERR_IO. The failing op changes nothing on the
-// device, and only the nth op fails, later ops succeed.
+// device, a failed sync makes nothing durable, and only the nth op
+// fails, later ops succeed.
 int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
         lfs3_emubd_op_t op, uint32_t n, int err);
 
@@ -343,6 +346,9 @@ int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
 int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op);
 
 // Mark sync as bad, every sync errors with LFS3_ERR_IO until marked good
+//
+// To fail only the nth sync, use lfs3_emubd_mkioerror with
+// LFS3_EMUBD_OP_SYNC.
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg);
 
 // Mark sync as good
