@@ -15229,6 +15229,8 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     // TODO move this to mount?
     // setup flags
     lfs3->flags = flags
+            // rdonly builds are always mounted rdonly
+            | LFS3_IFDEF_RDONLY(LFS3_I_RDONLY, 0)
             // assume we contain orphans until proven otherwise
             | LFS3_IFDEF_RDONLY(0, LFS3_I_MKCONSISTENT)
             // default to lookaheadable
@@ -15313,6 +15315,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     if (!lfs3->file_limit) {
         lfs3->file_limit = LFS3_FILE_MAX;
     }
+    #else
+    // no limits to configure, accept anything we can represent
+    lfs3->name_limit = LFS3_NAME_MAX;
+    lfs3->file_limit = LFS3_FILE_MAX;
     #endif
 
     // TODO do we need to recalculate these after mount?
