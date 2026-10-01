@@ -6538,6 +6538,15 @@ code = '''
     }
     #endif
 
+    // the bad blocks shouldn't stop us from reaching our pre-erase
+    // target, or at least the end of our known window
+    if (MODE != 2) {
+        assert(lfs3.gbmap.preeraser.count
+                    >= (lfs3_block_t)GC_PREERASE_COUNT
+                || lfs3.gbmap.preeraser.known >= lfs3.gbmap.known);
+        assert(lfs3.gbmap.preeraser.count > 1);
+    }
+
     // we should still be able to write files
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < N; i++) {
