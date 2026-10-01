@@ -116,6 +116,31 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that failing to allocate our buffers errors cleanly
+[cases.test_mount_nomem]
+# which allocation fails: rcache, pcache, or lookahead
+defines.FAIL = [1, 2, 3]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+
+    // init should not depend on what's in lfs3_t
+    memset(&lfs3, 0xab, sizeof(lfs3));
+    test_malloc_fail = FAIL;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+
+    memset(&lfs3, 0xab, sizeof(lfs3));
+    test_malloc_fail = FAIL;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+
+    // the filesystem should still be fine
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "badger") => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that various format flags don't assert or anything
 # 
 # these end up passed to mount internally
@@ -190,6 +215,71 @@ code = '''
 
 
 # test that on-mount traversals do what they say they do
+
+# test that mount never swallows a read error
+[cases.test_mount_readerror]
+defines.RDONLY = [false, true]
+defines.N = [1, 8]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // create some files and dirs so we have a couple mdirs with
+    // some gstate
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "dir%03d", i);
+        lfs3_mkdir(&lfs3, name) => 0;
+
+        sprintf(name, "file%03d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t wbuf[BLOCK_SIZE/2];
+        memset(wbuf, 'a'+(i % 26), BLOCK_SIZE/2);
+        lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE/2) => BLOCK_SIZE/2;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // fail every read during mount, one at a time
+    for (uint32_t i = 1;; i++) {
+        lfs3_emubd_setbadread(CFG, i) => 0;
+        int err = lfs3_mount(&lfs3,
+                (RDONLY) ? LFS3_M_RDONLY : LFS3_M_RDWR,
+                CFG);
+        // our read error should never be swallowed
+        assert(err == LFS3_ERR_IO || (!err && lfs3_emubd_badread(CFG) > 0));
+        lfs3_emubd_setbadread(CFG, 0) => 0;
+        if (!err) {
+            break;
+        }
+    }
+
+    // check we can still read everything
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "dir%03d", i);
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, name, &info) => 0;
+        assert(info.type == LFS3_TYPE_DIR);
+
+        sprintf(name, "file%03d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        uint8_t wbuf[BLOCK_SIZE/2];
+        memset(wbuf, 'a'+(i % 26), BLOCK_SIZE/2);
+        uint8_t rbuf[BLOCK_SIZE/2];
+        lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE/2) => BLOCK_SIZE/2;
+        assert(memcmp(rbuf, wbuf, BLOCK_SIZE/2) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
 
 [cases.test_mount_t_lookahead]
 defines.CKMETA = [false, true]
@@ -1454,6 +1544,10 @@ code = '''
 
 # test what happens if we find an unknown config
 [cases.test_mount_incompat_unknown_config]
+# unknown configs before, between, and after our known configs
+defines.CONFIG = [
+    '0x00', '0x01', '0x30', '0x32', '0x33', '0x3b', '0x42', '0x7f',
+]
 in = 'lfs3.c'
 code = '''
     // create a superblock
@@ -1466,7 +1560,7 @@ code = '''
     // create an unknown config
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
-            LFS3_RATTR(3, LFS3_TAG_CONFIG + 0x42, 0, LFS3_FROM_DATA),
+            LFS3_RATTR(3, LFS3_TAG_CONFIG + CONFIG, 0, LFS3_FROM_DATA),
             LFS3_RATTR_ARG(strlen("oh no!")),
             LFS3_RATTR_ARG("oh no!"),
             LFS3_RATTR_NULL)) => 0;

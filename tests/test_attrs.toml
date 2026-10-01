@@ -833,6 +833,131 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test attrs too big to fit in a metadata block, these should error with
+# NOSPC and leave the filesystem usable
+[cases.test_attrs_setattr_huge]
+# type of file to attach attrs to
+# FILETYPE=0 => regular file
+# FILETYPE=1 => stickynote
+# FILETYPE=2 => directory
+# FILETYPE=3 => root
+defines.FILETYPE = [0, 1, 2, 3]
+defines.SIZE = [
+    'BLOCK_SIZE/4',
+    'BLOCK_SIZE/2',
+    '5*BLOCK_SIZE/8',
+    '3*BLOCK_SIZE/4',
+    '7*BLOCK_SIZE/8',
+    'BLOCK_SIZE',
+]
+defines.COUNT = 4
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    const char *path;
+    lfs3_file_t file;
+    // create a file?
+    if (FILETYPE == 0) {
+        path = "cat";
+        lfs3_file_open(&lfs3, &file, path, LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+        lfs3_file_close(&lfs3, &file) => 0;
+
+    // create a stickynote?
+    } else if (FILETYPE == 1) {
+        path = "snail";
+        lfs3_file_open(&lfs3, &file, path, LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+        lfs3_file_write(&lfs3, &file, "snailnoise", strlen("snailnoise"))
+                => strlen("snailnoise");
+
+    // create a dir?
+    } else if (FILETYPE == 2) {
+        path = "armadillo";
+        lfs3_mkdir(&lfs3, path) => 0;
+
+    // do nothing for root
+    } else {
+        path = "/";
+    }
+
+    // keep adding big attrs until we run out of space
+    uint8_t *buf = malloc(SIZE);
+    lfs3_size_t count = 0;
+    for (lfs3_size_t i = 0; i < COUNT; i++) {
+        memset(buf, 'a'+i, SIZE);
+        int err = lfs3_setattr(&lfs3, path, 'a'+i, buf, SIZE);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+        count += 1;
+    }
+    // at least half a block should always fit
+    assert(count > 0 || SIZE > BLOCK_SIZE/2);
+    // and a full block never fits
+    assert(count == 0 || SIZE < BLOCK_SIZE);
+
+    // we should still be able to create things, which needs mdir splits
+    // and mtree commits into the mroot
+    lfs3_mkdir(&lfs3, "badger") => 0;
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        char name[256];
+        sprintf(name, "badger/dir%03x", i);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+
+    if (FILETYPE == 1) {
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+        // attrs that made it should read back, others should not exist
+        for (lfs3_size_t i = 0; i < COUNT; i++) {
+            if (i < count) {
+                lfs3_sizeattr(&lfs3, path, 'a'+i) => SIZE;
+                memset(buf, 0, SIZE);
+                lfs3_getattr(&lfs3, path, 'a'+i, buf, SIZE) => SIZE;
+                for (lfs3_size_t j = 0; j < SIZE; j++) {
+                    assert(buf[j] == 'a'+i);
+                }
+            } else {
+                lfs3_sizeattr(&lfs3, path, 'a'+i) => LFS3_ERR_NOATTR;
+            }
+        }
+
+        for (lfs3_size_t i = 0; i < 64; i++) {
+            char name[256];
+            sprintf(name, "badger/dir%03x", i);
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, name, &info) => 0;
+        }
+    }
+
+    // and we should be able to remove the attrs again
+    for (lfs3_size_t i = 0; i < count; i++) {
+        lfs3_removeattr(&lfs3, path, 'a'+i) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    for (lfs3_size_t i = 0; i < COUNT; i++) {
+        lfs3_sizeattr(&lfs3, path, 'a'+i) => LFS3_ERR_NOATTR;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    free(buf);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test the full range of attrs
 [cases.test_attrs_all]
 # type of file to attach attrs to
@@ -3033,6 +3158,91 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test file attrs too big to fit in a metadata block, these should error
+# with NOSPC and leave the filesystem usable
+[cases.test_attrs_fattr_huge]
+defines.MODE = ['LFS3_A_WRONLY', 'LFS3_A_RDWR']
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    '3*BLOCK_SIZE/4',
+    '7*BLOCK_SIZE/8',
+    'BLOCK_SIZE',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // try writing a big attr through a file
+    uint8_t *buf = malloc(SIZE);
+    memset(buf, 'b', SIZE);
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'b',
+            .flags = MODE,
+            .buffer = buf,
+            .buffer_size = SIZE,
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 1,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "cat", LFS3_O_WRONLY, &filecfg) => 0;
+    lfs3_file_write(&lfs3, &file, "miao", strlen("miao")) => strlen("miao");
+    int err = lfs3_file_close(&lfs3, &file);
+    assert(!err || err == LFS3_ERR_NOSPC);
+    // at least half a block should always fit
+    assert(!err || SIZE > BLOCK_SIZE/2);
+    // and a full block never fits
+    assert(err || SIZE < BLOCK_SIZE);
+
+    // we should still be able to create things
+    lfs3_mkdir(&lfs3, "badger") => 0;
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        char name[256];
+        sprintf(name, "badger/dir%03x", i);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+        // either everything made it or nothing did
+        uint8_t rbuf[8];
+        if (!err) {
+            lfs3_sizeattr(&lfs3, "cat", 'b') => SIZE;
+            lfs3_file_open(&lfs3, &file, "cat", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, sizeof(rbuf))
+                    => strlen("miao");
+            assert(memcmp(rbuf, "miao", strlen("miao")) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        } else {
+            lfs3_sizeattr(&lfs3, "cat", 'b') => LFS3_ERR_NOATTR;
+            lfs3_file_open(&lfs3, &file, "cat", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, sizeof(rbuf))
+                    => strlen("meow");
+            assert(memcmp(rbuf, "meow", strlen("meow")) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+    }
+
+    free(buf);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that wronly attrs are not read from disk
 [cases.test_attrs_fattr_wronly]
 defines.MODE = ['LFS3_A_WRONLY']
@@ -3136,7 +3346,7 @@ code = '''
 
 # test that rdonly attrs have no effect on disk
 [cases.test_attrs_fattr_rdonly]
-defines.MODE = ['LFS3_A_RDONLY']
+defines.MODE = ['LFS3_A_RDONLY', 'LFS3_A_RDONLY | LFS3_A_LAZY']
 defines.MUTSIZE = [false, true]
 code = '''
     lfs3_t lfs3;
@@ -3237,6 +3447,81 @@ code = '''
         assert(memcmp(rbuf, b, strlen(b)) == 0);
         lfs3_getattr(&lfs3, "cat", 'c', rbuf, sizeof(rbuf)) => strlen(c);
         assert(memcmp(rbuf, c, strlen(c)) == 0);
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that rdonly files never write attrs, even writable attrs
+[cases.test_attrs_fattr_rdonly_file]
+defines.MODE = ['LFS3_A_WRONLY', 'LFS3_A_RDWR']
+defines.MOUNT = ['LFS3_M_RDWR', 'LFS3_M_RDONLY']
+defines.DESYNC = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // create an attr
+    const char *a = "One 18.25 ounce package chocolate cake mix.";
+    lfs3_setattr(&lfs3, "cat", 'a', a, strlen(a)) => 0;
+
+    // remount, possibly rdonly
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, MOUNT, CFG) => 0;
+
+    // open a rdonly file with a writable attr
+    const char *a_ = "Four large eggs. One cup semi-sweet chocolate chips.";
+    uint8_t a_buf[256];
+    lfs3_ssize_t a_size;
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'a',
+            .flags = MODE,
+            .buffer = a_buf,
+            .buffer_size = sizeof(a_buf),
+            .size = &a_size,
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 1,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "cat", LFS3_O_RDONLY, &filecfg) => 0;
+    if (DESYNC) {
+        lfs3_file_desync(&lfs3, &file) => 0;
+    }
+
+    // update the attr
+    memcpy(a_buf, a_, strlen(a_));
+    a_size = strlen(a_);
+
+    // sync and close, this should not write anything
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // attr should be unchanged
+        lfs3_sizeattr(&lfs3, "cat", 'a') => strlen(a);
+        uint8_t rbuf[256];
+        lfs3_getattr(&lfs3, "cat", 'a', rbuf, sizeof(rbuf)) => strlen(a);
+        assert(memcmp(rbuf, a, strlen(a)) == 0);
     }
 
     lfs3_unmount(&lfs3) => 0;

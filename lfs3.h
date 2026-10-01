@@ -152,6 +152,7 @@ enum lfs3_type {
 #define LFS3_o_UNCRYST  0x01000000  // File's leaf not fully crystallized
 #define LFS3_o_UNGRAFT  0x00800000  // File's leaf does not match disk
 #define LFS3_o_UNFLUSH  0x00400000  // File's cache does not match disk
+#define LFS3_o_TORN     0x00200000  // File's bshrub/btree is partially grafted
 
 // an alias for all check work
 #define LFS3_O_CK (LFS3_O_CKMETA | LFS3_O_CKDATA)
@@ -247,7 +248,7 @@ enum lfs3_type {
 #define LFS3_M_SYNC     0x00000080  // Open all files with LFS3_O_SYNC
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVPERTURB)
 #define LFS3_M_REVPERTURB \
-                        0x00000010  // Add debug info to revision counts
+                        0x00000010  // Perturb first bit in revision count
 #endif
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVNOISE)
 #define LFS3_M_REVNOISE 0x00000020  // Add noise to revision counts
@@ -467,6 +468,9 @@ struct lfs3_cfg {
 
     // Read a region in a block. Negative error codes are propagated
     // to the user.
+    // May return LFS3_ERR_CORRUPT if the data can not be read correctly,
+    // an uncorrectable ECC error for example. littlefs treats this the
+    // same as a checksum mismatch.
     int (*read)(const struct lfs3_cfg *c, lfs3_block_t block,
             lfs3_off_t off, void *buffer, lfs3_size_t size);
 
@@ -546,7 +550,7 @@ struct lfs3_cfg {
 
     // Size of file caches in bytes. In addition to filesystem-wide
     // read/prog caches, each file gets its own cache to reduce disk
-    // accesses.
+    // accesses. Must be non-zero unless LFS3_NO_MALLOC is defined.
     lfs3_size_t fcache_size;
 
     // Size of the lookahead buffer in bytes. A larger lookahead buffer
@@ -570,6 +574,13 @@ struct lfs3_cfg {
     // steps=1 will do the minimum amount of work to make progress, and
     // steps=-1 will not return until all pending janitorial work has
     // been completed.
+    //
+    // Note gc work can create more gc work. Compacting metadata changes
+    // the filesystem, which requires another pass to confirm, and
+    // compacting or pre-erasing may allocate blocks, which can trigger
+    // another lookahead/gbmap scan. If some metadata can't be compacted
+    // below gc_compact_thresh, or the disk is nearly full, steps=-1 may
+    // never return.
     //
     // Defaults to steps=1 when zero.
     #ifdef LFS3_GC
@@ -598,9 +609,9 @@ struct lfs3_cfg {
     // operations gbmap repopulations are controlled by
     // lookgbmap_thresh.
     //
-    // Any value <= lookgbmap_thresh repopulates the gbmap when below
+    // Any value <= lookgbmap_thresh repopulates the gbmap when <=
     // lookgbmap_thresh, while -1 or any value >= block_count
-    // repopulates the lookahead buffer after any block allocation.
+    // repopulates the gbmap after any block allocation.
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
     lfs3_block_t gc_lookgbmap_thresh;
     #endif
@@ -609,11 +620,22 @@ struct lfs3_cfg {
     // expensive (flash), pre-erasing blocks can help reduce the latency
     // of block allocation.
     //
-    // Requires the gbmap to track pre-erased blocks.
+    // Requires the gbmap to track pre-erased blocks, and requires
+    // LFS3_M_REVPERTURB (or LFS3_F_REVPERTURB when formatting). Without
+    // revision perturbation pre-erased blocks can't be used, so asking
+    // for LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
+    // LFS3_CK_PREERASE without it asserts.
     //
     // 0 only erases blocks immediately before prog, while -1 or any
     // value >= block_count attempts to pre-erase all known free blocks
     // during gc.
+    //
+    // Note pre-erased blocks are checked with a checksum of only their
+    // first prog_size bytes. This assumes an interrupted prog never
+    // leaves bytes after the first prog_size partially programmed while
+    // the first prog_size bytes still read as erased. If your storage
+    // can do this, littlefs may prog over a partially programmed block,
+    // unless progs are checked with LFS3_M_CKPROGS.
     //
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     lfs3_block_t gc_preerase_count;
@@ -653,6 +675,11 @@ struct lfs3_cfg {
     // larger names except the size of the info struct which is controlled by
     // the LFS3_NAME_MAX define. Defaults to LFS3_NAME_MAX when zero. Stored in
     // superblock and must be respected by other littlefs drivers.
+    //
+    // Names must also fit in a metadata commit, which limits them to roughly
+    // block_size/2 - 124 bytes (132 bytes with 512-byte blocks, 1 KiB blocks
+    // and larger are not limited below LFS3_NAME_MAX). lfs3_fs_stat reports
+    // the effective limit, longer names error with LFS3_ERR_NAMETOOLONG.
     #ifndef LFS3_RDONLY
     lfs3_size_t name_limit;
     #endif
@@ -679,6 +706,9 @@ struct lfs3_cfg {
     // Maximum size of a non-block B-tree leaf in bytes. Smaller values may
     // make small random-writes cheaper, but increase metadata overhead. Must
     // be <= block_size/4.
+    //
+    // 0 is only valid if crystal_thresh <= 1, where fragments are never
+    // written.
     #ifndef LFS3_RDONLY
     lfs3_size_t fragment_size;
     #endif
@@ -800,6 +830,9 @@ struct lfs3_file_cfg {
     // these attributes will be kept up to date with the attributes on-disk.
     // If writeable, these attributes will be written to disk atomically on
     // every file sync or close.
+    //
+    // Like lfs3_setattr, attributes must fit in the file's metadata block,
+    // sync and close return LFS3_ERR_NOSPC if they don't.
     struct lfs3_attr *attrs;
 
     // Number of custom attributes in the list
@@ -825,8 +858,6 @@ enum lfs3_tag {
     LFS3_TAG_GEOMETRY       = 0x0138,
     LFS3_TAG_NAMELIMIT      = 0x0139,
     LFS3_TAG_FILELIMIT      = 0x013a,
-    // in-device only, to help find unknown config tags
-    LFS3_tag_UNKNOWNCONFIG  = 0x013b,
 
     // global-state tags
     LFS3_TAG_GDELTA         = 0x0200,
@@ -1459,8 +1490,10 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 //
 // If the destination exists, it must match the source in type.
 // If the destination is a directory, the directory must be empty.
+// A directory can not be moved into itself or one of its children.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if the destination is inside the source
+// directory, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path);
 #endif
@@ -1486,7 +1519,11 @@ lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 
 // Set a custom attributes
 //
-// Returns a negative error code on failure.
+// Custom attributes are stored inline in metadata, so an attribute must fit
+// in a metadata block together with the file's name and other attributes.
+//
+// Returns LFS3_ERR_NOSPC if the attribute does not fit, or a negative error
+// code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         const void *buffer, lfs3_size_t size);
@@ -1537,6 +1574,12 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 // Readonly and desynchronized files do not touch disk and will always
 // return 0.
 //
+// Note an error in an earlier write, flush, sync, truncate, fruncate, or
+// read that needed to flush, desynchronizes the file, so close does not
+// write out, and cannot report, any data lost to that error. Check the
+// result of lfs3_file_sync before closing to know if data reached
+// storage.
+//
 // Returns a negative error code on failure.
 int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 
@@ -1546,6 +1589,10 @@ int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 //
 // If the file was desynchronized, it is now marked as synchronized. It will
 // now recieve file updates and syncs on close.
+//
+// Readonly files have nothing to write and never touch disk. If a readonly
+// file was desynchronized, it catches up with the file on storage, as with
+// lfs3_file_resync.
 //
 // Returns a negative error code on failure.
 int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
@@ -1570,6 +1617,11 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 //
 // An explicit and successful call to either lfs3_file_sync or
 // lfs3_file_resync reverses this, marking the file as synchronized again.
+//
+// Some errors can leave a file partially updated, matching neither its
+// contents before nor after the failed operation. lfs3_file_sync then
+// returns LFS3_ERR_INVAL instead of writing it out, and only
+// lfs3_file_resync can recover the file.
 //
 // Returns a negative error code on failure.
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);
@@ -1709,6 +1761,9 @@ int lfs3_dir_rewind(lfs3_t *lfs3, lfs3_dir_t *dir);
 // Once open, a traversal can be read from to iterate over all blocks in
 // the filesystem.
 //
+// Note LFS3_T_PREERASE is accepted, but does nothing. Pre-erasing is
+// only performed by lfs3_fs_gc and lfs3_fs_ck.
+//
 // Returns a negative error code on failure.
 int lfs3_trv_open(lfs3_t *lfs3, lfs3_trv_t *trv, uint32_t flags);
 
@@ -1817,23 +1872,25 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags);
 //
 // Note: This is irreversible.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if block_count is less than the current block
+// count (shrinking is not supported) or more than the configured
+// block_count, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count);
 #endif
 
 // Enable the global on-disk block-map
 //
-// Returns a negative error code on failure. Does nothing if a gbmap
-// already exists.
+// Returns LFS3_ERR_EXIST if a gbmap already exists, or a negative error
+// code on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 #endif
 
 // Disable the global on-disk block-map
 //
-// Returns a negative error code on failure. Does nothing if no gbmap
-// is found.
+// Returns LFS3_ERR_NOENT if no gbmap is found, or a negative error code
+// on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_rmgbmap(lfs3_t *lfs3);
 #endif

@@ -2499,6 +2499,84 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that syncing a reader never writes, a desynced reader just
+# catches up with disk
+[cases.test_fsync_desync_wdrs]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // a - writer
+    // b - desynced reader, synced explicitly
+    // c - reader kept closed, checks disk state
+    lfs3_file_t a;
+    lfs3_file_t b;
+    lfs3_file_t c;
+    uint8_t rbuf[256];
+    lfs3_file_open(&lfs3, &a, "jello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &a, "hello!", strlen("hello!"))
+            => strlen("hello!");
+    lfs3_file_sync(&lfs3, &a) => 0;
+    lfs3_file_open(&lfs3, &b, "jello", LFS3_O_RDONLY) => 0;
+
+    // mark b as desync, rewrite a, and sync
+    lfs3_file_desync(&lfs3, &b) => 0;
+    lfs3_file_rewind(&lfs3, &a) => 0;
+    lfs3_file_write(&lfs3, &a, "bonjour!", strlen("bonjour!"))
+            => strlen("bonjour!");
+    lfs3_file_sync(&lfs3, &a) => 0;
+
+    // b should still have previous contents
+    lfs3_file_read(&lfs3, &b, rbuf, sizeof(rbuf)) => strlen("hello!");
+    assert(memcmp(rbuf, "hello!", strlen("hello!")) == 0);
+
+    // syncing b should not write anything
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    lfs3_file_sync(&lfs3, &b) => 0;
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+
+    // disk should still have a's write
+    lfs3_file_open(&lfs3, &c, "jello", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &c, rbuf, sizeof(rbuf)) => strlen("bonjour!");
+    assert(memcmp(rbuf, "bonjour!", strlen("bonjour!")) == 0);
+    lfs3_file_close(&lfs3, &c) => 0;
+    // and b should have caught up
+    lfs3_file_rewind(&lfs3, &b) => 0;
+    lfs3_file_read(&lfs3, &b, rbuf, sizeof(rbuf)) => strlen("bonjour!");
+    assert(memcmp(rbuf, "bonjour!", strlen("bonjour!")) == 0);
+
+    // rewrite a and sync, b should now recv updates
+    lfs3_file_rewind(&lfs3, &a) => 0;
+    lfs3_file_write(&lfs3, &a, "ohayo!", strlen("ohayo!"))
+            => strlen("ohayo!");
+    lfs3_file_sync(&lfs3, &a) => 0;
+    lfs3_file_rewind(&lfs3, &b) => 0;
+    lfs3_file_read(&lfs3, &b, rbuf, sizeof(rbuf)) => strlen("ohayo!r!");
+    assert(memcmp(rbuf, "ohayo!r!", strlen("ohayo!r!")) == 0);
+    lfs3_file_close(&lfs3, &b) => 0;
+    lfs3_file_close(&lfs3, &a) => 0;
+
+    // syncing a reader of an uncreated file should not create it
+    lfs3_file_open(&lfs3, &a, "jiggle",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_open(&lfs3, &b, "jiggle", LFS3_O_RDONLY) => 0;
+    lfs3_file_desync(&lfs3, &a) => 0;
+    progs = lfs3_emubd_progs(CFG);
+    erases = lfs3_emubd_erases(CFG);
+    lfs3_file_sync(&lfs3, &b) => 0;
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+    lfs3_file_close(&lfs3, &b) => 0;
+    lfs3_file_close(&lfs3, &a) => 0;
+    lfs3_file_open(&lfs3, &c, "jiggle", LFS3_O_RDONLY) => LFS3_ERR_NOENT;
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 [cases.test_fsync_desync_wwdrr]
 code = '''
     lfs3_t lfs3;

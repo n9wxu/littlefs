@@ -5233,6 +5233,92 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that appends respect the file limit, appends ignore pos
+[cases.test_fwrite_append_fbig]
+defines.LIMIT = [
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.MODE = ['LFS3_O_WRONLY', 'LFS3_O_RDWR']
+if = [
+    'SIZE <= LIMIT',
+    # this just saves testing time
+    'LIMIT <= 4*1024*FRAGMENT_SIZE',
+]
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.file_limit = LIMIT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // simulate our file in ram
+    uint8_t sim[LIMIT];
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < LIMIT; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    // create a file, seeking to the file limit shouldn't prevent
+    // appends
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            MODE | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    lfs3_file_seek(&lfs3, &file, LIMIT, LFS3_SEEK_SET) => LIMIT;
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // seeking to the start shouldn't let appends exceed the file limit
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], LIMIT-SIZE+1)
+            => LFS3_ERR_FBIG;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // but we should be able to append up to the file limit
+    lfs3_file_open(&lfs3, &file, "hello", MODE | LFS3_O_APPEND) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], LIMIT-SIZE) => LIMIT-SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], 1) => LFS3_ERR_FBIG;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        // check our file with stat
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(strcmp(info.name, "hello") == 0);
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == LIMIT);
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        // is size correct?
+        lfs3_file_size(&lfs3, &file) => LIMIT;
+        // try reading
+        uint8_t rbuf[2*LIMIT];
+        memset(rbuf, 0xaa, 2*LIMIT);
+        lfs3_file_read(&lfs3, &file, rbuf, 2*LIMIT) => LIMIT;
+        // does our file match our simulation?
+        assert(memcmp(rbuf, sim, LIMIT) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 # heavy fuzz test with rw seeks, truncate, and fruncate
 [cases.test_fwrite_rwtf_fuzz]
@@ -5438,6 +5524,146 @@ code = '''
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => size;
         // does our file match our simulation?
+        assert(memcmp(rbuf, sim, size) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test with crystal_thresh < prog_size, crystals we can't prog-align
+# are padded and can't be resumed, this is useful for small blocks
+# where prog_size=block_size (SD/eMMC)
+[cases.test_fwrite_rwtf_unaligned_fuzz]
+defines.N = 20
+defines.ERASE_SIZE = [4096, 512]
+defines.PROG_SIZE = [16, 64, 'BLOCK_SIZE']
+defines.CRYSTAL_THRESH = [0, 1, 'PROG_SIZE/2']
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    'BLOCK_SIZE',
+    '4*BLOCK_SIZE',
+]
+# chunk is more an upper limit here
+defines.CHUNK = [64, 16]
+defines.SYNC = [false, true]
+defines.REMOUNT = [false, true]
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+if = [
+    'PROG_SIZE <= 512',
+    'FRAGMENT_SIZE <= BLOCK_SIZE/4',
+    'CHUNK <= SIZE',
+    # this just saves testing time
+    'SIZE <= 4*1024*FRAGMENT_SIZE',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    // simulate our file in ram
+    uint8_t sim[SIZE];
+    memset(sim, 0, SIZE);
+    lfs3_off_t size = 0;
+    uint32_t prng = SEED;
+
+    for (lfs3_size_t i = 0; i < N; i++) {
+        // and if we are writing, truncating, or fruncating
+        uint8_t op = TEST_PRNG(&prng) % 4;
+
+        // writing?
+        if (op <= 1) {
+            // choose a random location
+            lfs3_off_t off = TEST_PRNG(&prng) % SIZE;
+            // and a random size, up to the chunk size
+            lfs3_size_t chunk = lfs3_min(
+                    (TEST_PRNG(&prng) % (CHUNK+1-1)) + 1,
+                    SIZE - off);
+
+            // seek
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+
+            // update the sim
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            size = lfs3_max(size, off+chunk);
+
+            // update the file
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+
+        // truncating?
+        } else if (op == 2) {
+            // choose a random new file size
+            lfs3_off_t size_ = TEST_PRNG(&prng) % SIZE;
+
+            // update the sim
+            if (size_ < size) {
+                memset(sim+size_, 0, size-size_);
+            }
+            size = size_;
+
+            // truncate the file
+            lfs3_file_truncate(&lfs3, &file, size_) => 0;
+
+        // fruncating?
+        } else if (op == 3) {
+            // choose a random new file size
+            lfs3_off_t size_ = TEST_PRNG(&prng) % SIZE;
+
+            // update the sim
+            if (size_ > size) {
+                memmove(sim+size_-size, sim, size);
+                memset(sim, 0, size_-size);
+            } else if (size_ < size) {
+                memmove(sim, sim+size-size_, size_);
+                memset(sim+size_, 0, size-size_);
+            }
+            size = size_;
+
+            // fruncate the file
+            lfs3_file_fruncate(&lfs3, &file, size_) => 0;
+        }
+
+        // sync?
+        if (SYNC) {
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+
+        // remount?
+        if (REMOUNT) {
+            lfs3_file_close(&lfs3, &file) => 0;
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDWR) => 0;
+        }
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our file with stat
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == size);
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => size;
+        uint8_t rbuf[2*SIZE];
+        memset(rbuf, 0xaa, 2*SIZE);
+        lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => size;
         assert(memcmp(rbuf, sim, size) == 0);
         lfs3_file_close(&lfs3, &file) => 0;
     }
@@ -5665,6 +5891,125 @@ code = '''
                     BLOCK_SIZE/2) == 0);
         }
         lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that a fragment to the left of a new crystal aligns the crystal
+# to the fragment's start
+#
+# fragments live in rbyds, so their offset says nothing about block
+# alignment, our crystal shouldn't depend on where the fragment happens
+# to be in its rbyd
+[cases.test_fwrite_align_fragment]
+defines.OFF = '3*BLOCK_SIZE/4'
+if = 'OFF + CRYSTAL_THRESH <= BLOCK_SIZE'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write a fragment until it lands far enough into its rbyd that
+    // its rbyd offset would put it in a different block
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    uint8_t wbuf[OFF+CRYSTAL_THRESH];
+    memset(wbuf, 0, OFF+CRYSTAL_THRESH);
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < FRAGMENT_SIZE; i++) {
+        wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    for (lfs3_size_t i = 0;; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_SIZE);
+
+        lfs3_file_rewind(&lfs3, &file) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, FRAGMENT_SIZE) => FRAGMENT_SIZE;
+        lfs3_file_sync(&lfs3, &file) => 0;
+
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, 0,
+                &bid, &weight, &bptr) => 0;
+        assert(!lfs3_bptr_isbptr(&bptr));
+        if (OFF + lfs3_bptr_off(&bptr) >= BLOCK_SIZE) {
+            break;
+        }
+    }
+
+    // write enough to crystallize
+    for (lfs3_size_t i = OFF; i < OFF+CRYSTAL_THRESH; i++) {
+        wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_seek(&lfs3, &file, OFF, LFS3_SEEK_SET) => OFF;
+    lfs3_file_write(&lfs3, &file, &wbuf[OFF], CRYSTAL_THRESH)
+            => CRYSTAL_THRESH;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => OFF+CRYSTAL_THRESH;
+        uint8_t rbuf[2*(OFF+CRYSTAL_THRESH)];
+        memset(rbuf, 0xaa, 2*(OFF+CRYSTAL_THRESH));
+        lfs3_file_read(&lfs3, &file, rbuf, 2*(OFF+CRYSTAL_THRESH))
+                => OFF+CRYSTAL_THRESH;
+        assert(memcmp(rbuf, wbuf, OFF+CRYSTAL_THRESH) == 0);
+
+        // the fragment should have been crystallized into our block
+        lfs3_block_t blocks = 0;
+        lfs3_btrv_t btrv;
+        lfs3_btrv_init(&btrv);
+        for (lfs3_block_t i = 0;; i++) {
+            // a bit hacky, but this catches infinite loops
+            assert(i < 2*BLOCK_COUNT);
+
+            lfs3_stag_t tag;
+            lfs3_sbid_t bid;
+            lfs3_bid_t weight;
+            lfs3_data_t data;
+            tag = lfs3_bshrub_traverse(&lfs3, &file.b, &btrv,
+                    &bid, &weight, &data);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+
+            if (tag == LFS3_TAG_DATA) {
+                printf("traversal: %d 0x%x w%d data %d\n",
+                        bid,
+                        tag,
+                        weight,
+                        lfs3_data_size(&data));
+                assert(false);
+
+            } else if (tag == LFS3_TAG_BLOCK) {
+                lfs3_bptr_t bptr;
+                lfs3_data_readbptr(&lfs3, &data,
+                        &bptr) => 0;
+                printf("traversal: %d 0x%x w%d block 0x%x.%x %d\n",
+                        bid,
+                        tag,
+                        weight,
+                        lfs3_bptr_block(&bptr),
+                        lfs3_bptr_off(&bptr),
+                        lfs3_bptr_size(&bptr));
+                blocks += 1;
+            }
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        assert(blocks == 1);
     }
 
     lfs3_unmount(&lfs3) => 0;
