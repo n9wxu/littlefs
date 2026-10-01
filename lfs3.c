@@ -6977,14 +6977,14 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
         LFS3_DEBUG("Committed bshrub "
                     "0x{%"PRIx32",%"PRIx32"}.%"PRIx32" w%"PRId32,
                 bshrub->h.mdir.r.blocks[0], bshrub->h.mdir.r.blocks[1],
-                lfs3_shrub_trunk(&bshrub->b),
-                bshrub->b.weight);
+                lfs3_shrub_trunk(&bshrub->b.r),
+                bshrub->b.r.weight);
     } else {
         LFS3_DEBUG("Committed btree 0x%"PRIx32".%"PRIx32" w%"PRId32", "
                     "cksum %"PRIx32,
-                bshrub->b.blocks[0], lfs3_shrub_trunk(&bshrub->b),
-                bshrub->b.weight,
-                bshrub->b.cksum);
+                bshrub->b.r.blocks[0], lfs3_shrub_trunk(&bshrub->b.r),
+                bshrub->b.r.weight,
+                bshrub->b.r.cksum);
     }
     #endif
     return 0;
