@@ -11,7 +11,7 @@ defaults:
 
 jobs:
   release:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
 
     # need to manually check for a couple things
     # - tests passed?
@@ -20,7 +20,7 @@ jobs:
       github.event.workflow_run.head_sha == github.sha}}
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
         with:
           ref: ${{github.event.workflow_run.head_sha}}
           # need workflow access since we push branches
@@ -30,32 +30,32 @@ jobs:
           fetch-depth: 0
 
       # try to get results from tests
-      - uses: dawidd6/action-download-artifact@v2
+      #
+      # note benchmarks run on a schedule now, so aren't included here
+      - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          workflow: ${{github.event.workflow_run.name}}
-          run_id: ${{github.event.workflow_run.id}}
-          name: sizes
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          run-id: ${{github.event.workflow_run.id}}
+          pattern: '{sizes,sizes-*}'
+          merge-multiple: true
           path: sizes
-      - uses: dawidd6/action-download-artifact@v2
+      - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          workflow: ${{github.event.workflow_run.name}}
-          run_id: ${{github.event.workflow_run.id}}
-          name: cov
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          run-id: ${{github.event.workflow_run.id}}
+          pattern: '{cov,cov-*}'
+          merge-multiple: true
           path: cov
-      - uses: dawidd6/action-download-artifact@v2
-        continue-on-error: true
-        with:
-          workflow: ${{github.event.workflow_run.name}}
-          run_id: ${{github.event.workflow_run.id}}
-          name: bench
-          path: bench
 
       - name: find-version
         run: |
-          # rip version from lfs.h
-          LFS_VERSION="$(grep -o '^#define LFS_VERSION .*$' lfs.h \
+          # rip version from lfs3.h
+          #
+          # note we avoid LFS3_* names here, make forwards those to the
+          # compiler
+          LFS_VERSION="$(grep -o '^#define LFS3_VERSION .*$' lfs3.h \
             | awk '{print $3}')"
           LFS_VERSION_MAJOR="$((0xffff & ($LFS_VERSION >> 16)))"
           LFS_VERSION_MINOR="$((0xffff & ($LFS_VERSION >>  0)))"
@@ -81,7 +81,9 @@ jobs:
       - name: find-prev-version
         continue-on-error: true
         run: |
-          LFS_PREV_VERSION="$(git describe --tags --abbrev=0 --match 'v*')"
+          LFS_PREV_VERSION="$( \
+            git describe --tags --abbrev=0 --match 'v*' \
+            || true)"
           echo "LFS_PREV_VERSION=$LFS_PREV_VERSION"
           echo "LFS_PREV_VERSION=$LFS_PREV_VERSION" >> $GITHUB_ENV
 
@@ -96,13 +98,20 @@ jobs:
             >> prev-status.json \
             || true
 
+          # how csv.py should fold each measurement, only code is a sum
+          declare -A fields=(
+            [code]='code_size'
+            [stack]='max(stack_limit)'
+            [ctx]='max(ctx_size)'
+            [structs]='max(struct_size)')
+
           # build table for GitHub
           declare -A table
 
           # sizes table
           i=0
           j=0
-          for c in "" readonly threadsafe migrate error-asserts
+          for c in "" rdonly gbmap biggest
           do
             # per-config results
             c_or_default=${c:-default}
@@ -110,7 +119,7 @@ jobs:
             table[$i,$j]=$c_camel
             ((j+=1))
 
-            for s in code stack struct
+            for s in code stack ctx structs
             do
               f=sizes/thumb${c:+-$c}.$s.csv
               [ -e $f ] && table[$i,$j]=$( \
@@ -118,7 +127,7 @@ jobs:
                     select(.context == "'"sizes (thumb${c:+, $c}) / $s"'").description
                     | capture("(?<prev>[0-9∞]+)").prev' \
                   prev-status.json || echo 0)"
-                ./scripts/summary.py $f --max=stack_limit -Y \
+                ./scripts/csv.py $f -f$s="${fields[$s]}" -Y \
                   | awk '
                     NR==2 {$1=0; printf "%s B",$NF}
                     NR==2 && ENVIRON["PREV"]+0 != 0 {
@@ -132,7 +141,7 @@ jobs:
 
           # coverage table
           i=0
-          j=4
+          j=5
           for s in lines branches
           do
             table[$i,$j]=${s^}
@@ -152,43 +161,18 @@ jobs:
                     printf " (%+.1f%%)",$4-ENVIRON["PREV"]
                   }' \
                 | sed -e 's/ /\&nbsp;/g')
-            ((j=4, i+=1))
-          done
-
-          # benchmark table
-          i=3
-          j=4
-          for s in readed proged erased
-          do
-            table[$i,$j]=${s^}
-            ((j+=1))
-
-            f=bench/bench.csv
-            [ -e $f ] && table[$i,$j]=$( \
-              export PREV="$(jq -re '
-                  select(.context == "'"bench / $s"'").description
-                  | capture("(?<prev>[0-9]+)").prev' \
-                prev-status.json || echo 0)"
-              ./scripts/summary.py $f -f$s=bench_$s -Y \
-                | awk '
-                  NR==2 {$1=0; printf "%s B",$NF}
-                  NR==2 && ENVIRON["PREV"]+0 != 0 {
-                    printf " (%+.1f%%)",100*($NF-ENVIRON["PREV"])/ENVIRON["PREV"]
-                  }' \
-                | sed -e 's/ /\&nbsp;/g')
-            ((j=4, i+=1))
+            ((j=5, i+=1))
           done
 
           # build the actual table
-          echo "|   | Code | Stack | Structs |   | Coverage |" >> table.txt
-          echo "|:--|-----:|------:|--------:|:--|---------:|" >> table.txt
-          for ((i=0; i<6; i++))
+          echo "|   | Code | Stack | Ctx | Structs |   | Coverage |" >> table.txt
+          echo "|:--|-----:|------:|----:|--------:|:--|---------:|" >> table.txt
+          for ((i=0; i<4; i++))
           do
             echo -n "|" >> table.txt
-            for ((j=0; j<6; j++))
+            for ((j=0; j<7; j++))
             do
               echo -n " " >> table.txt
-              [[ i -eq 2 && j -eq 5 ]] && echo -n "**Benchmarks**" >> table.txt
               echo -n "${table[$i,$j]:-}" >> table.txt
               echo -n " |" >> table.txt
             done
@@ -211,29 +195,18 @@ jobs:
           echo "CHANGES:"
           cat changes.txt
 
-      # create and update major branches (vN and vN-prefix)
+      # create and update major branches (vN)
+      #
+      # note no more vN-prefix branches, v3 is already lfs3_* prefixed and
+      # the -prefix branches are planned to be sunset
       - name: create-major-branches
         run: |
           # create major branch
           git branch "v$LFS_VERSION_MAJOR" HEAD
 
-          # create major prefix branch
-          git config user.name ${{secrets.BOT_USER}}
-          git config user.email ${{secrets.BOT_EMAIL}}
-          git fetch "https://github.com/$GITHUB_REPOSITORY.git" \
-            "v$LFS_VERSION_MAJOR-prefix" || true
-          ./scripts/changeprefix.py --git "lfs" "lfs$LFS_VERSION_MAJOR"
-          git branch "v$LFS_VERSION_MAJOR-prefix" $( \
-            git commit-tree $(git write-tree) \
-              $(git rev-parse --verify -q FETCH_HEAD | sed -e 's/^/-p /') \
-              -p HEAD \
-              -m "Generated v$LFS_VERSION_MAJOR prefixes")
-          git reset --hard
-
           # push!
           git push --atomic origin \
-            "v$LFS_VERSION_MAJOR" \
-            "v$LFS_VERSION_MAJOR-prefix"
+            "v$LFS_VERSION_MAJOR"
 
       # build release notes
       - name: create-release
