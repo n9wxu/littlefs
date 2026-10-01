@@ -1253,3 +1253,137 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# Random writes under powerloss
+#
+# Random overwrites, holes, and appends, syncing every few writes. The
+# number of syncs is committed with the file's data as a file-attached
+# attribute, so we can rebuild what the file should look like after any
+# powerloss
+#
+[cases.test_powerloss_fwrite_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+# inlining has a tendency to hide sync issues, so try without
+defines.SHRUB_SIZE = ['BLOCK_SIZE/4', '0']
+defines.FRAGMENT_SIZE = ['LFS3_MIN(BLOCK_SIZE/16, 512)', '16']
+defines.PROG_SIZE = [1, 16]
+defines.SIZE = ['BLOCK_SIZE/2', '4*BLOCK_SIZE']
+defines.SYNC_EVERY = [1, 8]
+defines.WRITES = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // the number of syncs is committed with the file's data as a
+    // file-attached attribute
+    uint32_t step = 0;
+    lfs3_ssize_t step_size;
+    struct lfs3_attr attr = {
+        .type = 1,
+        .flags = LFS3_A_RDWR,
+        .buffer = &step,
+        .buffer_size = sizeof(uint32_t),
+        .size = &step_size,
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = &attr,
+        .attr_count = 1,
+    };
+    lfs3_file_t file;
+    lfs3_file_opencfg(&lfs3, &file, "file",
+            LFS3_O_RDWR | LFS3_O_CREAT,
+            &filecfg) => 0;
+    if (step_size == LFS3_ERR_NOATTR) {
+        step = 0;
+    } else {
+        assert(step_size == sizeof(uint32_t));
+    }
+    assert(step*SYNC_EVERY <= WRITES);
+    lfs3_size_t i_ = step*SYNC_EVERY;
+
+    // replay our writes in our sim, then continue on disk
+    uint8_t sim[SIZE];
+    lfs3_off_t size = 0;
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < WRITES; i++) {
+        // caught up with disk? check that our file matches our sim
+        if (i == i_) {
+            lfs3_file_size(&lfs3, &file) => size;
+            lfs3_file_rewind(&lfs3, &file) => 0;
+            uint8_t rbuf[SIZE+1];
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => size;
+            assert(memcmp(rbuf, sim, size) == 0);
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        // choose a random offset, possibly past the end of the file,
+        // and a random size, mostly small but sometimes a block
+        lfs3_off_t off = TEST_PRNG(&prng) % SIZE;
+        lfs3_size_t chunk = (TEST_PRNG(&prng) % 4 == 0)
+                ? 1 + (TEST_PRNG(&prng) % BLOCK_SIZE)
+                : 1 + (TEST_PRNG(&prng) % 64);
+        chunk = lfs3_min(chunk, SIZE - off);
+
+        // update our sim
+        if (off > size) {
+            memset(&sim[size], 0, off-size);
+        }
+        for (lfs3_size_t j = 0; j < chunk; j++) {
+            sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        size = lfs3_max(size, off+chunk);
+
+        // update our file
+        if (i >= i_) {
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+
+            // sync?
+            if ((i+1) % SYNC_EVERY == 0) {
+                step = (i+1) / SYNC_EVERY;
+                step_size = sizeof(uint32_t);
+                lfs3_file_sync(&lfs3, &file) => 0;
+            }
+        }
+    }
+
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our file
+        lfs3_getattr(&lfs3, "file", 1, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+        assert(step == WRITES/SYNC_EVERY);
+
+        lfs3_file_open(&lfs3, &file, "file", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => size;
+        uint8_t rbuf[SIZE+1];
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => size;
+        assert(memcmp(rbuf, sim, size) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
