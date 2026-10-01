@@ -76,6 +76,19 @@ class DRange:
         return '(%s)*%d + %d' % (i, self.step, self.start)
 
 
+# escape a string as a C string literal
+def cstr(s):
+    out = []
+    for c in s.encode('utf8'):
+        if c in b'\\"?':
+            out.append('\\' + chr(c))
+        elif c >= 0x20 and c < 0x7f:
+            out.append(chr(c))
+        else:
+            out.append('\\%03o' % c)
+    return '"%s"' % ''.join(out)
+
+
 class TestCase:
     # create a TestCase object from a config
     def __init__(self, config, args={}):
@@ -103,6 +116,11 @@ class TestCase:
         self.in_ = config.pop('in',
                 config.pop('suite_in', None))
 
+        # death tests expect each permutation to die on an assert
+        self.death = config.pop('death', None)
+        self.death_code = config.pop('death_code', None)
+        self.death_code_lineno = config.pop('death_code_lineno', None)
+
         self.internal = config.pop('internal',
                 config.pop('suite_internal', None))
         if self.internal is None:
@@ -118,6 +136,28 @@ class TestCase:
 
         # in implies internal
         self.internal |= bool(self.in_)
+
+        if self.death is not None and not isinstance(self.death, str):
+            print('%serror:%s in %s, death must be a string' % (
+                        '\x1b[1;31m' if args['color'] else '',
+                        '\x1b[m' if args['color'] else '',
+                        self.name),
+                    file=sys.stderr)
+            sys.exit(-1)
+        if self.death is not None and self.reentrant:
+            print('%serror:%s in %s, death tests can\'t be reentrant' % (
+                        '\x1b[1;31m' if args['color'] else '',
+                        '\x1b[m' if args['color'] else '',
+                        self.name),
+                    file=sys.stderr)
+            sys.exit(-1)
+        if self.death_code is not None and self.death is None:
+            print('%serror:%s in %s, death_code needs death' % (
+                        '\x1b[1;31m' if args['color'] else '',
+                        '\x1b[m' if args['color'] else '',
+                        self.name),
+                    file=sys.stderr)
+            sys.exit(-1)
 
         # defines can be a dict or a list or dicts
         suite_defines = config.pop('suite_defines', None)
@@ -237,15 +277,19 @@ class TestSuite:
             f.seek(0)
             case_linenos = []
             code_linenos = []
+            death_code_linenos = []
             for i, line in enumerate(f):
                 match = re.match(
                         '(?P<case>\\[\\s*cases\\s*\\.\\s*(?P<name>\\w+)\\s*\\])'
-                            '|' '(?P<code>code\\s*=)',
+                            '|' '(?P<code>code\\s*=)'
+                            '|' '(?P<death_code>death_code\\s*=)',
                         line)
                 if match and match.group('case'):
                     case_linenos.append((i+1, match.group('name')))
                 elif match and match.group('code'):
                     code_linenos.append(i+2)
+                elif match and match.group('death_code'):
+                    death_code_linenos.append(i+2)
 
             # sort in case toml parsing did not retain order
             case_linenos.sort()
@@ -262,6 +306,11 @@ class TestSuite:
                         default=None)
                 cases[name]['lineno'] = lineno
                 cases[name]['code_lineno'] = code_lineno
+                if 'death_code' in cases[name]:
+                    cases[name]['death_code_lineno'] = min(
+                            (l for l in death_code_linenos
+                                if l >= lineno and l < nlineno),
+                            default=None)
 
             self.if_ = config.pop('if', None)
             if self.if_ is None:
@@ -542,6 +591,24 @@ def compile(test_paths, **args):
                     f.writeln('}')
                     f.writeln()
 
+                    # create case death function, this runs in the parent
+                    # after the child dies
+                    if case.death_code is not None:
+                        f.writeln('void __test__%s__death('
+                                '__attribute__((unused)) '
+                                'const struct lfs3_cfg *CFG) {' % (
+                                    case.name))
+                        f.writeln(4*' '+'// test case %s death' % case.name)
+                        if case.death_code_lineno is not None:
+                            f.writeln(4*' '+'#line %d "%s"' % (
+                                    case.death_code_lineno, suite.path))
+                        f.write(case.death_code)
+                        if case.death_code_lineno is not None:
+                            f.writeln(4*' '+'#line %d "%s"' % (
+                                    f.lineno+1, args['output']))
+                        f.writeln('}')
+                        f.writeln()
+
                     # write any ifdef epilogues
                     if case.ifdef or case.ifndef:
                         for ifdef in case.ifdef:
@@ -598,6 +665,10 @@ def compile(test_paths, **args):
                         f.writeln('extern void __test__%s__run('
                                 'const struct lfs3_cfg *CFG);' % (
                                     case.name))
+                        if case.death_code is not None:
+                            f.writeln('extern void __test__%s__death('
+                                    'const struct lfs3_cfg *CFG);' % (
+                                        case.name))
                         f.writeln()
 
                 # write any ifdef epilogues
@@ -692,6 +763,13 @@ def compile(test_paths, **args):
                                     case.name))
                         f.writeln(12*' '+'.run = __test__%s__run,' % (
                                 case.name))
+                        if case.death is not None:
+                            f.writeln(12*' '+'.death = %s,' % (
+                                    cstr(case.death)))
+                        if case.death_code is not None:
+                            f.writeln(12*' '+'.death_run = '
+                                    '__test__%s__death,' % (
+                                        case.name))
                         for ifdef in it.chain(suite.ifdef, case.ifdef):
                             f.writeln(12*' '+'#endif')
                         for ifndef in it.chain(suite.ifndef, case.ifndef):

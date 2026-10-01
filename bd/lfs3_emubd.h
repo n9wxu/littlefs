@@ -48,7 +48,21 @@ typedef enum lfs3_emubd_powerloss_behavior {
     LFS3_EMUBD_POWERLOSS_MOSTBITS    = 2, // All-but-one bit is progged
     LFS3_EMUBD_POWERLOSS_OOO         = 3, // Blocks are written out-of-order
     LFS3_EMUBD_POWERLOSS_METASTABLE  = 4, // Reads may flip a bit
+    LFS3_EMUBD_POWERLOSS_TORNTAIL    = 5, // Tail is progged, head is not
 } lfs3_emubd_powerloss_behavior_t;
+
+// LFS3_EMUBD_POWERLOSS_TORNTAIL leaves the first prog_size bytes of the
+// interrupted prog erased, progs a random-length run of the bytes after
+// them, and flips one bit in that run. A prog of only prog_size bytes is
+// lost whole, and erases are atomic.
+
+// Operations that lfs3_emubd_mkioerror can make fail
+typedef enum lfs3_emubd_op {
+    LFS3_EMUBD_OP_READ       = 0, // Read
+    LFS3_EMUBD_OP_PROG       = 1, // Prog
+    LFS3_EMUBD_OP_ERASE      = 2, // Erase
+    LFS3_EMUBD_OP_SYNC       = 3, // Sync
+} lfs3_emubd_op_t;
 
 // Type for measuring read/program/erase operations
 typedef uint64_t lfs3_emubd_io_t;
@@ -153,17 +167,26 @@ struct lfs3_emubd_cfg {
     // Seed for prng, which may be used for emulating failed progs. This does
     // not affect normal operation.
     uint32_t seed;
+
+    // Fail the test if a prog touches a byte that was programmed since the
+    // block's last successful erase. A byte counts as programmed once emubd
+    // writes it, including by an interrupted prog. Failed progs (bad blocks,
+    // injected errors) write nothing and so mark nothing. This costs an
+    // extra bit per byte.
+    bool ck_progonce;
 };
 
 // A reference counted block
 typedef struct lfs3_emubd_block {
     uint32_t rc;
     lfs3_emubd_wear_t wear;
+    lfs3_emubd_io_t progs;
     bool metastable;
     // sign(bad_bit)=0 => randomized on erase
     // sign(bad_bit)=1 => fixed
     lfs3_size_t bad_bit;
 
+    // with ck_progonce, data is followed by a bitmap of programmed bytes
     uint8_t data[];
 } lfs3_emubd_block_t;
 
@@ -192,8 +215,10 @@ typedef struct lfs3_emubd {
     // some other test state
     uint32_t prng;
     lfs3_emubd_powercycles_t power_cycles;
-    uint32_t badread;
+    uint32_t ioerror[4];
+    int ioerror_err[4];
     bool badsync;
+    uint32_t *transient;
     lfs3_emubd_block_t **ooo_before;
     lfs3_emubd_block_t **ooo_after;
     lfs3_emubd_disk_t *disk;
@@ -277,6 +302,14 @@ lfs3_emubd_swear_t lfs3_emubd_wear(const struct lfs3_cfg *cfg,
 int lfs3_emubd_setwear(const struct lfs3_cfg *cfg,
         lfs3_block_t block, lfs3_emubd_wear_t wear);
 
+// Get the number of progs that wrote to a given block, this is never reset
+lfs3_emubd_sio_t lfs3_emubd_blockprogs(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
+
+// Mark every byte in a block as programmed, so that with ck_progonce any
+// prog before the block's next erase fails the test
+int lfs3_emubd_mkprogged(const struct lfs3_cfg *cfg, lfs3_block_t block);
+
 // Mark a block as bad, this is equivalent to setting wear to maximum
 int lfs3_emubd_mkbad(const struct lfs3_cfg *cfg, lfs3_block_t block);
 
@@ -306,13 +339,35 @@ int lfs3_emubd_flipbit(const struct lfs3_cfg *cfg,
 // Flip all bits marked as bad
 int lfs3_emubd_flip(const struct lfs3_cfg *cfg);
 
-// Get the remaining reads before a read error, 0 if disabled
-int32_t lfs3_emubd_badread(const struct lfs3_cfg *cfg);
+// Error with err on the nth op (read, prog, erase, sync) from now, 0
+// disables
+//
+// err=0 errors with LFS3_ERR_IO. The failing op changes nothing on the
+// device, a failed sync makes nothing durable, and only the nth op
+// fails, later ops succeed.
+int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
+        lfs3_emubd_op_t op, uint32_t n, int err);
 
-// Error with LFS3_ERR_IO on the nth read from now, 0 disables
-int lfs3_emubd_setbadread(const struct lfs3_cfg *cfg, uint32_t reads);
+// Get the remaining ops before an injected error, 0 if disabled or
+// already triggered
+int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op);
+
+// Error with LFS3_ERR_CORRUPT on the next n reads of a given block, after
+// which reads succeed again, 0 clears
+//
+// Unlike LFS3_EMUBD_BADBLOCK_READERROR, the block's data is intact, this
+// emulates a read that fails and then succeeds on retry.
+int lfs3_emubd_mktransient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, uint32_t n);
+
+// Get the remaining transient read errors of a given block
+int32_t lfs3_emubd_transient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
 
 // Mark sync as bad, every sync errors with LFS3_ERR_IO until marked good
+//
+// To fail only the nth sync, use lfs3_emubd_mkioerror with
+// LFS3_EMUBD_OP_SYNC.
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg);
 
 // Mark sync as good

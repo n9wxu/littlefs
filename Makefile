@@ -38,6 +38,8 @@ TEST_PERF  := $(TEST_RUNNER:%=%.perf)
 TEST_TRACE := $(TEST_RUNNER:%=%.trace)
 TEST_CSV   := $(TEST_RUNNER:%=%.csv)
 
+RDONLY_RUNNER ?= $(BUILDDIR)/runners/rdonly_runner
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -530,6 +532,10 @@ ifdef PERFBDGEN
 	rm -f $(TEST_TRACE)
 endif
 
+## Build the read-only image runner, see runners/rdonly_runner.c
+.PHONY: rdonly-runner
+rdonly-runner: $(RDONLY_RUNNER)
+
 ## Run the tests, -j enables parallel tests
 .PHONY: test
 test: test-runner
@@ -806,6 +812,9 @@ $(BUILDDIR)/runners/test_runner: $(TEST_OBJ)
 $(BUILDDIR)/runners/bench_runner: $(BENCH_OBJ)
 	$(CC) $(CFLAGS) $^ $(LFLAGS) -o$@
 
+$(BUILDDIR)/runners/rdonly_runner: $(BUILDDIR)/runners/rdonly_runner.o $(OBJ)
+	$(CC) $(CFLAGS) $^ $(LFLAGS) -o$@
+
 # our main build rule generates .o, .d, and .ci files, the latter
 # used for stack analysis
 $(BUILDDIR)/%.o $(BUILDDIR)/%.ci: %.c
@@ -870,6 +879,8 @@ clean:
 	rm -f $(TEST_PERF)
 	rm -f $(TEST_TRACE)
 	rm -f $(TEST_CSV)
+	rm -f $(RDONLY_RUNNER)
+	rm -f $(BUILDDIR)/runners/rdonly_runner.o
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)
