@@ -8186,3 +8186,190 @@ code = '''
     lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test janitorial work on a device with bad blocks
+#
+# interleaves a file workload with gc steps, checks with work flags,
+# read-write traversals, pre-erasing and remounts with work flags
+[cases.test_badblocks_gc]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+    'LFS3_EMUBD_BADBLOCK_PROGFLIP',
+]
+# we need prog checking to detect read errors and silent errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+# BADBLOCKS=0 => one random block is bad
+# BADBLOCKS=1 => a large region of bad blocks
+# BADBLOCKS=2 => every other block is bad
+defines.BADBLOCKS = [0, 1, 2]
+defines.GBMAP = [false, true]
+defines.FORMAT_BLOCK_COUNT = '(GBMAP) ? 3 : 2'
+defines.N = 16
+defines.OPS = 64
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+ifdef = ['LFS3_GC', 'LFS3_GBMAP', 'LFS3_PREERASE', 'LFS3_CKPROGS']
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+code = '''
+    // we change gc_flags/gc_steps as we go
+    struct lfs3_cfg cfg = *CFG;
+    uint32_t flags = LFS3_M_RDWR
+            // note preerasing needs revperturb
+            | LFS3_M_REVPERTURB
+            | ((CKPROGS) ? LFS3_M_CKPROGS : 0);
+    uint32_t prng = SEED;
+
+    // mark our bad blocks
+    if (BADBLOCKS == 0) {
+        lfs3_emubd_mkbad(CFG,
+                FORMAT_BLOCK_COUNT
+                    + (TEST_PRNG(&prng)
+                        % (BLOCK_COUNT-FORMAT_BLOCK_COUNT))) => 0;
+    } else {
+        bool mirror = TEST_PRNG(&prng) % 2;
+        for (lfs3_block_t i = FORMAT_BLOCK_COUNT; i < BLOCK_COUNT; i++) {
+            if ((BADBLOCKS == 1 && (i < BLOCK_COUNT/2) != mirror)
+                    || (BADBLOCKS == 2 && i % 2 == mirror)) {
+                lfs3_emubd_mkbad(CFG, i) => 0;
+            }
+        }
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            flags | ((GBMAP) ? LFS3_F_GBMAP : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, flags, &cfg) => 0;
+
+    // our sim, size=-1 means no file
+    lfs3_size_t sizes[N];
+    uint32_t seeds[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sizes[i] = -1;
+    }
+    const lfs3_size_t SIZES[3] = {FCACHE_SIZE/2, BLOCK_SIZE/2, 2*BLOCK_SIZE};
+    const uint32_t GC_FLAGS_[6] = {
+        LFS3_GC_MKCONSISTENT,
+        LFS3_GC_LOOKAHEAD,
+        LFS3_GC_PREERASE,
+        LFS3_GC_COMPACT,
+        LFS3_GC_CKMETA,
+        LFS3_GC_CKDATA,
+    };
+    uint8_t wbuf[2*BLOCK_SIZE];
+    uint8_t rbuf[2*BLOCK_SIZE];
+
+    for (lfs3_size_t i = 0; i <= OPS; i++) {
+        uint8_t op = TEST_PRNG(&prng) % 8;
+
+        // write a file?
+        if (op <= 2 || i == OPS) {
+            if (i < OPS) {
+                lfs3_size_t x = TEST_PRNG(&prng) % N;
+                sizes[x] = SIZES[TEST_PRNG(&prng) % 3];
+                seeds[x] = TEST_PRNG(&prng);
+                uint32_t wprng = seeds[x];
+                for (lfs3_size_t j = 0; j < sizes[x]; j++) {
+                    wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+                }
+                char name[256];
+                sprintf(name, "spider%03x", x);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name,
+                        LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+                lfs3_file_write(&lfs3, &file, wbuf, sizes[x]) => sizes[x];
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+        // remove a file?
+        } else if (op == 3) {
+            lfs3_size_t x = TEST_PRNG(&prng) % N;
+            char name[256];
+            sprintf(name, "spider%03x", x);
+            lfs3_remove(&lfs3, name)
+                    => (sizes[x] != (lfs3_size_t)-1) ? 0 : LFS3_ERR_NOENT;
+            sizes[x] = -1;
+
+        // some gc steps with one flag?
+        } else if (op == 4) {
+            cfg.gc_flags = GC_FLAGS_[TEST_PRNG(&prng) % 6];
+            cfg.gc_steps = 1 + (TEST_PRNG(&prng) % 4);
+            lfs3_fs_gc(&lfs3) => 0;
+
+        // a check with work flags?
+        } else if (op == 5) {
+            uint32_t ckflags = 0;
+            uint32_t r = TEST_PRNG(&prng);
+            for (int j = 0; j < 6; j++) {
+                if (r & (1 << j)) {
+                    ckflags |= GC_FLAGS_[j];
+                }
+            }
+            lfs3_fs_ck(&lfs3, ckflags) => 0;
+
+        // a read-write traversal?
+        } else if (op == 6) {
+            lfs3_trv_t trv;
+            lfs3_trv_open(&lfs3, &trv,
+                    LFS3_T_RDWR
+                        | LFS3_T_COMPACT
+                        | LFS3_T_MKCONSISTENT
+                        | LFS3_T_LOOKAHEAD) => 0;
+            while (true) {
+                struct lfs3_tinfo tinfo;
+                int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err == LFS3_ERR_NOENT) {
+                    break;
+                }
+            }
+            lfs3_trv_close(&lfs3, &trv) => 0;
+
+        // remount with work flags?
+        } else {
+            uint32_t mflags = 0;
+            uint32_t r = TEST_PRNG(&prng);
+            for (int j = 0; j < 6; j++) {
+                if (r & (1 << j)) {
+                    mflags |= GC_FLAGS_[j];
+                }
+            }
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, flags | mflags, &cfg) => 0;
+        }
+
+        // check our files every few operations
+        if (i % 8 == 0 || i == OPS) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                char name[256];
+                sprintf(name, "spider%03x", x);
+                if (sizes[x] == (lfs3_size_t)-1) {
+                    struct lfs3_info info;
+                    lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                    continue;
+                }
+                uint32_t wprng = seeds[x];
+                for (lfs3_size_t j = 0; j < sizes[x]; j++) {
+                    wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+                }
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_read(&lfs3, &file, rbuf, 2*BLOCK_SIZE)
+                        => sizes[x];
+                assert(memcmp(rbuf, wbuf, sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        }
+    }
+
+    // finish any gc work
+    lfs3_fs_ck(&lfs3, LFS3_CK_GC) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, &cfg) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
