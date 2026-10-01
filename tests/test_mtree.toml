@@ -711,6 +711,225 @@ code = '''
 '''
 
 
+# split under powerloss
+#
+# Our progress is kept in a reserved attribute on the mroot, committed
+# after each step. Every step is idempotent, so the step in progress is
+# either complete or absent, and can always be redone
+#
+[cases.test_mtree_split_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.N = [5, 10, 20, 40, 80, 160]
+defines.FORCE_COMPACTION = [false, true]
+defines.H = 2
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+in = 'lfs3.c'
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    }
+    lfs3_alloc_ckpoint(&lfs3);
+
+    // how far did we get?
+    uint32_t step = 0;
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(0),
+            &data);
+    assert(tag == LFS3_TAG_ATTR(0) || tag == LFS3_ERR_NOENT);
+    if (tag != LFS3_ERR_NOENT) {
+        lfs3_data_read(&lfs3, &data, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+    }
+    assert(step <= N);
+
+    // replay our sim up to our step
+    bool sim[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sim[i] = false;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < step; i++) {
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        sim[x] = true;
+    }
+    // the step in progress may or may not have made it to disk
+    uint32_t prng_ = prng;
+    lfs3_size_t x_ = (step < N) ? TEST_PRNG(&prng_) % N : N;
+
+    // check each entry, and open handles on a couple of them, these
+    // should keep tracking their entries as the mtree changes
+    lfs3_handle_t hs[H];
+    lfs3_size_t h_xs[H];
+    bool h_open[H];
+    for (lfs3_size_t h = 0; h < H; h++) {
+        h_open[h] = false;
+    }
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", i);
+        lfs3_mdir_t mdir;
+        lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                &mdir, NULL);
+        assert(tag == LFS3_TAG_REG || tag == LFS3_ERR_NOENT);
+        if (i != x_) {
+            assert((tag == LFS3_TAG_REG) == sim[i]);
+        }
+        if (tag == LFS3_TAG_REG) {
+            uint8_t buffer[256];
+            lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                    &data) => LFS3_TAG_REG;
+            lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+            assert(memcmp(buffer, name, 4) == 0);
+
+            for (lfs3_size_t h = 0; h < H && i != x_; h++) {
+                if (!h_open[h]) {
+                    hs[h] = (lfs3_handle_t){.flags=0};
+                    hs[h].mdir = mdir;
+                    lfs3_handle_open(&lfs3, &hs[h]);
+                    h_xs[h] = i;
+                    h_open[h] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (lfs3_size_t i = step; i < N; i++) {
+        // choose a pseudo-random name
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", x);
+
+        // update sim
+        sim[x] = true;
+
+        // update mtree
+                lfs3_mdir_t mdir;
+                lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL);
+                assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+                if (tag == LFS3_ERR_NOENT) {
+                    // force a compaction?
+                    if (FORCE_COMPACTION) {
+                        lfs3.mroot.r.eoff = -1;
+                        mdir.r.eoff = -1;
+                    }
+                    lfs3_alloc_ckpoint(&lfs3);
+                    lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                            LFS3_RATTR(4, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+                            LFS3_RATTR_ARG(0),
+                            LFS3_RATTR_ARG(name+1),
+                            LFS3_RATTR_ARG(3),
+                            LFS3_RATTR_NULL)) => 0;
+
+                    // double check
+                    uint8_t buffer[256];
+                    lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                            &data) => LFS3_TAG_REG;
+                    lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                    assert(memcmp(buffer, name, 4) == 0);
+                }
+
+                // track new entries with any free handles
+                bool tracked = false;
+                for (lfs3_size_t h = 0; h < H; h++) {
+                    tracked = tracked || (h_open[h] && h_xs[h] == x);
+                }
+                for (lfs3_size_t h = 0; h < H && !tracked; h++) {
+                    if (!h_open[h]) {
+                        lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                                &mdir, NULL) => LFS3_TAG_REG;
+                        hs[h] = (lfs3_handle_t){.flags=0};
+                        hs[h].mdir = mdir;
+                        lfs3_handle_open(&lfs3, &hs[h]);
+                        h_xs[h] = x;
+                        h_open[h] = true;
+                        break;
+                    }
+                }
+
+        // record our progress
+        uint32_t step_ = i+1;
+        lfs3_alloc_ckpoint(&lfs3);
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_ATTR(0), 0,
+                    LFS3_FROM_BUF, sizeof(uint32_t)),
+                LFS3_RATTR_ARG(&step_),
+                LFS3_RATTR_NULL)) => 0;
+
+        // our handles should still track their entries
+        for (lfs3_size_t h = 0; h < H; h++) {
+            if (!h_open[h]) {
+                continue;
+            }
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", h_xs[h]);
+            lfs3_mdir_t mdir;
+            lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL) => LFS3_TAG_REG;
+            assert(hs[h].mdir.mid == mdir.mid);
+            assert(lfs3_mdir_cmp(&hs[h].mdir, &mdir) == 0);
+        }
+    }
+
+    for (lfs3_size_t h = 0; h < H; h++) {
+        if (h_open[h]) {
+            lfs3_handle_close(&lfs3, &hs[h]);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // try looking up each entry
+        lfs3_mdir_t mdir;
+        lfs3_mtree_lookup(&lfs3, 0, &mdir) => 0;
+        uint8_t buffer[256];
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_BOOKMARK,
+                &data) => LFS3_TAG_BOOKMARK;
+        lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 1;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", i);
+            if (sim[i]) {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_TAG_REG;
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            } else {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+
 ## Dropping operations ##
 
 # specific drop corner cases
@@ -1379,6 +1598,259 @@ code = '''
             lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
                     &mdir, NULL) => LFS3_ERR_NOENT;
         }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+
+# drop under powerloss
+#
+# Our progress is kept in a reserved attribute on the mroot, committed
+# after each step. Every step is idempotent, so the step in progress is
+# either complete or absent, and can always be redone
+#
+[cases.test_mtree_drop_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.N = [5, 10, 20, 40, 80, 160]
+defines.FORCE_COMPACTION = [false, true]
+defines.H = 2
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+in = 'lfs3.c'
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    }
+    lfs3_alloc_ckpoint(&lfs3);
+
+    // how far did we get?
+    uint32_t step = 0;
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(0),
+            &data);
+    assert(tag == LFS3_TAG_ATTR(0) || tag == LFS3_ERR_NOENT);
+    if (tag != LFS3_ERR_NOENT) {
+        lfs3_data_read(&lfs3, &data, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+    }
+    assert(step <= N);
+
+    // replay our sim up to our step
+    bool sim[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sim[i] = false;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < step; i++) {
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 2;
+        sim[x] = (op == 0);
+    }
+    // the step in progress may or may not have made it to disk
+    uint32_t prng_ = prng;
+    lfs3_size_t x_ = (step < N) ? TEST_PRNG(&prng_) % N : N;
+
+    // check each entry, and open handles on a couple of them, these
+    // should keep tracking their entries as the mtree changes
+    lfs3_handle_t hs[H];
+    lfs3_size_t h_xs[H];
+    bool h_open[H];
+    for (lfs3_size_t h = 0; h < H; h++) {
+        h_open[h] = false;
+    }
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", i);
+        lfs3_mdir_t mdir;
+        lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                &mdir, NULL);
+        assert(tag == LFS3_TAG_REG || tag == LFS3_ERR_NOENT);
+        if (i != x_) {
+            assert((tag == LFS3_TAG_REG) == sim[i]);
+        }
+        if (tag == LFS3_TAG_REG) {
+            uint8_t buffer[256];
+            lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                    &data) => LFS3_TAG_REG;
+            lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+            assert(memcmp(buffer, name, 4) == 0);
+
+            for (lfs3_size_t h = 0; h < H && i != x_; h++) {
+                if (!h_open[h]) {
+                    hs[h] = (lfs3_handle_t){.flags=0};
+                    hs[h].mdir = mdir;
+                    lfs3_handle_open(&lfs3, &hs[h]);
+                    h_xs[h] = i;
+                    h_open[h] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (lfs3_size_t i = step; i < N; i++) {
+        // choose a pseudo-random name
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", x);
+        // choose an op
+        uint8_t op = TEST_PRNG(&prng) % 2;
+
+        if (op == 0) {
+            // update sim
+            sim[x] = true;
+
+            // update mtree
+            lfs3_mdir_t mdir;
+            lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag == LFS3_ERR_NOENT) {
+                // force a compaction?
+                if (FORCE_COMPACTION) {
+                    lfs3.mroot.r.eoff = -1;
+                    mdir.r.eoff = -1;
+                }
+                lfs3_alloc_ckpoint(&lfs3);
+                lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                        LFS3_RATTR(4, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+                        LFS3_RATTR_ARG(0),
+                        LFS3_RATTR_ARG(name+1),
+                        LFS3_RATTR_ARG(3),
+                        LFS3_RATTR_NULL)) => 0;
+
+                // double check
+                uint8_t buffer[256];
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            }
+
+            // track new entries with any free handles
+            bool tracked = false;
+            for (lfs3_size_t h = 0; h < H; h++) {
+                tracked = tracked || (h_open[h] && h_xs[h] == x);
+            }
+            for (lfs3_size_t h = 0; h < H && !tracked; h++) {
+                if (!h_open[h]) {
+                    lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                            &mdir, NULL) => LFS3_TAG_REG;
+                    hs[h] = (lfs3_handle_t){.flags=0};
+                    hs[h].mdir = mdir;
+                    lfs3_handle_open(&lfs3, &hs[h]);
+                    h_xs[h] = x;
+                    h_open[h] = true;
+                    break;
+                }
+            }
+
+        } else {
+            // update sim
+            sim[x] = false;
+
+            // stop tracking this entry
+            for (lfs3_size_t h = 0; h < H; h++) {
+                if (h_open[h] && h_xs[h] == x) {
+                    lfs3_handle_close(&lfs3, &hs[h]);
+                    h_open[h] = false;
+                }
+            }
+
+            // update mtree
+            lfs3_mdir_t mdir;
+            lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag != LFS3_ERR_NOENT) {
+                // force a compaction?
+                if (FORCE_COMPACTION) {
+                    lfs3.mroot.r.eoff = -1;
+                    mdir.r.eoff = -1;
+                }
+                lfs3_alloc_ckpoint(&lfs3);
+                lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                        LFS3_RATTR(1, LFS3_tag_RM, -1),
+                        LFS3_RATTR_NULL)) => 0;
+            }
+        }
+
+        // record our progress
+        uint32_t step_ = i+1;
+        lfs3_alloc_ckpoint(&lfs3);
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_ATTR(0), 0,
+                    LFS3_FROM_BUF, sizeof(uint32_t)),
+                LFS3_RATTR_ARG(&step_),
+                LFS3_RATTR_NULL)) => 0;
+
+        // our handles should still track their entries
+        for (lfs3_size_t h = 0; h < H; h++) {
+            if (!h_open[h]) {
+                continue;
+            }
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", h_xs[h]);
+            lfs3_mdir_t mdir;
+            lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL) => LFS3_TAG_REG;
+            assert(hs[h].mdir.mid == mdir.mid);
+            assert(lfs3_mdir_cmp(&hs[h].mdir, &mdir) == 0);
+        }
+    }
+
+    for (lfs3_size_t h = 0; h < H; h++) {
+        if (h_open[h]) {
+            lfs3_handle_close(&lfs3, &hs[h]);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // try looking up each entry
+        lfs3_mdir_t mdir;
+        lfs3_mtree_lookup(&lfs3, 0, &mdir) => 0;
+        uint8_t buffer[256];
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_BOOKMARK,
+                &data) => LFS3_TAG_BOOKMARK;
+        lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 1;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", i);
+            if (sim[i]) {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_TAG_REG;
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            } else {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     }
 
     lfs3_unmount(&lfs3) => 0;
@@ -2058,6 +2530,174 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# mroot extension under powerloss
+#
+# Every step forces the mroot to compact, and with block_recycles 0 or 1
+# the mroot relocates, which extends the mroot chain when the mroot is
+# the anchor. Our progress is committed in a reserved attribute in the
+# same commit as each step
+#
+[cases.test_mtree_extend_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+# this should be set so only one entry can fit in a metadata block
+defines.SIZE = 'BLOCK_SIZE / 4'
+defines.BLOCK_RECYCLES = [1, 0]
+defines.N = 32
+defines.M = 4
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+in = 'lfs3.c'
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    }
+    lfs3_alloc_ckpoint(&lfs3);
+    lfs3_data_t data;
+
+    // prepare mroot with an entry
+    uint8_t buffer[SIZE];
+    buffer[0] = '\0';
+    memset(buffer+1, 'a', SIZE-1);
+    lfs3_mdir_t mdir;
+    lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3,
+            0, (const char*)buffer+1, SIZE-1,
+            &mdir, NULL);
+    assert(tag == LFS3_TAG_REG || tag == LFS3_ERR_NOENT);
+    if (tag == LFS3_ERR_NOENT) {
+        lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_REG, +1, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(SIZE),
+                LFS3_RATTR_ARG(buffer),
+                LFS3_RATTR_NULL)) => 0;
+        lfs3_mtree_namelookup(&lfs3,
+                0, (const char*)buffer+1, SIZE-1,
+                &mdir, NULL) => LFS3_TAG_REG;
+    }
+
+    // this handle should keep tracking our entry
+    lfs3_handle_t h = {.flags=0};
+    h.mdir = mdir;
+    lfs3_handle_open(&lfs3, &h);
+
+    // how far did we get?
+    uint32_t step = 0;
+    tag = lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(0),
+            &data);
+    assert(tag == LFS3_TAG_ATTR(0) || tag == LFS3_ERR_NOENT);
+    if (tag != LFS3_ERR_NOENT) {
+        lfs3_data_read(&lfs3, &data, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+    }
+    assert(step <= N);
+
+    // replay our sim up to our step, 0 => no attr
+    uint32_t sim[M+1];
+    for (lfs3_size_t a = 0; a <= M; a++) {
+        sim[a] = 0;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0;; i++) {
+        // caught up with disk? check our attrs
+        if (i == step) {
+            for (lfs3_size_t a = 1; a <= M; a++) {
+                if (sim[a]) {
+                    uint32_t v;
+                    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(a),
+                            &data) => LFS3_TAG_ATTR(a);
+                    lfs3_data_read(&lfs3, &data, &v, sizeof(uint32_t))
+                            => sizeof(uint32_t);
+                    assert(v == sim[a]);
+                } else {
+                    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(a),
+                            &data) => LFS3_ERR_NOENT;
+                }
+            }
+        }
+
+        if (i == N) {
+            break;
+        }
+
+        // choose an attr and a value
+        lfs3_size_t a = 1 + (TEST_PRNG(&prng) % M);
+        uint32_t v = TEST_PRNG(&prng) | 1;
+        sim[a] = v;
+
+        // force the mroot to compact, committing our progress with
+        // our attr
+        if (i >= step) {
+            uint32_t step_ = i+1;
+            lfs3.mroot.r.eoff = -1;
+            lfs3_alloc_ckpoint(&lfs3);
+            lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                    LFS3_RATTR(2, LFS3_TAG_ATTR(0), 0,
+                        LFS3_FROM_BUF, sizeof(uint32_t)),
+                    LFS3_RATTR_ARG(&step_),
+                    LFS3_RATTR(2, LFS3_TAG_ATTR(a), 0,
+                        LFS3_FROM_BUF, sizeof(uint32_t)),
+                    LFS3_RATTR_ARG(&v),
+                    LFS3_RATTR_NULL)) => 0;
+
+            // our handle should still track our entry
+            lfs3_mtree_namelookup(&lfs3,
+                    0, (const char*)buffer+1, SIZE-1,
+                    &mdir, NULL) => LFS3_TAG_REG;
+            assert(h.mdir.mid == mdir.mid);
+            assert(lfs3_mdir_cmp(&h.mdir, &mdir) == 0);
+        }
+    }
+
+    lfs3_handle_close(&lfs3, &h);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // assert that our entry is still there
+        lfs3_mtree_namelookup(&lfs3,
+                0, (const char*)buffer+1, SIZE-1,
+                &mdir, NULL) => LFS3_TAG_REG;
+        uint8_t rbuf[SIZE];
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                &data) => LFS3_TAG_REG;
+        lfs3_data_read(&lfs3, &data, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, buffer, SIZE) == 0);
+
+        // and our attrs
+        for (lfs3_size_t a = 0; a <= M; a++) {
+            uint32_t v;
+            if (a == 0 || sim[a]) {
+                lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(a),
+                        &data) => LFS3_TAG_ATTR(a);
+                lfs3_data_read(&lfs3, &data, &v, sizeof(uint32_t))
+                        => sizeof(uint32_t);
+                assert(v == ((a == 0) ? (uint32_t)N : sim[a]));
+            } else {
+                lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(a),
+                        &data) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 [cases.test_mtree_relocate_mroot]
 # this should be set so only one entry can fit in a metadata block
@@ -2994,6 +3634,294 @@ code = '''
             lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
                     &mdir, NULL) => LFS3_ERR_NOENT;
         }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+
+# relocate under powerloss
+#
+# Our progress is kept in a reserved attribute on the mroot, committed
+# after each step. Every step is idempotent, so the step in progress is
+# either complete or absent, and can always be redone
+#
+[cases.test_mtree_relocate_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.N = [5, 10, 20, 40]
+defines.FORCE_COMPACTION = [false, true]
+defines.BLOCK_RECYCLES = [1, 0]
+defines.H = 2
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+in = 'lfs3.c'
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    }
+    lfs3_alloc_ckpoint(&lfs3);
+
+    // how far did we get?
+    uint32_t step = 0;
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_ATTR(0),
+            &data);
+    assert(tag == LFS3_TAG_ATTR(0) || tag == LFS3_ERR_NOENT);
+    if (tag != LFS3_ERR_NOENT) {
+        lfs3_data_read(&lfs3, &data, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+    }
+    assert(step <= N);
+
+    // replay our sim up to our step
+    bool sim[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sim[i] = false;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < step; i++) {
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 3;
+        if (op != 1) {
+            sim[x] = (op == 0);
+        }
+    }
+    // the step in progress may or may not have made it to disk
+    uint32_t prng_ = prng;
+    lfs3_size_t x_ = (step < N) ? TEST_PRNG(&prng_) % N : N;
+
+    // check each entry, and open handles on a couple of them, these
+    // should keep tracking their entries as the mtree changes
+    lfs3_handle_t hs[H];
+    lfs3_size_t h_xs[H];
+    bool h_open[H];
+    for (lfs3_size_t h = 0; h < H; h++) {
+        h_open[h] = false;
+    }
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", i);
+        lfs3_mdir_t mdir;
+        lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                &mdir, NULL);
+        assert(tag == LFS3_TAG_REG || tag == LFS3_ERR_NOENT);
+        if (i != x_) {
+            assert((tag == LFS3_TAG_REG) == sim[i]);
+        }
+        if (tag == LFS3_TAG_REG) {
+            uint8_t buffer[256];
+            lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                    &data) => LFS3_TAG_REG;
+            lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+            assert(memcmp(buffer, name, 4) == 0);
+
+            for (lfs3_size_t h = 0; h < H && i != x_; h++) {
+                if (!h_open[h]) {
+                    hs[h] = (lfs3_handle_t){.flags=0};
+                    hs[h].mdir = mdir;
+                    lfs3_handle_open(&lfs3, &hs[h]);
+                    h_xs[h] = i;
+                    h_open[h] = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    for (lfs3_size_t i = step; i < N; i++) {
+        // choose a pseudo-random name
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        char name[256];
+        name[0] = '\0';
+        sprintf(name+1, "%03x", x);
+        // choose an op
+        uint8_t op = TEST_PRNG(&prng) % 3;
+
+        if (op == 0) {
+            // update sim
+            sim[x] = true;
+
+            // update mtree
+            lfs3_mdir_t mdir;
+            lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag == LFS3_ERR_NOENT) {
+                // force a compaction?
+                if (FORCE_COMPACTION) {
+                    lfs3.mroot.r.eoff = -1;
+                    mdir.r.eoff = -1;
+                }
+                lfs3_alloc_ckpoint(&lfs3);
+                lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                        LFS3_RATTR(4, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+                        LFS3_RATTR_ARG(0),
+                        LFS3_RATTR_ARG(name+1),
+                        LFS3_RATTR_ARG(3),
+                        LFS3_RATTR_NULL)) => 0;
+
+                // double check
+                uint8_t buffer[256];
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            }
+
+            // track new entries with any free handles
+            bool tracked = false;
+            for (lfs3_size_t h = 0; h < H; h++) {
+                tracked = tracked || (h_open[h] && h_xs[h] == x);
+            }
+            for (lfs3_size_t h = 0; h < H && !tracked; h++) {
+                if (!h_open[h]) {
+                    lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                            &mdir, NULL) => LFS3_TAG_REG;
+                    hs[h] = (lfs3_handle_t){.flags=0};
+                    hs[h].mdir = mdir;
+                    lfs3_handle_open(&lfs3, &hs[h]);
+                    h_xs[h] = x;
+                    h_open[h] = true;
+                    break;
+                }
+            }
+
+        } else if (op == 1) {
+            // sim update is a noop
+
+            // update mtree
+            lfs3_mdir_t mdir;
+            lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag != LFS3_ERR_NOENT) {
+                // force a compaction?
+                if (FORCE_COMPACTION) {
+                    lfs3.mroot.r.eoff = -1;
+                    mdir.r.eoff = -1;
+                }
+                // we can't really change metadata names, but commits
+                // still trigger writes to the mdir
+                lfs3_alloc_ckpoint(&lfs3);
+                lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                        LFS3_RATTR(4, LFS3_TAG_REG, 0, LFS3_FROM_NAME),
+                        LFS3_RATTR_ARG(0),
+                        LFS3_RATTR_ARG(name+1),
+                        LFS3_RATTR_ARG(3),
+                        LFS3_RATTR_NULL)) => 0;
+
+                // double check
+                uint8_t buffer[256];
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            }
+
+        } else {
+            // update sim
+            sim[x] = false;
+
+            // stop tracking this entry
+            for (lfs3_size_t h = 0; h < H; h++) {
+                if (h_open[h] && h_xs[h] == x) {
+                    lfs3_handle_close(&lfs3, &hs[h]);
+                    h_open[h] = false;
+                }
+            }
+
+            // update mtree
+            lfs3_mdir_t mdir;
+            lfs3_stag_t tag = lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag != LFS3_ERR_NOENT) {
+                // force a compaction?
+                if (FORCE_COMPACTION) {
+                    lfs3.mroot.r.eoff = -1;
+                    mdir.r.eoff = -1;
+                }
+                lfs3_alloc_ckpoint(&lfs3);
+                lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                        LFS3_RATTR(1, LFS3_tag_RM, -1),
+                        LFS3_RATTR_NULL)) => 0;
+            }
+        }
+
+        // record our progress
+        uint32_t step_ = i+1;
+        lfs3_alloc_ckpoint(&lfs3);
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_ATTR(0), 0,
+                    LFS3_FROM_BUF, sizeof(uint32_t)),
+                LFS3_RATTR_ARG(&step_),
+                LFS3_RATTR_NULL)) => 0;
+
+        // our handles should still track their entries
+        for (lfs3_size_t h = 0; h < H; h++) {
+            if (!h_open[h]) {
+                continue;
+            }
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", h_xs[h]);
+            lfs3_mdir_t mdir;
+            lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                    &mdir, NULL) => LFS3_TAG_REG;
+            assert(hs[h].mdir.mid == mdir.mid);
+            assert(lfs3_mdir_cmp(&hs[h].mdir, &mdir) == 0);
+        }
+    }
+
+    for (lfs3_size_t h = 0; h < H; h++) {
+        if (h_open[h]) {
+            lfs3_handle_close(&lfs3, &hs[h]);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // try looking up each entry
+        lfs3_mdir_t mdir;
+        lfs3_mtree_lookup(&lfs3, 0, &mdir) => 0;
+        uint8_t buffer[256];
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_BOOKMARK,
+                &data) => LFS3_TAG_BOOKMARK;
+        lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 1;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            name[0] = '\0';
+            sprintf(name+1, "%03x", i);
+            if (sim[i]) {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_TAG_REG;
+                lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_REG,
+                        &data) => LFS3_TAG_REG;
+                lfs3_data_read(&lfs3, &data, buffer, sizeof(buffer)) => 4;
+                assert(memcmp(buffer, name, 4) == 0);
+            } else {
+                lfs3_mtree_namelookup(&lfs3, 0, name+1, 3,
+                        &mdir, NULL) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     }
 
     lfs3_unmount(&lfs3) => 0;
