@@ -1373,7 +1373,10 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
     if (lfs3_m_isckparity(lfs3->flags)
             // don't bother checking parity if we're already calculating
             // a checksum
-            && !cksum) {
+            && !cksum
+            // cksum tags are followed by the next commit's valid bit, or
+            // intentionally-invalid erased-state, not their own parity
+            && lfs3_tag_suptype(tag & 0x7fff) != LFS3_TAG_CKSUM) {
         // checksum the tag, including our valid bit
         uint32_t cksum_ = lfs3_crc32c(0, tag_buf, d);
 

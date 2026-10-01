@@ -2579,6 +2579,66 @@ code = '''
 
 
 
+# test that ckparity accepts a btree's latest commit after remount
+#
+# btree commits quick-fetch unfetched rbyds, and the byte after a
+# commit's cksum tag is the next commit's valid bit, not the cksum
+# tag's parity
+[cases.test_ck_ckparity_btree_append]
+defines.GBMAP = [false, true]
+# force the file to create a btree
+defines.SHRUB_SIZE = 0
+defines.CRYSTAL_THRESH = -1
+defines.FRAGMENT_SIZE = 'BLOCK_SIZE/8'
+defines.SIZE = '2*FRAGMENT_SIZE'
+defines.REMOUNTS = 4
+ifdef = 'LFS3_CKMETAPARITY'
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | LFS3_F_CKMETAPARITY
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG) => 0;
+
+    // create a file backed by a btree
+    uint32_t prng = 42;
+    uint8_t wbuf[(REMOUNTS+1)*SIZE];
+    for (lfs3_size_t j = 0; j < (REMOUNTS+1)*SIZE; j++) {
+         wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "tripedalia",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // append after every remount, so the first commit to each btree
+    // rbyd follows an on-disk commit
+    for (lfs3_size_t i = 1; i <= REMOUNTS; i++) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG) => 0;
+
+        lfs3_file_open(&lfs3, &file, "tripedalia",
+                LFS3_O_WRONLY | LFS3_O_APPEND) => 0;
+        lfs3_file_write(&lfs3, &file, &wbuf[i*SIZE], SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG) => 0;
+    lfs3_file_open(&lfs3, &file, "tripedalia", LFS3_O_RDONLY) => 0;
+    uint8_t rbuf[(REMOUNTS+1)*SIZE];
+    lfs3_file_read(&lfs3, &file, rbuf, sizeof(rbuf)) => sizeof(rbuf);
+    assert(memcmp(rbuf, wbuf, sizeof(rbuf)) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+
 # Some simple ckdatacksums tests
 
 # test every single-bit error in a file's data block
