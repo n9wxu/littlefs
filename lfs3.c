@@ -13962,18 +13962,21 @@ static int lfs3_file_flush_(lfs3_t *lfs3, lfs3_file_t *file,
             // note we use the actual block start here! not the sliced
             // view! this avoids excessive recrystallizations when
             // fruncating
-            if (crystal_start - (bid-(weight-1)-lfs3_bptr_off(&bptr))
-                        < lfs3->cfg->block_size
+            //
+            // fragments aren't in a block, their off is an rbyd offset
+            lfs3_off_t l_start = bid-(weight-1)
+                    - ((lfs3_bptr_isbptr(&bptr))
+                        ? lfs3_bptr_off(&bptr)
+                        : 0);
+            if (crystal_start - l_start < lfs3->cfg->block_size
                     && lfs3_bptr_size(&bptr) > 0) {
                 crystal_start = bid-(weight-1);
 
             // no? is our left neighbor at least our left block neighbor?
             // align to block alignment
-            } else if (crystal_start - (bid-(weight-1)-lfs3_bptr_off(&bptr))
-                        < 2*lfs3->cfg->block_size
+            } else if (crystal_start - l_start < 2*lfs3->cfg->block_size
                     && lfs3_bptr_size(&bptr) > 0) {
-                crystal_start = bid-(weight-1)-lfs3_bptr_off(&bptr)
-                        + lfs3->cfg->block_size;
+                crystal_start = l_start + lfs3->cfg->block_size;
             }
         }
 
