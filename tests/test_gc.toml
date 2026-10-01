@@ -1177,6 +1177,41 @@ code = '''
 '''
 
 
+# test that lfs3_fs_ck doesn't leave its traversal open when fixing
+# a grm finishes all pending work early
+[cases.test_gc_mkconsistent_ck_grm]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_MKCONSISTENT, CFG) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_MKCONSISTENT));
+
+    // closing an uncreated file leaves a pending grm
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "spider",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_DESYNC) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    assert(lfs3_grm_count(&lfs3) > 0);
+
+    lfs3_fs_ck(&lfs3, LFS3_CK_MKCONSISTENT) => 0;
+    assert(lfs3_grm_count(&lfs3) == 0);
+    // our traversal should be closed
+    assert(!lfs3.handles);
+
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "spider", &info) => LFS3_ERR_NOENT;
+    lfs3_mkdir(&lfs3, "jellyfish") => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, CFG) => 0;
+    lfs3_stat(&lfs3, "spider", &info) => LFS3_ERR_NOENT;
+    lfs3_stat(&lfs3, "jellyfish", &info) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that mkconsistent can make progress in isolation
 [cases.test_gc_mkconsistent_progress]
 defines.LOOKAHEAD = [false, true]

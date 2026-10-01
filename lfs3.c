@@ -16844,7 +16844,12 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
     lfs3->flags |= flags & (LFS3_I_CKMETA | LFS3_I_CKDATA);
 
     lfs3_mgc_t mgc;
-    return lfs3_fs_gc_(lfs3, &mgc, flags, -1);
+    int err = lfs3_fs_gc_(lfs3, &mgc, flags, -1);
+
+    // lfs3_fs_gc_ may stop with the traversal still open, but our mgc
+    // lives on the stack, so it must not stay in our handle list
+    lfs3_handle_close(lfs3, &mgc.t.h);
+    return err;
 }
 
 // incremental filesystem gc
