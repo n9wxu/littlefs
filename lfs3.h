@@ -248,7 +248,7 @@ enum lfs3_type {
 #define LFS3_M_SYNC     0x00000080  // Open all files with LFS3_O_SYNC
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVPERTURB)
 #define LFS3_M_REVPERTURB \
-                        0x00000010  // Add debug info to revision counts
+                        0x00000010  // Perturb first bit in revision count
 #endif
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVNOISE)
 #define LFS3_M_REVNOISE 0x00000020  // Add noise to revision counts
@@ -468,6 +468,9 @@ struct lfs3_cfg {
 
     // Read a region in a block. Negative error codes are propagated
     // to the user.
+    // May return LFS3_ERR_CORRUPT if the data can not be read correctly,
+    // an uncorrectable ECC error for example. littlefs treats this the
+    // same as a checksum mismatch.
     int (*read)(const struct lfs3_cfg *c, lfs3_block_t block,
             lfs3_off_t off, void *buffer, lfs3_size_t size);
 
@@ -572,6 +575,13 @@ struct lfs3_cfg {
     // steps=-1 will not return until all pending janitorial work has
     // been completed.
     //
+    // Note gc work can create more gc work. Compacting metadata changes
+    // the filesystem, which requires another pass to confirm, and
+    // compacting or pre-erasing may allocate blocks, which can trigger
+    // another lookahead/gbmap scan. If some metadata can't be compacted
+    // below gc_compact_thresh, or the disk is nearly full, steps=-1 may
+    // never return.
+    //
     // Defaults to steps=1 when zero.
     #ifdef LFS3_GC
     lfs3_soff_t gc_steps;
@@ -599,9 +609,9 @@ struct lfs3_cfg {
     // operations gbmap repopulations are controlled by
     // lookgbmap_thresh.
     //
-    // Any value <= lookgbmap_thresh repopulates the gbmap when below
+    // Any value <= lookgbmap_thresh repopulates the gbmap when <=
     // lookgbmap_thresh, while -1 or any value >= block_count
-    // repopulates the lookahead buffer after any block allocation.
+    // repopulates the gbmap after any block allocation.
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
     lfs3_block_t gc_lookgbmap_thresh;
     #endif
@@ -610,11 +620,22 @@ struct lfs3_cfg {
     // expensive (flash), pre-erasing blocks can help reduce the latency
     // of block allocation.
     //
-    // Requires the gbmap to track pre-erased blocks.
+    // Requires the gbmap to track pre-erased blocks, and requires
+    // LFS3_M_REVPERTURB (or LFS3_F_REVPERTURB when formatting). Without
+    // revision perturbation pre-erased blocks can't be used, so asking
+    // for LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
+    // LFS3_CK_PREERASE without it asserts.
     //
     // 0 only erases blocks immediately before prog, while -1 or any
     // value >= block_count attempts to pre-erase all known free blocks
     // during gc.
+    //
+    // Note pre-erased blocks are checked with a checksum of only their
+    // first prog_size bytes. This assumes an interrupted prog never
+    // leaves bytes after the first prog_size partially programmed while
+    // the first prog_size bytes still read as erased. If your storage
+    // can do this, littlefs may prog over a partially programmed block,
+    // unless progs are checked with LFS3_M_CKPROGS.
     //
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     lfs3_block_t gc_preerase_count;
@@ -1728,6 +1749,9 @@ int lfs3_dir_rewind(lfs3_t *lfs3, lfs3_dir_t *dir);
 // Once open, a traversal can be read from to iterate over all blocks in
 // the filesystem.
 //
+// Note LFS3_T_PREERASE is accepted, but does nothing. Pre-erasing is
+// only performed by lfs3_fs_gc and lfs3_fs_ck.
+//
 // Returns a negative error code on failure.
 int lfs3_trv_open(lfs3_t *lfs3, lfs3_trv_t *trv, uint32_t flags);
 
@@ -1843,16 +1867,16 @@ int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count);
 
 // Enable the global on-disk block-map
 //
-// Returns a negative error code on failure. Does nothing if a gbmap
-// already exists.
+// Returns LFS3_ERR_EXIST if a gbmap already exists, or a negative error
+// code on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 #endif
 
 // Disable the global on-disk block-map
 //
-// Returns a negative error code on failure. Does nothing if no gbmap
-// is found.
+// Returns LFS3_ERR_NOENT if no gbmap is found, or a negative error code
+// on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_rmgbmap(lfs3_t *lfs3);
 #endif

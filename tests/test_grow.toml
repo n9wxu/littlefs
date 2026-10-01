@@ -324,6 +324,109 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that a failed grow leaves the allocator usable
+[cases.test_grow_failed]
+defines.SMALLER_BLOCK_COUNT = [
+    'BLOCK_COUNT/2',
+    'BLOCK_COUNT/4',
+]
+defines.BIGGER_BLOCK_COUNT = 'BLOCK_COUNT'
+defines.SIZE = 'BLOCK_SIZE/2'
+in = 'lfs3.c'
+code = '''
+    // create a smaller fs
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = SMALLER_BLOCK_COUNT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+
+    // mostly fill it up, so a grow must scan past the end of the
+    // smaller disk
+    cfg = *CFG;
+    cfg.block_count = BIGGER_BLOCK_COUNT;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    uint32_t prng = 42;
+    lfs3_size_t n = 0;
+    while (lfs3_fs_usage(&lfs3) < SMALLER_BLOCK_COUNT-SMALLER_BLOCK_COUNT/8) {
+        char name[256];
+        sprintf(name, "file%08d", n);
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+        n += 1;
+    }
+    char name[256];
+    sprintf(name, "file%08d", n);
+
+    // fail to grow
+    lfs3_emubd_mkbadsync(CFG) => 0;
+    lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => LFS3_ERR_IO;
+    lfs3_emubd_mkgoodsync(CFG) => 0;
+
+    // our allocator should still be in-bounds
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
+    assert(lfs3.lookahead.window < SMALLER_BLOCK_COUNT);
+    #ifdef LFS3_GBMAP
+    assert(!GBMAP || lfs3.gbmap.window < SMALLER_BLOCK_COUNT);
+    #endif
+
+    // and we should still be able to write
+    for (lfs3_size_t i = 0; i < 2; i++) {
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+        uint8_t wbuf[SIZE];
+        memset(wbuf, 'a'+i, SIZE);
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // and grow
+    lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKDATA, &cfg) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == BIGGER_BLOCK_COUNT);
+    prng = 42;
+    for (lfs3_size_t i = 0; i < n; i++) {
+        sprintf(name, "file%08d", i);
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    sprintf(name, "file%08d", n);
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'b', SIZE);
+    uint8_t rbuf[SIZE];
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # growing to the same size should do nothing
 [cases.test_grow_noop]
 defines.SMALLER_BLOCK_COUNT = [

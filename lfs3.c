@@ -7750,6 +7750,10 @@ static int lfs3_fs_consumegdelta(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
     #ifdef LFS3_GBMAP
     tag = lfs3_rbyd_lookup(lfs3, &mdir->r, -1, LFS3_TAG_GBMAPDELTA,
             &data);
+    if (tag < 0 && tag != LFS3_ERR_NOENT) {
+        return tag;
+    }
+
     if (tag != LFS3_ERR_NOENT) {
         uint8_t gbmapdelta[LFS3_GBMAP_DSIZE];
         lfs3_ssize_t d = lfs3_data_read(lfs3, &data,
@@ -9320,7 +9324,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
-                    return LFS3_ERR_NOSPC;
+                    err = LFS3_ERR_NOSPC;
                 }
                 goto failed;
             }
@@ -9340,7 +9344,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
-                    return LFS3_ERR_NOSPC;
+                    err = LFS3_ERR_NOSPC;
                 }
                 goto failed;
             }
@@ -9350,7 +9354,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // sync on-disk state
     err = lfs3_bd_sync(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     ///////////////////////////////////////////////////////////////////////
@@ -10804,11 +10808,13 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
     #ifdef LFS3_GBMAP
     // do we need to repopulate the gbmap?
     if (lfs3_f_isgbmap(lfs3->flags)
-            && lfs3->gbmap.known < lfs3_min(
+            && lfs3->gbmap.known <= lfs3_min(
                 lfs3->cfg->lookgbmap_thresh,
-                lfs3->block_count)) {
+                lfs3->block_count-1)) {
         int err = lfs3_alloc_lookgbmap(lfs3);
-        if (err) {
+        // no room for a new gbmap? fall back to the lookahead buffer,
+        // a full disk must not prevent removes from freeing blocks
+        if (err && err != LFS3_ERR_NOSPC) {
             return err;
         }
 
@@ -10891,12 +10897,15 @@ static inline bool lfs3_alloc_cansyncgbmap(const lfs3_t *lfs3) {
 // changes
 #ifndef LFS3_RDONLY
 static inline void lfs3_alloc_discard(lfs3_t *lfs3) {
-    // discard lookahead state
+    // discard lookahead state, if block_count shrank (a failed grow)
+    // our window may be out-of-bounds
+    lfs3->lookahead.window %= lfs3->block_count;
     lfs3->lookahead.known = 0;
     lfs3_memset(lfs3->lookahead.buffer, 0, lfs3->cfg->lookahead_size);
 
     // discard the gbmap window
     #ifdef LFS3_GBMAP
+    lfs3->gbmap.window %= lfs3->block_count;
     lfs3->gbmap.known = 0;
     lfs3->gbmap.next = 0;
     #endif
@@ -11421,16 +11430,29 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
 
         // erase!
         int err = lfs3_bd_erase(lfs3, block);
-        if (err) {
+        if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
 
         // calculate erased-state checksum
         lfs3_ecksum_t ecksum;
-        err = lfs3_ecksum_read(lfs3, &ecksum, block, 0);
-        if (err) {
-            return err;
+        if (!err) {
+            err = lfs3_ecksum_read(lfs3, &ecksum, block, 0);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
         }
+
+        // bad erase/read? skip this block, lfs3_alloc_ will notice if
+        // it ever tries to use it
+        if (err == LFS3_ERR_CORRUPT) {
+            lfs3->gbmap.preeraser.known += 1;
+            continue;
+        }
+
+        // lfs3_gbmap_set may allocate, so checkpoint the lookahead
+        // buffer
+        lfs3_alloc_ckpoint_(lfs3);
 
         // commit into gbmap
         //
@@ -16891,7 +16913,12 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
     lfs3->flags |= flags & (LFS3_I_CKMETA | LFS3_I_CKDATA);
 
     lfs3_mgc_t mgc;
-    return lfs3_fs_gc_(lfs3, &mgc, flags, -1);
+    int err = lfs3_fs_gc_(lfs3, &mgc, flags, -1);
+
+    // lfs3_fs_gc_ may stop with the traversal still open, but our mgc
+    // lives on the stack, so it must not stay in our handle list
+    lfs3_handle_close(lfs3, &mgc.t.h);
+    return err;
 }
 
 // incremental filesystem gc
