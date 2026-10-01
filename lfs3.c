@@ -7193,6 +7193,10 @@ static inline bool lfs3_o_isunflush(uint32_t flags) {
     return flags & LFS3_o_UNFLUSH;
 }
 
+static inline bool lfs3_o_istorn(uint32_t flags) {
+    return flags & LFS3_o_TORN;
+}
+
 // custom attr flags
 static inline bool lfs3_a_islazy(uint32_t flags) {
     return flags & LFS3_A_LAZY;
@@ -13140,6 +13144,7 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
     lfs3_rattr_t *r = rattrs;
     lfs3_bptr_t l_bptr;
     lfs3_bptr_t r_bptr;
+    bool torn = false;
     int err;
 
     // need a hole?
@@ -13228,6 +13233,8 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
             if (err) {
                 goto failed;
             }
+            // we can't undo this commit if a later one fails
+            torn = true;
 
             delta += lfs3_min(weight, bid+1 - pos);
             weight -= lfs3_min(weight, bid+1 - pos);
@@ -13335,6 +13342,11 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
 failed:;
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
+    // failed after a partial graft? our bshrub/btree no longer matches
+    // any version of our file, so it must never be synced
+    if (torn) {
+        file->b.h.flags |= LFS3_o_TORN;
+    }
     return err;
 }
 #endif
@@ -14587,11 +14599,17 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
         return lfs3_file_resync(lfs3, file);
     }
 
+    // partially grafted? only lfs3_file_resync can recover from this
+    int err;
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        err = LFS3_ERR_INVAL;
+        goto failed;
+    }
+
     // can we get away with a small file flush?
     //
     // this merges the data flush with metadata sync in a single commit
     // if the file is small enough to fit in the cache
-    int err;
     if (file->cache.size == lfs3_file_size_(file)
             && file->cache.size <= lfs3->cfg->shrub_size
             && file->cache.size <= lfs3->cfg->fragment_size
@@ -14673,6 +14691,7 @@ int lfs3_file_resync(lfs3_t *lfs3, lfs3_file_t *file) {
         if (err) {
             goto failed;
         }
+        file->b.h.flags &= ~LFS3_o_TORN;
     }
     #endif
 

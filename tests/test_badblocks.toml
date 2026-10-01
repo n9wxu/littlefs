@@ -6168,3 +6168,121 @@ code = '''
         lfs3_unmount(&lfs3) => 0;
     }
 '''
+
+# test that an error in the middle of a graft spanning many entries never
+# reaches disk, even if we try to sync
+#
+# grafts can take more than one commit, so the file may be left
+# partially grafted
+[cases.test_badblocks_graft_torn]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+# OP=0 => write
+# OP=1 => truncate
+# OP=2 => fruncate
+defines.OP = [0, 1, 2]
+defines.SIZE = '4*BLOCK_SIZE'
+defines.CHUNK = 16
+defines.FRAGMENT_SIZE = 16
+defines.SEED = 42
+code = '''
+    // test all possible bad blocks
+    lfs3_size_t torn = 0;
+    for (lfs3_block_t badblock = 0; badblock < BLOCK_COUNT; badblock++) {
+        // write a file out of many fragments
+        struct lfs3_cfg cfg = *CFG;
+        cfg.crystal_thresh = -1;
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t sim[SIZE];
+        uint32_t prng = SEED;
+        for (lfs3_size_t i = 0; i < SIZE; i++) {
+            sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        for (lfs3_size_t i = 0; i < SIZE; i += CHUNK) {
+            lfs3_file_write(&lfs3, &file, &sim[i], CHUNK) => CHUNK;
+            lfs3_file_flush(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // write/truncate/fruncate over many entries with a bad block
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDWR) => 0;
+        uint8_t wbuf[SIZE];
+        lfs3_size_t wsize;
+        int err;
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+        if (OP == 0) {
+            memcpy(wbuf, sim, SIZE);
+            for (lfs3_size_t i = SIZE/4; i < 3*SIZE/4; i++) {
+                wbuf[i] = 'A' + (TEST_PRNG(&prng) % 26);
+            }
+            wsize = SIZE;
+            lfs3_file_seek(&lfs3, &file, SIZE/4, LFS3_SEEK_SET) => SIZE/4;
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    &wbuf[SIZE/4], SIZE/2);
+            assert(d == SIZE/2 || d == LFS3_ERR_CORRUPT);
+            err = (d < 0) ? d : lfs3_file_flush(&lfs3, &file);
+        } else if (OP == 1) {
+            memcpy(wbuf, sim, SIZE/4);
+            wsize = SIZE/4;
+            err = lfs3_file_truncate(&lfs3, &file, SIZE/4);
+        } else {
+            memcpy(wbuf, &sim[3*SIZE/4], SIZE/4);
+            wsize = SIZE/4;
+            err = lfs3_file_fruncate(&lfs3, &file, SIZE/4);
+        }
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+
+        // try to sync anyways, this should either write a consistent
+        // file or refuse
+        err = lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_INVAL);
+        if (err == LFS3_ERR_INVAL) {
+            printf("--- badblock: 0x%x ---\n", badblock);
+            torn += 1;
+
+            // only resync can recover
+            lfs3_file_sync(&lfs3, &file) => LFS3_ERR_INVAL;
+            lfs3_file_resync(&lfs3, &file) => 0;
+            lfs3_file_size(&lfs3, &file) => SIZE;
+            uint8_t rbuf[2*SIZE];
+            lfs3_file_rewind(&lfs3, &file) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+            assert(memcmp(rbuf, sim, SIZE) == 0);
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // disk should have the old contents, the new contents, or, if
+        // writing, a prefix of the write
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[2*SIZE];
+        lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE);
+        if (d == SIZE && OP == 0) {
+            lfs3_size_t i = 0;
+            while (i < SIZE && rbuf[i] == wbuf[i]) {
+                i += 1;
+            }
+            assert(memcmp(&rbuf[i], &sim[i], SIZE-i) == 0);
+        } else if (d == SIZE) {
+            assert(memcmp(rbuf, sim, SIZE) == 0);
+        } else {
+            assert((lfs3_size_t)d == wsize);
+            assert(memcmp(rbuf, wbuf, wsize) == 0);
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // make sure we actually tested torn grafts
+    printf("torn: %d\n", torn);
+    assert(OP == 0 || torn > 0);
+'''

@@ -152,6 +152,7 @@ enum lfs3_type {
 #define LFS3_o_UNCRYST  0x01000000  // File's leaf not fully crystallized
 #define LFS3_o_UNGRAFT  0x00800000  // File's leaf does not match disk
 #define LFS3_o_UNFLUSH  0x00400000  // File's cache does not match disk
+#define LFS3_o_TORN     0x00200000  // File's bshrub/btree is partially grafted
 
 // an alias for all check work
 #define LFS3_O_CK (LFS3_O_CKMETA | LFS3_O_CKDATA)
@@ -1577,6 +1578,11 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 //
 // An explicit and successful call to either lfs3_file_sync or
 // lfs3_file_resync reverses this, marking the file as synchronized again.
+//
+// Some errors can leave a file partially updated, matching neither its
+// contents before nor after the failed operation. lfs3_file_sync then
+// returns LFS3_ERR_INVAL instead of writing it out, and only
+// lfs3_file_resync can recover the file.
 //
 // Returns a negative error code on failure.
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);
