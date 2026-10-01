@@ -6802,3 +6802,58 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test a bad block where format puts the gbmap, this should just error
+#
+# format's test mount doesn't read the gbmap, so silent failures need
+# either prog checking or a format-time ckmeta
+[cases.test_badblocks_gbmap_format]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+defines.CKMETA = [false, true]
+# we need prog checking to detect read errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR && !CKMETA'
+defines.BADBLOCK = 2
+if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
+ifdef = 'LFS3_GBMAP'
+code = '''
+    uint32_t flags = LFS3_F_RDWR
+            | LFS3_F_GBMAP
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0)
+            | ((CKMETA) ? LFS3_F_CKMETA : 0);
+    lfs3_emubd_mkbad(CFG, BADBLOCK) => 0;
+
+    // format should fail
+    lfs3_t lfs3;
+    int err = lfs3_format(&lfs3, flags, CFG);
+    assert(err < 0);
+
+    // and so should mount, unless format only found the bad gbmap after
+    // writing the mroot, mount doesn't read the gbmap, but a check should
+    // still find it
+    err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    assert(err < 0 || CKMETA);
+    if (!err) {
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // without the bad block format should work
+    lfs3_emubd_mkgood(CFG, BADBLOCK) => 0;
+    lfs3_format(&lfs3, flags, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "hi") => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "hi", &info) => 0;
+    assert(info.type == LFS3_TYPE_DIR);
+    lfs3_unmount(&lfs3) => 0;
+'''
