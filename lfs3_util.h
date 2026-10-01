@@ -779,8 +779,13 @@ static inline uint32_t lfs3_crc32c_cube(uint32_t a) {
 
 
 // Allocate memory, only used if buffers are not provided to littlefs
+//
+// Define LFS3_MALLOC to use another allocator.
 #ifndef LFS3_NO_MALLOC
-#define lfs3_malloc malloc
+#ifndef LFS3_MALLOC
+#define LFS3_MALLOC(size) malloc(size)
+#endif
+#define lfs3_malloc(size) LFS3_MALLOC(size)
 #else
 static inline void *lfs3_malloc(size_t size) {
     (void)size;
@@ -789,8 +794,13 @@ static inline void *lfs3_malloc(size_t size) {
 #endif
 
 // Deallocate memory, only used if buffers are not provided to littlefs
+//
+// Define LFS3_FREE to use another allocator.
 #ifndef LFS3_NO_MALLOC
-#define lfs3_free free
+#ifndef LFS3_FREE
+#define LFS3_FREE(p) free(p)
+#endif
+#define lfs3_free(p) LFS3_FREE(p)
 #else
 static inline void lfs3_free(void *p) {
     (void)p;

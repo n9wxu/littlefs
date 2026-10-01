@@ -610,6 +610,56 @@ uint32_t test_prng(uint32_t *state) {
     return x;
 }
 
+// allocator hooks
+static size_t test_malloc_count = 0;
+static size_t test_malloc_live = 0;
+static size_t test_malloc_fail = 0;
+
+void *test_malloc(size_t size) {
+    test_malloc_count += 1;
+
+    // fail this allocation?
+    if (test_malloc_fail > 0) {
+        test_malloc_fail -= 1;
+        if (test_malloc_fail == 0) {
+            return NULL;
+        }
+    }
+
+    void *p = malloc(size);
+    if (p) {
+        test_malloc_live += 1;
+    }
+    return p;
+}
+
+void test_free(void *p) {
+    if (p) {
+        // freeing memory lfs3_malloc never returned?
+        assert(test_malloc_live > 0);
+        test_malloc_live -= 1;
+    }
+    free(p);
+}
+
+size_t test_mallocs(void) {
+    return test_malloc_count;
+}
+
+size_t test_mallocs_live(void) {
+    return test_malloc_live;
+}
+
+void test_failmalloc(size_t n) {
+    test_malloc_fail = n;
+}
+
+static void test_malloc_reset(void) {
+    test_malloc_count = 0;
+    test_malloc_live = 0;
+    test_malloc_fail = 0;
+}
+
 // test factorial
 size_t test_factorial(size_t x) {
     size_t y = 1;
@@ -2174,6 +2224,7 @@ void perm_run(
     }
 
     // run the test, possibly under powerloss
+    test_malloc_reset();
     powerloss->run(powerloss, suite, case_);
 }
 

@@ -670,3 +670,51 @@ code = '''
 
     lfs3_emubd_destroy(&cfg) => 0;
 '''
+
+# lfs3_malloc and lfs3_free go through the runner's hooks, which count
+# them and can fail the nth lfs3_malloc
+[cases.test_bd_malloc]
+code = '''
+    TEST_MALLOCS() => 0;
+    TEST_MALLOCS_LIVE() => 0;
+    void *p = lfs3_malloc(16);
+    assert(p);
+    TEST_MALLOCS() => 1;
+    TEST_MALLOCS_LIVE() => 1;
+    lfs3_free(p);
+    lfs3_free(NULL);
+    TEST_MALLOCS() => 1;
+    TEST_MALLOCS_LIVE() => 0;
+
+    // only the nth call fails
+    TEST_FAILMALLOC(2);
+    void *a = lfs3_malloc(16);
+    void *b = lfs3_malloc(16);
+    void *c = lfs3_malloc(16);
+    assert(a && !b && c);
+    TEST_MALLOCS() => 4;
+    TEST_MALLOCS_LIVE() => 2;
+    lfs3_free(a);
+    lfs3_free(c);
+    TEST_MALLOCS_LIVE() => 0;
+
+    // littlefs's own allocations go through the hooks
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    size_t mallocs = TEST_MALLOCS();
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    size_t n = TEST_MALLOCS() - mallocs;
+    assert(n > 0);
+    TEST_MALLOCS_LIVE() => n;
+    lfs3_unmount(&lfs3) => 0;
+    TEST_MALLOCS_LIVE() => 0;
+
+    // so failing any of them fails the mount, zero the lfs3_t since a
+    // failed init frees buffers it never allocated
+    for (size_t i = 1; i <= n; i++) {
+        memset(&lfs3, 0, sizeof(lfs3));
+        TEST_FAILMALLOC(i);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
+        TEST_MALLOCS_LIVE() => 0;
+    }
+'''

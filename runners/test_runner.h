@@ -57,6 +57,17 @@ void test_trace(const char *fmt, ...);
 #define LFS3_KIWIBD_TRACE(...)
 #endif
 
+// route lfs3_malloc/lfs3_free through the runner's allocator hooks
+#include <stddef.h>
+void *test_malloc(size_t size);
+void test_free(void *p);
+#ifndef LFS3_MALLOC
+#define LFS3_MALLOC(size) test_malloc(size)
+#endif
+#ifndef LFS3_FREE
+#define LFS3_FREE(p) test_free(p)
+#endif
+
 
 // note these are indirectly included in any generated files
 #define TEST_INCLUDE
@@ -159,6 +170,23 @@ void test_trace_resume(void);
 
 #define TEST_TRACE_PAUSE() test_trace_pause()
 #define TEST_TRACE_RESUME() test_trace_resume()
+
+// allocator hooks, these see every lfs3_malloc and lfs3_free, but not
+// the runner's or emubd's own allocations, and reset for every
+// permutation
+//
+// - TEST_MALLOCS() - number of lfs3_malloc calls, including failed calls
+// - TEST_MALLOCS_LIVE() - number of allocations not yet lfs3_free'd
+// - TEST_FAILMALLOC(n) - make the nth lfs3_malloc from now return NULL,
+//   only that call fails, 0 disables
+//
+size_t test_mallocs(void);
+size_t test_mallocs_live(void);
+void test_failmalloc(size_t n);
+
+#define TEST_MALLOCS() test_mallocs()
+#define TEST_MALLOCS_LIVE() test_mallocs_live()
+#define TEST_FAILMALLOC(n) test_failmalloc(n)
 
 
 // declare implicit defines as global intmax_ts
