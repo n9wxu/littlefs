@@ -5700,3 +5700,71 @@ code = '''
     free(sim);
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test that fetch picks the block with the newer revision count, revision
+# counts are compared as sequence numbers, so this includes overflow
+#
+# note revision counts are little-endian on disk, so this also needs to
+# hold on big-endian hosts
+[cases.test_mtree_fetch_revorder]
+# we write the revision counts ourselves
+defines.REVPERTURB = false
+defines.REVNOISE = false
+# REVS=0 => 0x0f80006d then 0x1000006d
+# REVS=1 => 0xfff0006d then 0x0010006d, across 32-bit overflow
+# REVS=2 => 0x7ff0006d then 0x8010006d, across the sign bit
+defines.REVS = [0, 1, 2]
+# which block has the newer revision count
+defines.NEWER = [0, 1]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_init(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    const uint32_t revs[3][2] = {
+        {0x0f80006d, 0x1000006d},
+        {0xfff0006d, 0x0010006d},
+        {0x7ff0006d, 0x8010006d},
+    };
+
+    // write an older and a newer rbyd
+    for (int i = 0; i < 2; i++) {
+        lfs3_rbyd_t rbyd = {
+            .blocks[0] = (i == 1) ? NEWER : 1-NEWER,
+            .eoff = 0,
+            .cksum = 0,
+            .trunk = 0,
+            .weight = 0,
+        };
+        lfs3_bd_erase(&lfs3, rbyd.blocks[0]) => 0;
+        lfs3_rbyd_appendrev(&lfs3, &rbyd, revs[REVS][i]) => 0;
+        lfs3_rbyd_commit(&lfs3, &rbyd, -1, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_ATTR(1), 0, LFS3_FROM_BUF, 5),
+                LFS3_RATTR_ARG((i == 1) ? "newer" : "older"),
+                LFS3_RATTR_NULL)) => 0;
+    }
+
+    // fetch should pick the newer one, in either order
+    for (int i = 0; i < 2; i++) {
+        lfs3_mdir_t mdir;
+        lfs3_mdir_fetch(&lfs3, &mdir, -1,
+                (i == 0)
+                    ? (lfs3_block_t[2]){0, 1}
+                    : (lfs3_block_t[2]){1, 0}) => 0;
+        assert(mdir.r.blocks[0] == (lfs3_block_t)NEWER);
+        assert(mdir.r.blocks[1] == (lfs3_block_t)(1-NEWER));
+
+        uint8_t rev_buf[4];
+        lfs3_bd_read(&lfs3, mdir.r.blocks[0], 0, 4, rev_buf, 4) => 0;
+        assert(lfs3_fromle32(rev_buf) == revs[REVS][1]);
+
+        lfs3_data_t data;
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_ATTR(1), &data)
+                => LFS3_TAG_ATTR(1);
+        uint8_t buffer[5];
+        lfs3_data_read(&lfs3, &data, buffer, 5) => 5;
+        assert(memcmp(buffer, "newer", 5) == 0);
+    }
+
+    lfs3_deinit(&lfs3) => 0;
+'''
