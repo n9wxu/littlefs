@@ -124,16 +124,19 @@ code = '''
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
 
-    // init should not depend on what's in lfs3_t
+    // init should not depend on what's in lfs3_t, and should free
+    // exactly what it allocated
     memset(&lfs3, 0xab, sizeof(lfs3));
     test_malloc_fail = FAIL;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
     assert(test_malloc_fail == 0);
+    assert(test_malloc_live == 0);
 
     memset(&lfs3, 0xab, sizeof(lfs3));
     test_malloc_fail = FAIL;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => LFS3_ERR_NOMEM;
     assert(test_malloc_fail == 0);
+    assert(test_malloc_live == 0);
 
     // the filesystem should still be fine
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
