@@ -12657,7 +12657,7 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         const lfs3_rattr_t *rname);
 #endif
 
-int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
+static int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
         const char *path, uint32_t flags,
         const struct lfs3_file_cfg *cfg) {
     #ifndef LFS3_RDONLY
