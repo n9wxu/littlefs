@@ -1978,3 +1978,157 @@ code = '''
     lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# write, truncate and fruncate a file until the disk wears out, then
+# check that everything we synced reads back from a read-only mount
+#
+# In builds with gc, gc steps run between writes, optionally
+# pre-erasing free blocks
+#
+[cases.test_exhaustion_readback]
+defines.ERASE_CYCLES = 10
+defines.BLOCK_RECYCLES = 4
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# we need prog checking to detect read errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+defines.GC = [false, true]
+defines.PREERASE = [false, true]
+defines.GC_FLAGS = '''
+    LFS3_GC_GC
+        & ~((PREERASE) ? 0 : LFS3_IFDEF_PREERASE(LFS3_GC_PREERASE, 0))
+'''
+defines.GC_STEPS = 4
+defines.F_FLAGS = '''
+    ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0)
+        | ((PREERASE) ? LFS3_IFDEF_PREERASE(
+            LFS3_F_GBMAP | LFS3_F_REVPERTURB, -1) : 0)
+'''
+defines.M_FLAGS = '''
+    ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0)
+        | ((PREERASE) ? LFS3_IFDEF_PREERASE(LFS3_M_REVPERTURB, -1) : 0)
+'''
+# a smaller disk wears out sooner
+defines.BLOCK_COUNT = 64
+defines.SIZE = ['BLOCK_SIZE/2', '4*BLOCK_SIZE']
+defines.CHUNK = 64
+defines.SEED = 'range(32)'
+fuzz = 'SEED'
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    'LFS3_IFDEF_GC(true, !GC)',
+    'LFS3_IFDEF_PREERASE(true, !PREERASE)',
+    'GC || !PREERASE',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    // simulate our file in ram, and what we last synced
+    uint8_t sim[SIZE];
+    lfs3_off_t size = 0;
+    uint8_t synced[SIZE];
+    lfs3_off_t synced_size = 0;
+    uint32_t prng = SEED;
+    lfs3_size_t ops = 0;
+    while (true) {
+        // choose an op
+        uint8_t op = TEST_PRNG(&prng) % 8;
+        int err;
+        // truncate?
+        if (op == 0) {
+            lfs3_off_t size_ = TEST_PRNG(&prng) % (SIZE+1);
+            if (size_ > size) {
+                memset(&sim[size], 0, size_-size);
+            }
+            size = size_;
+            err = lfs3_file_truncate(&lfs3, &file, size);
+
+        // fruncate?
+        } else if (op == 1) {
+            lfs3_off_t size_ = TEST_PRNG(&prng) % (SIZE+1);
+            if (size_ > size) {
+                memmove(&sim[size_-size], sim, size);
+                memset(sim, 0, size_-size);
+            } else {
+                memmove(sim, &sim[size-size_], size_);
+            }
+            size = size_;
+            err = lfs3_file_fruncate(&lfs3, &file, size);
+
+        // write a random chunk?
+        } else {
+            lfs3_off_t off = TEST_PRNG(&prng) % SIZE;
+            lfs3_size_t chunk = lfs3_min(
+                    1 + (TEST_PRNG(&prng) % CHUNK),
+                    SIZE - off);
+            if (off > size) {
+                memset(&sim[size], 0, off-size);
+            }
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            size = lfs3_max(size, off+chunk);
+
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, &sim[off], chunk);
+            assert(d == (lfs3_ssize_t)chunk || d == LFS3_ERR_NOSPC);
+            err = (d < 0) ? d : 0;
+        }
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+
+        // sync
+        err = lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+        memcpy(synced, sim, size);
+        synced_size = size;
+        ops += 1;
+
+        // gc steps?
+        #ifdef LFS3_GC
+        if (GC) {
+            err = lfs3_fs_gc(&lfs3);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (err) {
+                break;
+            }
+        }
+        #endif
+    }
+    printf("end of life after %d ops\n", (int)ops);
+
+    // the failed op desynced our file, so closing writes nothing
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // everything we synced should still be readable from a read-only
+    // mount
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "hello", &info) => 0;
+    assert(info.type == LFS3_TYPE_REG);
+    assert(info.size == synced_size);
+    lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+    lfs3_file_size(&lfs3, &file) => synced_size;
+    uint8_t rbuf[SIZE+1];
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => synced_size;
+    assert(memcmp(rbuf, synced, synced_size) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
