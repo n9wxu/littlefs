@@ -14,6 +14,13 @@ after = [
 defines.FORMAT_BLOCK_COUNT = 'LFS3_IFYES_GBMAP(3, 2, 2)'
 
 code = '''
+#include <setjmp.h>
+
+// lose power by jumping back into our test
+static void test_badblocks_powerloss_longjmp(void *data) {
+    longjmp(*(jmp_buf*)data, 1);
+}
+
 // count successful syncs, so we know when a commit made it to disk
 static int (*test_badblocks_sync_)(const struct lfs3_cfg *cfg);
 static lfs3_size_t test_badblocks_syncs;
@@ -6629,51 +6636,137 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
-# test that a failed sync doesn't leave a half-applied grm/gcksum behind
+# test that a commit whose sync failed stands
+#
+# a failed sync means we don't know if our commit is durable, but it is
+# already readable, so littlefs must keep it, and only a power-loss can
+# take it away again
 [cases.test_badblocks_badsync]
 defines.RENAME = [false, true]
+# MTREE=1 => commit to an mdir outside of the mroot, these are fetched
+# from disk on every access
+defines.MTREE = [false, true]
+# LOST=1 => lose power right after the failed sync, losing the commit
+defines.LOST = [false, true]
 code = '''
-    lfs3_t lfs3;
-    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    // use our own emubd so we can lose power out-of-order, this reverts
+    // anything not synced
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_OOO,
+        .powerloss_cb = test_badblocks_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
 
-    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    // leave our last block outside of the filesystem, so we can lose
+    // power without touching anything
+    struct lfs3_cfg cfg_ = cfg;
+    cfg_.block_count = BLOCK_COUNT-1;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg_) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // create enough dirs that our mroot splits?
+    for (lfs3_size_t i = 0; MTREE; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_SIZE);
+
+        lfs3_size_t mdirs = 0;
+        lfs3_trv_t trv;
+        lfs3_trv_open(&lfs3, &trv,
+                LFS3_T_RDONLY | LFS3_T_MTREEONLY) => 0;
+        while (true) {
+            struct lfs3_tinfo tinfo;
+            int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            mdirs += (tinfo.btype == LFS3_BTYPE_MDIR);
+        }
+        lfs3_trv_close(&lfs3, &trv) => 0;
+        if (mdirs > 2) {
+            break;
+        }
+
+        char name[256];
+        sprintf(name, "d%03x", i);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "a",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
     lfs3_file_write(&lfs3, &file, "hello", 5) => 5;
     lfs3_file_close(&lfs3, &file) => 0;
 
-    // fail a commit's sync
-    lfs3_emubd_mkbadsync(CFG) => 0;
+    // fail our syncs
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+    lfs3_emubd_mkbadsync(&cfg) => 0;
     if (RENAME) {
         lfs3_rename(&lfs3, "a", "b") => LFS3_ERR_IO;
     } else {
         lfs3_mkdir(&lfs3, "b") => LFS3_ERR_IO;
     }
-    lfs3_emubd_mkgoodsync(CFG) => 0;
 
-    // the failed commit should have no effect
+    // our commit stands, so we should see its effect
+    uint32_t cksum_;
+    lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+    assert(cksum_ != cksum);
     struct lfs3_info info;
-    lfs3_stat(&lfs3, "a", &info) => 0;
-    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+    lfs3_stat(&lfs3, "a", &info) => (RENAME) ? LFS3_ERR_NOENT : 0;
+    lfs3_stat(&lfs3, "b", &info) => 0;
+    assert(info.type == ((RENAME) ? LFS3_TYPE_REG : LFS3_TYPE_DIR));
+
+    // lose power before anything is synced? this loses our commit
+    if (LOST) {
+        lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+        if (!setjmp(powerloss_jmp)) {
+            cfg.erase(&cfg, BLOCK_COUNT-1) => 0;
+            // unreachable
+            assert(false);
+        }
+        lfs3_emubd_mkgoodsync(&cfg) => 0;
+
+        // we're back to the old state
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+        assert(cksum_ == cksum);
+        lfs3_stat(&lfs3, "a", &info) => 0;
+        lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+
+    } else {
+        lfs3_emubd_mkgoodsync(&cfg) => 0;
+    }
 
     // and we should be able to keep going
     lfs3_mkdir(&lfs3, "c") => 0;
-    lfs3_stat(&lfs3, "a", &info) => 0;
-    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
-    lfs3_stat(&lfs3, "c", &info) => 0;
     lfs3_unmount(&lfs3) => 0;
 
-    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, CFG) => 0;
-    lfs3_stat(&lfs3, "a", &info) => 0;
-    lfs3_stat(&lfs3, "b", &info) => LFS3_ERR_NOENT;
+    // and see a consistent state after remounting
+    bool renamed = RENAME && !LOST;
+    bool created = !RENAME && !LOST;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, &cfg) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_stat(&lfs3, "a", &info) => (renamed) ? LFS3_ERR_NOENT : 0;
+    lfs3_stat(&lfs3, "b", &info)
+            => (renamed || created) ? 0 : LFS3_ERR_NOENT;
     lfs3_stat(&lfs3, "c", &info) => 0;
     uint8_t rbuf[5];
-    lfs3_file_open(&lfs3, &file, "a", LFS3_O_RDONLY) => 0;
+    lfs3_file_open(&lfs3, &file, (renamed) ? "b" : "a", LFS3_O_RDONLY) => 0;
     lfs3_file_read(&lfs3, &file, rbuf, 5) => 5;
     assert(memcmp(rbuf, "hello", 5) == 0);
     lfs3_file_close(&lfs3, &file) => 0;
     lfs3_unmount(&lfs3) => 0;
+
+    lfs3_emubd_destroy(&cfg) => 0;
 '''
 
 # test that bad blocks don't stop pre-erasing
@@ -7108,7 +7201,7 @@ code = '''
 # caller unchanged, and that we can keep going afterwards
 #
 # operations that commit more than once may be left complete, but never
-# half-done
+# half-done, and a failed sync after a commit keeps the commit
 [cases.test_badblocks_ioerror]
 defines.OP = [
     'LFS3_EMUBD_OP_READ',
@@ -7116,9 +7209,17 @@ defines.OP = [
     'LFS3_EMUBD_OP_ERASE',
     'LFS3_EMUBD_OP_SYNC',
 ]
-defines.M = 16
+# M=128 splits the mroot into an mtree
+defines.M = [16, 128]
 defines.K = 64
 defines.GC_COMPACT_THRESH = 'BLOCK_SIZE/2'
+# progs take a while with an mtree, -DNIGHTLY=1 runs these, reads take
+# far too long
+defines.NIGHTLY = false
+if = [
+    'M == 16 || OP != LFS3_EMUBD_OP_READ',
+    'M == 16 || OP != LFS3_EMUBD_OP_PROG || NIGHTLY',
+]
 code = '''
     // count syncs with our own sync wrapper
     struct lfs3_cfg cfg = *CFG;
@@ -7288,8 +7389,15 @@ code = '''
                     }
                     assert(err == LFS3_ERR_IO);
 
+                    // a failed sync keeps its commit, without an mtree
+                    // every sync we fail here is the last sync of a
+                    // commit, with an mtree we may fail a sync before
+                    // the commit that makes the change visible
+                    bool kept = (OP == LFS3_EMUBD_OP_SYNC && M == 16);
+
                     // if nothing reached disk, nothing should have changed
-                    if (mounted && test_badblocks_syncs == syncs) {
+                    if (mounted && test_badblocks_syncs == syncs
+                            && OP != LFS3_EMUBD_OP_SYNC) {
                         uint32_t cksum_;
                         lfs3_fs_cksum(&lfs3, &cksum_) => 0;
                         assert(cksum_ == cksum);
@@ -7304,28 +7412,39 @@ code = '''
                     // completed operations
                     if (op == OP_MKDIR) {
                         err = lfs3_stat(&lfs3, name, &info);
-                        assert(!err || err == LFS3_ERR_NOENT);
+                        assert(!err || (!kept && err == LFS3_ERR_NOENT));
                         if (!err) {
                             break;
                         }
                     } else if (op == OP_RENAME) {
                         int err_a = lfs3_stat(&lfs3, "a", &info);
                         int err_b = lfs3_stat(&lfs3, "b", &info);
-                        assert((!err_a && err_b == LFS3_ERR_NOENT)
+                        assert((!kept
+                                    && !err_a
+                                    && err_b == LFS3_ERR_NOENT)
                                 || (err_a == LFS3_ERR_NOENT && !err_b));
                         if (!err_b) {
                             break;
                         }
+                    } else if (op == OP_SETATTR) {
+                        lfs3_size_t attr = -1;
+                        lfs3_ssize_t d = lfs3_getattr(&lfs3, "b", 'x',
+                                &attr, sizeof(attr));
+                        assert(d == sizeof(attr) || d == LFS3_ERR_NOATTR);
+                        assert(!kept || attr == i);
+                        if (d == sizeof(attr) && attr == i) {
+                            break;
+                        }
                     } else if (op == OP_REMOVE) {
                         err = lfs3_stat(&lfs3, "d000", &info);
-                        assert(!err || err == LFS3_ERR_NOENT);
+                        assert((!kept && !err) || err == LFS3_ERR_NOENT);
                         if (err == LFS3_ERR_NOENT) {
                             break;
                         }
                     } else if (op == OP_GROW) {
                         struct lfs3_fsinfo fsinfo;
                         lfs3_fs_stat(&lfs3, &fsinfo) => 0;
-                        assert(fsinfo.block_count == BLOCK_COUNT/2
+                        assert((!kept && fsinfo.block_count == BLOCK_COUNT/2)
                                 || fsinfo.block_count == BLOCK_COUNT);
                     }
                 }

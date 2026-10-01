@@ -8909,7 +8909,8 @@ static inline void lfs3_file_discardleaf(lfs3_file_t *file);
 // this is atomic and updates any opened mdirs, lfs3_t, etc
 //
 // note that if an error occurs, any gstate is reverted to the on-disk
-// state
+// state, except if only our final sync fails, then the commit stands and
+// the error is left in lfs3->syncerr
 //
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
@@ -9389,9 +9390,13 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     }
 
     // sync on-disk state
+    //
+    // if only this sync fails, our commit is already readable, durable or
+    // not, so we keep it, finish as on success, and leave the error for
+    // the current operation to report, see lfs3_fs_syncerr
     err = lfs3_bd_sync(lfs3);
-    if (err) {
-        goto failed;
+    if (err && !lfs3->syncerr) {
+        lfs3->syncerr = err;
     }
 
     ///////////////////////////////////////////////////////////////////////
@@ -9555,6 +9560,18 @@ static int lfs3_mdir_compact(lfs3_t *lfs3, lfs3_mdir_t *mdir) {
     // and call lfs3_mdir_commit
     lfs3_mdir_claim(mdir);
     return lfs3_mdir_commit(lfs3, mdir, LFS3_RATTRS(LFS3_RATTR_NULL));
+}
+#endif
+
+// a failed sync after a commit doesn't undo the commit, internally the
+// commit succeeded, but the operation must still report the error
+//
+// every public function that can commit returns its result through this
+#ifndef LFS3_RDONLY
+static lfs3_ssize_t lfs3_fs_syncerr(lfs3_t *lfs3, lfs3_ssize_t err) {
+    int err_ = lfs3->syncerr;
+    lfs3->syncerr = 0;
+    return (err_) ? err_ : err;
 }
 #endif
 
@@ -11584,7 +11601,7 @@ static int lfs3_alloc_syncgbmap(lfs3_t *lfs3) {
 /// Directory operations ///
 
 #ifndef LFS3_RDONLY
-int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
+static int lfs3_mkdir_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -11764,6 +11781,13 @@ int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
 }
 #endif
 
+#ifndef LFS3_RDONLY
+int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_mkdir_(lfs3, path);
+    return lfs3_fs_syncerr(lfs3, err);
+}
+#endif
+
 // push a did to grm, but only if the directory is empty
 #ifndef LFS3_RDONLY
 static int lfs3_grm_pushdid(lfs3_t *lfs3, lfs3_did_t did) {
@@ -11818,7 +11842,7 @@ empty:;
 #endif
 
 #ifndef LFS3_RDONLY
-int lfs3_remove(lfs3_t *lfs3, const char *path) {
+static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -11940,7 +11964,15 @@ int lfs3_remove(lfs3_t *lfs3, const char *path) {
 #endif
 
 #ifndef LFS3_RDONLY
-int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
+int lfs3_remove(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_remove_(lfs3, path);
+    return lfs3_fs_syncerr(lfs3, err);
+}
+#endif
+
+#ifndef LFS3_RDONLY
+static int lfs3_rename_(lfs3_t *lfs3,
+        const char *old_path, const char *new_path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -12119,6 +12151,13 @@ int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
     }
 
     return 0;
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
+    int err = lfs3_rename_(lfs3, old_path, new_path);
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -12521,7 +12560,7 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         }
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -12570,7 +12609,7 @@ int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
         }
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -12929,8 +12968,20 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
     }
     #endif
 
-    return lfs3_file_opencfg_(lfs3, file, path, flags,
+    int err = lfs3_file_opencfg_(lfs3, file, path, flags,
             cfg);
+    #ifndef LFS3_RDONLY
+    // did a sync fail after a commit we kept? we're reporting an error,
+    // so our file can't stay open
+    int err_ = lfs3_fs_syncerr(lfs3, 0);
+    if (err_) {
+        if (!err) {
+            lfs3_file_close_(lfs3, file);
+        }
+        return err_;
+    }
+    #endif
+    return err;
 }
 
 // default file config
@@ -14384,12 +14435,18 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         }
     }
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return written;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -14433,6 +14490,12 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
     if (err) {
         goto failed;
     }
+
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
     #endif
 
     return 0;
@@ -14441,7 +14504,7 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
     #endif
 }
 
@@ -14758,6 +14821,14 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     if (err) {
         goto failed;
     }
+
+    // did our sync fail after a commit we kept? stay unsynced so a retry
+    // commits and syncs again
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        file->b.h.flags |= LFS3_o_UNSYNC;
+        goto failed;
+    }
     #endif
 
     // clear desync flag
@@ -14767,7 +14838,7 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     #ifndef LFS3_RDONLY
 failed:;
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
     #endif
 }
 
@@ -14958,12 +15029,18 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
         lfs3_file_discardcache(file);
     }
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return 0;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -15070,12 +15147,18 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
             size - size_,
             file->pos);
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return 0;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -15236,10 +15319,10 @@ int lfs3_set(lfs3_t *lfs3, const char *path,
             LFS3_o_WRSET | LFS3_O_CREAT | LFS3_O_TRUNC,
             &cfg);
     if (err) {
-        return err;
+        return lfs3_fs_syncerr(lfs3, err);
     }
 
-    // let close do any remaining work
+    // let close do any remaining work, this also reports any failed sync
     return lfs3_file_close(lfs3, &file);
 }
 #endif
@@ -15562,6 +15645,7 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #ifndef LFS3_RDONLY
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
+    lfs3->syncerr = 0;
     #endif
 
     // TODO are these zeros accomplished by zerogdelta in mountinited?
@@ -16845,7 +16929,7 @@ static int lfs3_fs_fixorphans(lfs3_t *lfs3) {
 
 // prepare the filesystem for mutation
 #ifndef LFS3_RDONLY
-int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
+static int lfs3_fs_mkconsistent_(lfs3_t *lfs3) {
     // filesystem must be writeable
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
 
@@ -16880,6 +16964,13 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
     }
 
     return 0;
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
+    int err = lfs3_fs_mkconsistent_(lfs3);
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -17057,6 +17148,9 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
     // lfs3_fs_gc_ may stop with the traversal still open, but our mgc
     // lives on the stack, so it must not stay in our handle list
     lfs3_handle_close(lfs3, &mgc.t.h);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
     return err;
 }
 
@@ -17098,11 +17192,15 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
     #endif
 
     // run gc a configurable number of steps
-    return lfs3_fs_gc_(lfs3, &lfs3->gc,
+    int err = lfs3_fs_gc_(lfs3, &lfs3->gc,
             lfs3->cfg->gc_flags,
             (lfs3->cfg->gc_steps)
                 ? lfs3->cfg->gc_steps
                 : 1);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
+    return err;
 }
 #endif
 
@@ -17223,7 +17321,7 @@ int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
         goto failed;
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 
 failed:;
     // restore block_count
@@ -17293,7 +17391,7 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3) {
         goto failed;
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 
 failed:;
     // if we failed clear the gbmap bit and reset the gbmap to be safe
@@ -17335,7 +17433,7 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
 
     // on success mark gbmap as not-in-use internally
     lfs3->flags &= ~LFS3_F_GBMAP;
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -17407,7 +17505,7 @@ int lfs3_trv_close(lfs3_t *lfs3, lfs3_trv_t *trv) {
     return 0;
 }
 
-int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
+static int lfs3_trv_read_(lfs3_t *lfs3, lfs3_trv_t *trv,
         struct lfs3_tinfo *tinfo) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &trv->gc.t.h));
 
@@ -17469,6 +17567,15 @@ int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
             LFS3_UNREACHABLE();
         }
     }
+}
+
+int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
+        struct lfs3_tinfo *tinfo) {
+    int err = lfs3_trv_read_(lfs3, trv, tinfo);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
+    return err;
 }
 
 static int lfs3_trv_rewind_(lfs3_t *lfs3, lfs3_trv_t *trv) {
