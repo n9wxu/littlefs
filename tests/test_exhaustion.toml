@@ -1812,3 +1812,169 @@ code = '''
     assert(run_ops[1]*110/100 > 2*run_ops[0]);
 '''
 
+
+
+## Exhaustion under powerloss
+
+# rewrite files until the disk wears out, losing power throughout
+#
+# Each file's step is committed with its data as a file-attached
+# attribute, so after any powerloss we know exactly which rewrites
+# completed. At end of life, every file must still read back as of its
+# last successful rewrite from a read-only mount
+#
+[cases.test_exhaustion_spam_file_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.ERASE_CYCLES = 10
+defines.BLOCK_RECYCLES = 4
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+]
+# a smaller disk wears out sooner
+defines.BLOCK_COUNT = 32
+defines.N = 4
+defines.SIZE = ['BLOCK_SIZE/8', 'BLOCK_SIZE']
+defines.SEED = 'range(5)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        // interrupted formats would otherwise wear out the mroot anchor
+        // before our workload starts
+        lfs3_emubd_setwear(CFG, 0, 0) => 0;
+        lfs3_emubd_setwear(CFG, 1, 0) => 0;
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // how far did we get?
+    uint32_t steps[N];
+    lfs3_size_t k_ = 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "amethyst%03x", x);
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                &steps[x], sizeof(uint32_t));
+        assert(d == sizeof(uint32_t) || d == LFS3_ERR_NOENT);
+        if (d == LFS3_ERR_NOENT) {
+            steps[x] = 0;
+        }
+        k_ += steps[x];
+    }
+
+    // replay our rewrites in our sim, then continue on disk, the
+    // contents of each rewrite are a function of the seed and the
+    // rewrite's index
+    uint32_t sim_ks[N];
+    uint32_t counts[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        counts[x] = 0;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t k = 0;; k++) {
+        // caught up with disk? check that every file matches our sim
+        if (k == k_) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(counts[x] == steps[x]);
+                if (counts[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "amethyst%03x", x);
+                uint8_t rbuf[SIZE+1];
+                lfs3_get(&lfs3, name, rbuf, SIZE+1) => SIZE;
+                uint32_t wprng = SEED + sim_ks[x]*N;
+                for (lfs3_size_t j = 0; j < SIZE; j++) {
+                    assert(rbuf[j] == 'a' + (TEST_PRNG(&wprng) % 26));
+                }
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        // choose a file to rewrite
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        if (k < k_) {
+            sim_ks[x] = k;
+            counts[x] += 1;
+            continue;
+        }
+
+        char name[256];
+        sprintf(name, "amethyst%03x", x);
+        uint8_t wbuf[SIZE];
+        uint32_t wprng = SEED + k*N;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+        }
+        uint32_t step = counts[x]+1;
+        struct lfs3_attr attr = {
+            .type = 1,
+            .flags = LFS3_A_WRONLY,
+            .buffer = &step,
+            .buffer_size = sizeof(uint32_t),
+        };
+        struct lfs3_file_cfg filecfg = {
+            .attrs = &attr,
+            .attr_count = 1,
+        };
+        lfs3_file_t file;
+        err = lfs3_file_opencfg(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC,
+                &filecfg);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+        assert(d == SIZE || d == LFS3_ERR_NOSPC);
+        if (d == LFS3_ERR_NOSPC) {
+            lfs3_file_close(&lfs3, &file) => 0;
+            break;
+        }
+        err = lfs3_file_close(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+        sim_ks[x] = k;
+        counts[x] += 1;
+    }
+
+    // end of life, everything we synced should still be readable from a
+    // read-only mount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "amethyst%03x", x);
+        uint32_t step;
+        if (counts[x] == 0) {
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => LFS3_ERR_NOENT;
+            continue;
+        }
+        lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                => sizeof(uint32_t);
+        assert(step == counts[x]);
+
+        uint8_t rbuf[SIZE+1];
+        lfs3_get(&lfs3, name, rbuf, SIZE+1) => SIZE;
+        uint32_t wprng = SEED + sim_ks[x]*N;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            assert(rbuf[j] == 'a' + (TEST_PRNG(&wprng) % 26));
+        }
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
