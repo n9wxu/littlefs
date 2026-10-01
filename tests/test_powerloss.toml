@@ -897,3 +897,144 @@ code = '''
         lfs3_unmount(&lfs3) => 0;
     }
 '''
+
+# Small appends under powerloss
+#
+# Each append resumes programming the partially programmed data block
+# left by the previous sync, the synced prefix of that block must
+# survive a powerloss while the rest of the block is programmed
+#
+[cases.test_powerloss_append_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.PROG_SIZE = [1, 16, 256]
+defines.CHUNK = [16, 64]
+defines.FILES = [1, 2]
+defines.SIZE = '2*BLOCK_SIZE + BLOCK_SIZE/2'
+# turns on emubd's prog-once check where emubd supports it
+defines.CKPROGONCE = false
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // the number of synced appends is committed with each file's data
+    // as a file-attached attribute
+    lfs3_file_t files[FILES];
+    uint32_t steps[FILES];
+    lfs3_ssize_t step_sizes[FILES];
+    struct lfs3_attr attrs[FILES];
+    struct lfs3_file_cfg filecfgs[FILES];
+    uint32_t prngs[FILES];
+    for (lfs3_size_t f = 0; f < FILES; f++) {
+        char name[256];
+        sprintf(name, "file%d", f);
+        steps[f] = 0;
+        attrs[f] = (struct lfs3_attr){
+            .type = 1,
+            .flags = LFS3_A_RDWR,
+            .buffer = &steps[f],
+            .buffer_size = sizeof(uint32_t),
+            .size = &step_sizes[f],
+        };
+        filecfgs[f] = (struct lfs3_file_cfg){
+            .attrs = &attrs[f],
+            .attr_count = 1,
+        };
+        lfs3_file_opencfg(&lfs3, &files[f], name,
+                LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_APPEND,
+                &filecfgs[f]) => 0;
+        if (step_sizes[f] == LFS3_ERR_NOATTR) {
+            steps[f] = 0;
+        } else {
+            assert(step_sizes[f] == sizeof(uint32_t));
+        }
+
+        // each file is exactly its synced appends
+        lfs3_file_size(&lfs3, &files[f]) => steps[f]*CHUNK;
+        prngs[f] = 1+f;
+        uint8_t rbuf[CHUNK];
+        for (uint32_t i = 0; i < steps[f]; i++) {
+            lfs3_file_read(&lfs3, &files[f], rbuf, CHUNK) => CHUNK;
+            for (lfs3_size_t j = 0; j < CHUNK; j++) {
+                assert(rbuf[j] == 'a' + (TEST_PRNG(&prngs[f]) % 26));
+            }
+        }
+        lfs3_file_read(&lfs3, &files[f], rbuf, CHUNK) => 0;
+    }
+    // files are appended in turn
+    for (lfs3_size_t f = 1; f < FILES; f++) {
+        assert(steps[f] == steps[0] || steps[f]+1 == steps[0]);
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // append, sync, repeat
+    while (true) {
+        lfs3_size_t f = 0;
+        for (lfs3_size_t f_ = 1; f_ < FILES; f_++) {
+            if (steps[f_] < steps[f]) {
+                f = f_;
+            }
+        }
+        if ((steps[f]+1)*CHUNK > SIZE) {
+            break;
+        }
+
+        uint8_t wbuf[CHUNK];
+        for (lfs3_size_t j = 0; j < CHUNK; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prngs[f]) % 26);
+        }
+        lfs3_file_write(&lfs3, &files[f], wbuf, CHUNK) => CHUNK;
+        steps[f] += 1;
+        step_sizes[f] = sizeof(uint32_t);
+        lfs3_file_sync(&lfs3, &files[f]) => 0;
+    }
+
+    for (lfs3_size_t f = 0; f < FILES; f++) {
+        lfs3_file_close(&lfs3, &files[f]) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t f = 0; f < FILES; f++) {
+            char name[256];
+            sprintf(name, "file%d", f);
+            uint32_t step;
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(step == SIZE/CHUNK);
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => step*CHUNK;
+            uint32_t prng = 1+f;
+            uint8_t rbuf[CHUNK];
+            for (uint32_t i = 0; i < step; i++) {
+                lfs3_file_read(&lfs3, &file, rbuf, CHUNK) => CHUNK;
+                for (lfs3_size_t j = 0; j < CHUNK; j++) {
+                    assert(rbuf[j] == 'a' + (TEST_PRNG(&prng) % 26));
+                }
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
