@@ -15144,6 +15144,11 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #ifndef LFS3_RDONLY
     LFS3_ASSERT(lfs3->cfg->pcache_size != 0);
     #endif
+    // file caches without an fcache_buffer are allocated with
+    // lfs3_malloc, and lfs3_malloc(0) may fail
+    #ifndef LFS3_NO_MALLOC
+    LFS3_ASSERT(lfs3->cfg->fcache_size != 0);
+    #endif
 
     // cache sizes must be a multiple of their operation sizes
     LFS3_ASSERT(lfs3->cfg->rcache_size % lfs3->cfg->read_size == 0);
@@ -15186,6 +15191,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     LFS3_ASSERT(lfs3->cfg->shrub_size <= lfs3->cfg->block_size/4);
     // fragment_size must be <= block_size/4
     LFS3_ASSERT(lfs3->cfg->fragment_size <= lfs3->cfg->block_size/4);
+    // fragment_size must be > 0, otherwise fragmenting can't make
+    // progress, unless crystal_thresh <= 1 and we never fragment
+    LFS3_ASSERT(lfs3->cfg->fragment_size > 0
+            || lfs3->cfg->crystal_thresh <= 1);
     #endif
 
     // TODO move this to mount?

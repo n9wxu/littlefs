@@ -546,7 +546,7 @@ struct lfs3_cfg {
 
     // Size of file caches in bytes. In addition to filesystem-wide
     // read/prog caches, each file gets its own cache to reduce disk
-    // accesses.
+    // accesses. Must be non-zero unless LFS3_NO_MALLOC is defined.
     lfs3_size_t fcache_size;
 
     // Size of the lookahead buffer in bytes. A larger lookahead buffer
@@ -679,6 +679,9 @@ struct lfs3_cfg {
     // Maximum size of a non-block B-tree leaf in bytes. Smaller values may
     // make small random-writes cheaper, but increase metadata overhead. Must
     // be <= block_size/4.
+    //
+    // 0 is only valid if crystal_thresh <= 1, where fragments are never
+    // written.
     #ifndef LFS3_RDONLY
     lfs3_size_t fragment_size;
     #endif
