@@ -6,6 +6,15 @@
 # Note we use 251, a prime, in places to avoid aliasing powers of 2.
 #
 
+code = '''
+// a powerloss callback that returns, so the interrupted operation
+// continues, the way the exhaustive runner branches
+__attribute__((unused))
+static void test_bd_powerloss_continue(void *data) {
+    (void)data;
+}
+'''
+
 [cases.test_bd_one_block]
 defines.READ = ['READ_SIZE', 'BLOCK_SIZE']
 defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
@@ -245,3 +254,58 @@ code = '''
     }
 '''
 
+
+# a powerloss whose callback returns must leave every block as if the
+# interrupted prog or erase had completed
+[cases.test_bd_powerloss_continue]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+]
+defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_continue,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    // lose power during a prog of block 1, then prog more of block 1
+    uint8_t buffer[PROG];
+    cfg.erase(&cfg, 0) => 0;
+    cfg.erase(&cfg, 1) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    memset(buffer, 'a', PROG);
+    cfg.prog(&cfg, 1, 0, buffer, PROG) => 0;
+    memset(buffer, 'b', PROG);
+    cfg.prog(&cfg, 1, PROG, buffer, PROG) => 0;
+
+    // lose power during an erase of block 0, then prog block 0
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    cfg.erase(&cfg, 0) => 0;
+    memset(buffer, 'c', PROG);
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+    lfs3_emubd_powercycles(&cfg) => 0;
+
+    cfg.read(&cfg, 0, 0, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'c');
+    }
+    cfg.read(&cfg, 1, 0, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'a');
+    }
+    cfg.read(&cfg, 1, PROG, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'b');
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''

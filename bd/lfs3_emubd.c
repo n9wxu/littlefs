@@ -888,6 +888,9 @@ int lfs3_emubd_erase(const struct lfs3_cfg *cfg, lfs3_block_t block) {
             } else if (bd->cfg->powerloss_behavior
                     == LFS3_EMUBD_POWERLOSS_OOO) {
                 for (lfs3_block_t i = 0; i < cfg->block_count; i++) {
+                    lfs3_emubd_decblock(bd->ooo_after[i]);
+                    bd->ooo_after[i] = lfs3_emubd_incblock(bd->blocks[i]);
+
                     if (i != block && bd->blocks[i] != bd->ooo_before[i]) {
                         lfs3_emubd_decblock(bd->blocks[i]);
                         bd->blocks[i] = lfs3_emubd_incblock(bd->ooo_before[i]);
