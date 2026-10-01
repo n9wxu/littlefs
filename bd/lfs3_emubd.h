@@ -212,6 +212,7 @@ typedef struct lfs3_emubd {
     uint32_t ioerror[4];
     int ioerror_err[4];
     bool badsync;
+    uint32_t *transient;
     lfs3_emubd_block_t **ooo_before;
     lfs3_emubd_block_t **ooo_after;
     lfs3_emubd_disk_t *disk;
@@ -344,6 +345,18 @@ int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
 // Get the remaining ops before an injected error, 0 if disabled or
 // already triggered
 int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op);
+
+// Error with LFS3_ERR_CORRUPT on the next n reads of a given block, after
+// which reads succeed again, 0 clears
+//
+// Unlike LFS3_EMUBD_BADBLOCK_READERROR, the block's data is intact, this
+// emulates a read that fails and then succeeds on retry.
+int lfs3_emubd_mktransient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, uint32_t n);
+
+// Get the remaining transient read errors of a given block
+int32_t lfs3_emubd_transient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
 
 // Mark sync as bad, every sync errors with LFS3_ERR_IO until marked good
 //

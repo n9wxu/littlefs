@@ -276,6 +276,7 @@ int lfs3_emubd_createcfg(const struct lfs3_cfg *cfg, const char *path,
     bd->badsync = false;
     bd->ooo_before = NULL;
     bd->ooo_after = NULL;
+    bd->transient = NULL;
     bd->disk = NULL;
 
     // allocate our block array, all blocks start as uninitialized
@@ -424,6 +425,7 @@ int lfs3_emubd_destroy(const struct lfs3_cfg *cfg) {
     }
 
     // clean up other resources 
+    free(bd->transient);
     if (bd->disk) {
         bd->disk->rc -= 1;
         if (bd->disk->rc == 0) {
@@ -458,6 +460,13 @@ int lfs3_emubd_read(const struct lfs3_cfg *cfg, lfs3_block_t block,
     if (ioerr) {
         LFS3_EMUBD_TRACE("lfs3_emubd_read -> %d", ioerr);
         return ioerr;
+    }
+
+    // transient read error?
+    if (bd->transient && bd->transient[block] > 0) {
+        bd->transient[block] -= 1;
+        LFS3_EMUBD_TRACE("lfs3_emubd_read -> %d", LFS3_ERR_CORRUPT);
+        return LFS3_ERR_CORRUPT;
     }
 
     // get the block
@@ -1652,6 +1661,50 @@ int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op) {
     return bd->ioerror[op];
 }
 
+int lfs3_emubd_mktransient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, uint32_t n) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_mktransient(%p, %"PRIu32", %"PRIu32")",
+            (void*)cfg, block, n);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if block is valid
+    LFS3_ASSERT(block < cfg->block_count);
+
+    // allocate counters on first use
+    if (!bd->transient) {
+        if (n == 0) {
+            LFS3_EMUBD_TRACE("lfs3_emubd_mktransient -> %d", 0);
+            return 0;
+        }
+
+        bd->transient = malloc(cfg->block_count * sizeof(uint32_t));
+        if (!bd->transient) {
+            LFS3_EMUBD_TRACE("lfs3_emubd_mktransient -> %d", LFS3_ERR_NOMEM);
+            return LFS3_ERR_NOMEM;
+        }
+        memset(bd->transient, 0, cfg->block_count * sizeof(uint32_t));
+    }
+
+    bd->transient[block] = n;
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_mktransient -> %d", 0);
+    return 0;
+}
+
+int32_t lfs3_emubd_transient(const struct lfs3_cfg *cfg,
+        lfs3_block_t block) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_transient(%p, %"PRIu32")",
+            (void*)cfg, block);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if block is valid
+    LFS3_ASSERT(block < cfg->block_count);
+
+    uint32_t n = (bd->transient) ? bd->transient[block] : 0;
+    LFS3_EMUBD_TRACE("lfs3_emubd_transient -> %"PRIu32, n);
+    return n;
+}
+
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg) {
     LFS3_EMUBD_TRACE("lfs3_emubd_mkbadsync(%p)", (void*)cfg);
     lfs3_emubd_t *bd = cfg->context;
@@ -1764,6 +1817,16 @@ int lfs3_emubd_cpy(const struct lfs3_cfg *cfg, lfs3_emubd_t *copy) {
     memcpy(copy->ioerror, bd->ioerror, sizeof(bd->ioerror));
     memcpy(copy->ioerror_err, bd->ioerror_err, sizeof(bd->ioerror_err));
     copy->badsync = bd->badsync;
+    copy->transient = NULL;
+    if (bd->transient) {
+        copy->transient = malloc(cfg->block_count * sizeof(uint32_t));
+        if (!copy->transient) {
+            LFS3_EMUBD_TRACE("lfs3_emubd_cpy -> %d", LFS3_ERR_NOMEM);
+            return LFS3_ERR_NOMEM;
+        }
+        memcpy(copy->transient, bd->transient,
+                cfg->block_count * sizeof(uint32_t));
+    }
     copy->disk = bd->disk;
     if (copy->disk) {
         copy->disk->rc += 1;

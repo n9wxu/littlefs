@@ -554,3 +554,53 @@ code = '''
 
     lfs3_emubd_destroy(&cfg) => 0;
 '''
+
+# the next n reads of a block fail with LFS3_ERR_CORRUPT, then reads of
+# the intact data succeed, other blocks are unaffected
+[cases.test_bd_transient]
+defines.N = [1, 3]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+code = '''
+    uint8_t buffer[SIZE];
+    for (lfs3_block_t b = 0; b < 2; b++) {
+        CFG->erase(CFG, b) => 0;
+        memset(buffer, 'a'+b, SIZE);
+        CFG->prog(CFG, b, 0, buffer, SIZE) => 0;
+    }
+
+    lfs3_emubd_transient(CFG, 0) => 0;
+    lfs3_emubd_mktransient(CFG, 0, N) => 0;
+    lfs3_emubd_transient(CFG, 0) => N;
+
+    // a copy, as the exhaustive runner makes, keeps its own count
+    lfs3_emubd_t copy;
+    lfs3_emubd_cpy(CFG, &copy) => 0;
+    struct lfs3_cfg copy_cfg = *CFG;
+    copy_cfg.context = &copy;
+
+    for (lfs3_size_t i = 0; i < N; i++) {
+        CFG->read(CFG, 1, 0, buffer, SIZE) => 0;
+        memset(buffer, 0xcc, SIZE);
+        CFG->read(CFG, 0, 0, buffer, SIZE) => LFS3_ERR_CORRUPT;
+        for (lfs3_off_t j = 0; j < SIZE; j++) {
+            assert(buffer[j] == 0xcc);
+        }
+    }
+    lfs3_emubd_transient(CFG, 0) => 0;
+    CFG->read(CFG, 0, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == 'a');
+    }
+
+    lfs3_emubd_transient(&copy_cfg, 0) => N;
+    copy_cfg.read(&copy_cfg, 0, 0, buffer, SIZE) => LFS3_ERR_CORRUPT;
+    lfs3_emubd_destroy(&copy_cfg) => 0;
+
+    // 0 clears
+    lfs3_emubd_mktransient(CFG, 1, N) => 0;
+    lfs3_emubd_mktransient(CFG, 1, 0) => 0;
+    CFG->read(CFG, 1, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == 'b');
+    }
+'''
