@@ -412,6 +412,184 @@ death_code = '''
     assert(TEST_DEATH.erases == 0);
 '''
 
+# test that a configuration with every optional field zeroed works, and
+# that no operation loops, each one should stay under a bound of block
+# device operations
+#
+# note fcache_size=0 is refused, files need a cache
+[cases.test_mount_zeroed_cfg]
+defines.FILES = 4
+defines.MAX_SIZE = '4*BLOCK_SIZE'
+defines.STEPS = 500
+defines.SEED = 'range(4)'
+fuzz = 'SEED'
+code = '''
+    // only the required fields, prog/erase widths of a whole block make
+    // emubd count calls instead of bytes
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .prog_width = BLOCK_SIZE,
+        .erase_width = BLOCK_SIZE,
+        .ck_progonce = CKPROGONCE,
+    };
+    lfs3_emubd_t bd;
+    struct lfs3_cfg cfg = {
+        .context        = &bd,
+        .read           = lfs3_emubd_read,
+        .prog           = lfs3_emubd_prog,
+        .erase          = lfs3_emubd_erase,
+        .sync           = lfs3_emubd_sync,
+        .read_size      = READ_SIZE,
+        .prog_size      = PROG_SIZE,
+        .block_size     = BLOCK_SIZE,
+        .block_count    = BLOCK_COUNT,
+        .rcache_size    = RCACHE_SIZE,
+        .pcache_size    = PCACHE_SIZE,
+        .fcache_size    = FCACHE_SIZE,
+        .lookahead_size = LOOKAHEAD_SIZE,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // simulated files
+    uint8_t (*sim)[MAX_SIZE] = malloc(FILES*MAX_SIZE);
+    lfs3_size_t sim_size[FILES];
+    bool sim_exists[FILES];
+    for (lfs3_size_t i = 0; i < FILES; i++) {
+        sim_size[i] = 0;
+        sim_exists[i] = false;
+    }
+    uint8_t *buf = malloc(MAX_SIZE);
+
+    uint32_t prng = SEED;
+    lfs3_emubd_sio_t ops = 0;
+    for (lfs3_size_t step = 0; step < STEPS; step++) {
+        lfs3_size_t i = TEST_PRNG(&prng) % FILES;
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint32_t op = TEST_PRNG(&prng) % 6;
+
+        // write somewhere in the file, like test_fwrite
+        if (op <= 1) {
+            lfs3_size_t off = TEST_PRNG(&prng) % (sim_size[i]+1);
+            lfs3_size_t size = TEST_PRNG(&prng) % (MAX_SIZE-off+1);
+            for (lfs3_size_t j = 0; j < size; j++) {
+                sim[i][off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_file_write(&lfs3, &file, &sim[i][off], size) => size;
+            lfs3_file_close(&lfs3, &file) => 0;
+            sim_size[i] = lfs3_max(sim_size[i], off+size);
+            sim_exists[i] = true;
+
+        // truncate or fruncate
+        } else if (op == 2) {
+            lfs3_size_t size = TEST_PRNG(&prng) % (sim_size[i]+1);
+            bool front = TEST_PRNG(&prng) % 2;
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            if (front) {
+                lfs3_file_fruncate(&lfs3, &file, size) => 0;
+                memmove(sim[i], &sim[i][sim_size[i]-size], size);
+            } else {
+                lfs3_file_truncate(&lfs3, &file, size) => 0;
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+            sim_size[i] = size;
+            sim_exists[i] = true;
+
+        // replace the file with the kv api, like test_kv
+        } else if (op == 3) {
+            lfs3_size_t size = TEST_PRNG(&prng) % (MAX_SIZE+1);
+            for (lfs3_size_t j = 0; j < size; j++) {
+                sim[i][j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+
+            lfs3_set(&lfs3, name, sim[i], size) => 0;
+            sim_size[i] = size;
+            sim_exists[i] = true;
+
+        // rename over another file, like test_files
+        } else if (op == 4) {
+            lfs3_size_t i_ = TEST_PRNG(&prng) % FILES;
+            if (!sim_exists[i] || i_ == i) {
+                continue;
+            }
+            char name_[256];
+            sprintf(name_, "file%03x", i_);
+
+            lfs3_rename(&lfs3, name, name_) => 0;
+            memcpy(sim[i_], sim[i], sim_size[i]);
+            sim_size[i_] = sim_size[i];
+            sim_exists[i_] = true;
+            sim_size[i] = 0;
+            sim_exists[i] = false;
+
+        // remove
+        } else {
+            if (!sim_exists[i]) {
+                continue;
+            }
+
+            lfs3_remove(&lfs3, name) => 0;
+            sim_size[i] = 0;
+            sim_exists[i] = false;
+        }
+
+        // no operation should loop
+        lfs3_emubd_sio_t ops_
+                = lfs3_emubd_progs(&cfg) + lfs3_emubd_erases(&cfg);
+        assert(ops_ - ops < 100*BLOCK_COUNT);
+        ops = ops_;
+
+        // check the file we touched
+        if (sim_exists[i]) {
+            lfs3_get(&lfs3, name, buf, MAX_SIZE) => sim_size[i];
+            assert(memcmp(buf, sim[i], sim_size[i]) == 0);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t i = 0; i < FILES; i++) {
+            char name[256];
+            sprintf(name, "file%03x", i);
+            if (sim_exists[i]) {
+                lfs3_size(&lfs3, name) => sim_size[i];
+                lfs3_get(&lfs3, name, buf, MAX_SIZE) => sim_size[i];
+                assert(memcmp(buf, sim[i], sim_size[i]) == 0);
+            } else {
+                lfs3_size(&lfs3, name) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(buf);
+    free(sim);
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
 
 # test that on-mount traversals do what they say they do
 
