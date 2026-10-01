@@ -1831,7 +1831,9 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags);
 //
 // Note: This is irreversible.
 //
-// Returns a negative error code on failure.
+// Returns LFS3_ERR_INVAL if block_count is less than the current block
+// count (shrinking is not supported) or more than the configured
+// block_count, or a negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count);
 #endif

@@ -16990,8 +16990,13 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags) {
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
     // filesystem must be writeable
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
-    // shrinking the filesystem is not supported
-    LFS3_ASSERT(block_count_ >= lfs3->block_count);
+
+    // shrinking the filesystem is not supported, and we can't grow past
+    // our block device
+    if (block_count_ < lfs3->block_count
+            || block_count_ > lfs3->cfg->block_count) {
+        return LFS3_ERR_INVAL;
+    }
 
     // do nothing if block_count doesn't change
     if (block_count_ == lfs3->block_count) {
