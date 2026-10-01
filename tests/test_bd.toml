@@ -406,3 +406,73 @@ code = '''
 
     lfs3_emubd_destroy(&cfg) => 0;
 '''
+
+# only the nth op of the given kind fails, with the given error, and the
+# failed op changes nothing
+[cases.test_bd_ioerror]
+defines.OP = [
+    'LFS3_EMUBD_OP_READ',
+    'LFS3_EMUBD_OP_PROG',
+    'LFS3_EMUBD_OP_ERASE',
+]
+defines.ERR = ['0', 'LFS3_ERR_CORRUPT']
+defines.N = [1, 2, 5]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    uint8_t buffer[SIZE];
+    lfs3_block_t scratch = 2*N;
+    for (lfs3_block_t b = 0; b < 2*N; b++) {
+        CFG->erase(CFG, b) => 0;
+        memset(buffer, 'a'+b, SIZE);
+        CFG->prog(CFG, b, 0, buffer, SIZE) => 0;
+    }
+    CFG->erase(CFG, scratch) => 0;
+
+    lfs3_emubd_ioerror(CFG, OP) => 0;
+    lfs3_emubd_mkioerror(CFG, OP, N, ERR) => 0;
+    lfs3_emubd_ioerror(CFG, OP) => N;
+
+    for (lfs3_block_t b = 0; b < 2*N; b++) {
+        bool fail = (b+1 == N);
+        int err = (fail) ? ((ERR) ? ERR : LFS3_ERR_IO) : 0;
+
+        // ops of other kinds don't count
+        if (OP != LFS3_EMUBD_OP_READ) {
+            CFG->read(CFG, scratch, 0, buffer, SIZE) => 0;
+        }
+        if (OP != LFS3_EMUBD_OP_PROG) {
+            memset(buffer, 'z', SIZE);
+            CFG->prog(CFG, scratch, b*SIZE, buffer, SIZE) => 0;
+        }
+        if (OP != LFS3_EMUBD_OP_ERASE) {
+            CFG->erase(CFG, scratch+1) => 0;
+        }
+
+        if (OP == LFS3_EMUBD_OP_READ) {
+            memset(buffer, 0xcc, SIZE);
+            CFG->read(CFG, b, 0, buffer, SIZE) => err;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? 0xcc : 'a'+b));
+            }
+
+        } else if (OP == LFS3_EMUBD_OP_PROG) {
+            memset(buffer, 'A'+b, SIZE);
+            CFG->prog(CFG, b, SIZE, buffer, SIZE) => err;
+            CFG->read(CFG, b, SIZE, buffer, SIZE) => 0;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? ERASE_VALUE : 'A'+b));
+            }
+
+        } else if (OP == LFS3_EMUBD_OP_ERASE) {
+            CFG->erase(CFG, b) => err;
+            CFG->read(CFG, b, 0, buffer, SIZE) => 0;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? 'a'+b : ERASE_VALUE));
+            }
+        }
+    }
+
+    // only the nth op failed
+    lfs3_emubd_ioerror(CFG, OP) => 0;
+'''

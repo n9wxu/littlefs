@@ -50,6 +50,13 @@ typedef enum lfs3_emubd_powerloss_behavior {
     LFS3_EMUBD_POWERLOSS_METASTABLE  = 4, // Reads may flip a bit
 } lfs3_emubd_powerloss_behavior_t;
 
+// Operations that lfs3_emubd_mkioerror can make fail
+typedef enum lfs3_emubd_op {
+    LFS3_EMUBD_OP_READ       = 0, // Read
+    LFS3_EMUBD_OP_PROG       = 1, // Prog
+    LFS3_EMUBD_OP_ERASE      = 2, // Erase
+} lfs3_emubd_op_t;
+
 // Type for measuring read/program/erase operations
 typedef uint64_t lfs3_emubd_io_t;
 typedef int64_t lfs3_emubd_sio_t;
@@ -201,7 +208,8 @@ typedef struct lfs3_emubd {
     // some other test state
     uint32_t prng;
     lfs3_emubd_powercycles_t power_cycles;
-    uint32_t badread;
+    uint32_t ioerror[3];
+    int ioerror_err[3];
     bool badsync;
     lfs3_emubd_block_t **ooo_before;
     lfs3_emubd_block_t **ooo_after;
@@ -323,11 +331,16 @@ int lfs3_emubd_flipbit(const struct lfs3_cfg *cfg,
 // Flip all bits marked as bad
 int lfs3_emubd_flip(const struct lfs3_cfg *cfg);
 
-// Get the remaining reads before a read error, 0 if disabled
-int32_t lfs3_emubd_badread(const struct lfs3_cfg *cfg);
+// Error with err on the nth op (read, prog, erase) from now, 0 disables
+//
+// err=0 errors with LFS3_ERR_IO. The failing op changes nothing on the
+// device, and only the nth op fails, later ops succeed.
+int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
+        lfs3_emubd_op_t op, uint32_t n, int err);
 
-// Error with LFS3_ERR_IO on the nth read from now, 0 disables
-int lfs3_emubd_setbadread(const struct lfs3_cfg *cfg, uint32_t reads);
+// Get the remaining ops before an injected error, 0 if disabled or
+// already triggered
+int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op);
 
 // Mark sync as bad, every sync errors with LFS3_ERR_IO until marked good
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg);

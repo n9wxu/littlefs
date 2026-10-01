@@ -173,6 +173,19 @@ static void lfs3_emubd_markprog(const struct lfs3_cfg *cfg,
     }
 }
 
+// count down to an injected error, returns the error on the nth op
+static int lfs3_emubd_ioerror_(const struct lfs3_cfg *cfg,
+        lfs3_emubd_op_t op) {
+    lfs3_emubd_t *bd = cfg->context;
+    if (bd->ioerror[op] > 0) {
+        bd->ioerror[op] -= 1;
+        if (bd->ioerror[op] == 0) {
+            return (bd->ioerror_err[op]) ? bd->ioerror_err[op] : LFS3_ERR_IO;
+        }
+    }
+    return 0;
+}
+
 
 // prng used for some emulation things
 static uint32_t lfs3_emubd_prng_(uint32_t *state) {
@@ -258,7 +271,8 @@ int lfs3_emubd_createcfg(const struct lfs3_cfg *cfg, const char *path,
     bd->erased = 0;
     bd->prng = bd->cfg->seed;
     bd->power_cycles = bd->cfg->power_cycles;
-    bd->badread = 0;
+    memset(bd->ioerror, 0, sizeof(bd->ioerror));
+    memset(bd->ioerror_err, 0, sizeof(bd->ioerror_err));
     bd->badsync = false;
     bd->ooo_before = NULL;
     bd->ooo_after = NULL;
@@ -439,13 +453,11 @@ int lfs3_emubd_read(const struct lfs3_cfg *cfg, lfs3_block_t block,
     LFS3_ASSERT(size % cfg->read_size == 0);
     LFS3_ASSERT(off+size <= cfg->block_size);
 
-    // read error?
-    if (bd->badread > 0) {
-        bd->badread -= 1;
-        if (bd->badread == 0) {
-            LFS3_EMUBD_TRACE("lfs3_emubd_read -> %d", LFS3_ERR_IO);
-            return LFS3_ERR_IO;
-        }
+    // injected error?
+    int ioerr = lfs3_emubd_ioerror_(cfg, LFS3_EMUBD_OP_READ);
+    if (ioerr) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_read -> %d", ioerr);
+        return ioerr;
     }
 
     // get the block
@@ -541,6 +553,13 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
         for (lfs3_off_t i = 0; i < size; i++) {
             LFS3_ASSERT(bd->blocks[block]->data[off+i] == bd->cfg->erase_value);
         }
+    }
+
+    // injected error?
+    int ioerr = lfs3_emubd_ioerror_(cfg, LFS3_EMUBD_OP_PROG);
+    if (ioerr) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_prog -> %d", ioerr);
+        return ioerr;
     }
 
     // losing power?
@@ -852,6 +871,13 @@ int lfs3_emubd_erase(const struct lfs3_cfg *cfg, lfs3_block_t block) {
 
     // check if erase is valid
     LFS3_ASSERT(block < cfg->block_count);
+
+    // injected error?
+    int ioerr = lfs3_emubd_ioerror_(cfg, LFS3_EMUBD_OP_ERASE);
+    if (ioerr) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_erase -> %d", ioerr);
+        return ioerr;
+    }
 
     // losing power?
     if (bd->power_cycles > 0) {
@@ -1592,23 +1618,31 @@ int lfs3_emubd_flip(const struct lfs3_cfg *cfg) {
     return 0;
 }
 
-int32_t lfs3_emubd_badread(const struct lfs3_cfg *cfg) {
-    LFS3_EMUBD_TRACE("lfs3_emubd_badread(%p)", (void*)cfg);
+int lfs3_emubd_mkioerror(const struct lfs3_cfg *cfg,
+        lfs3_emubd_op_t op, uint32_t n, int err) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkioerror(%p, %d, %"PRIu32", %d)",
+            (void*)cfg, op, n, err);
     lfs3_emubd_t *bd = cfg->context;
 
-    LFS3_EMUBD_TRACE("lfs3_emubd_badread -> %"PRIu32, bd->badread);
-    return bd->badread;
+    // check if op is valid
+    LFS3_ASSERT(op < sizeof(bd->ioerror)/sizeof(bd->ioerror[0]));
+
+    bd->ioerror[op] = n;
+    bd->ioerror_err[op] = err;
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkioerror -> %d", 0);
+    return 0;
 }
 
-int lfs3_emubd_setbadread(const struct lfs3_cfg *cfg, uint32_t reads) {
-    LFS3_EMUBD_TRACE("lfs3_emubd_setbadread(%p, %"PRIu32")",
-            (void*)cfg, reads);
+int32_t lfs3_emubd_ioerror(const struct lfs3_cfg *cfg, lfs3_emubd_op_t op) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_ioerror(%p, %d)", (void*)cfg, op);
     lfs3_emubd_t *bd = cfg->context;
 
-    bd->badread = reads;
+    // check if op is valid
+    LFS3_ASSERT(op < sizeof(bd->ioerror)/sizeof(bd->ioerror[0]));
 
-    LFS3_EMUBD_TRACE("lfs3_emubd_setbadread -> %d", 0);
-    return 0;
+    LFS3_EMUBD_TRACE("lfs3_emubd_ioerror -> %"PRIu32, bd->ioerror[op]);
+    return bd->ioerror[op];
 }
 
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg) {
@@ -1720,7 +1754,8 @@ int lfs3_emubd_cpy(const struct lfs3_cfg *cfg, lfs3_emubd_t *copy) {
     copy->erased = bd->erased;
     copy->prng = bd->prng;
     copy->power_cycles = bd->power_cycles;
-    copy->badread = bd->badread;
+    memcpy(copy->ioerror, bd->ioerror, sizeof(bd->ioerror));
+    memcpy(copy->ioerror_err, bd->ioerror_err, sizeof(bd->ioerror_err));
     copy->badsync = bd->badsync;
     copy->disk = bd->disk;
     if (copy->disk) {
