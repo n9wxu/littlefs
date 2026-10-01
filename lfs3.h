@@ -152,6 +152,7 @@ enum lfs3_type {
 #define LFS3_o_UNCRYST  0x01000000  // File's leaf not fully crystallized
 #define LFS3_o_UNGRAFT  0x00800000  // File's leaf does not match disk
 #define LFS3_o_UNFLUSH  0x00400000  // File's cache does not match disk
+#define LFS3_o_TORN     0x00200000  // File's bshrub/btree is partially grafted
 
 // an alias for all check work
 #define LFS3_O_CK (LFS3_O_CKMETA | LFS3_O_CKDATA)
@@ -546,7 +547,7 @@ struct lfs3_cfg {
 
     // Size of file caches in bytes. In addition to filesystem-wide
     // read/prog caches, each file gets its own cache to reduce disk
-    // accesses.
+    // accesses. Must be non-zero unless LFS3_NO_MALLOC is defined.
     lfs3_size_t fcache_size;
 
     // Size of the lookahead buffer in bytes. A larger lookahead buffer
@@ -679,6 +680,9 @@ struct lfs3_cfg {
     // Maximum size of a non-block B-tree leaf in bytes. Smaller values may
     // make small random-writes cheaper, but increase metadata overhead. Must
     // be <= block_size/4.
+    //
+    // 0 is only valid if crystal_thresh <= 1, where fragments are never
+    // written.
     #ifndef LFS3_RDONLY
     lfs3_size_t fragment_size;
     #endif
@@ -1537,6 +1541,12 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 // Readonly and desynchronized files do not touch disk and will always
 // return 0.
 //
+// Note an error in an earlier write, flush, sync, truncate, fruncate, or
+// read that needed to flush, desynchronizes the file, so close does not
+// write out, and cannot report, any data lost to that error. Check the
+// result of lfs3_file_sync before closing to know if data reached
+// storage.
+//
 // Returns a negative error code on failure.
 int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 
@@ -1546,6 +1556,10 @@ int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 //
 // If the file was desynchronized, it is now marked as synchronized. It will
 // now recieve file updates and syncs on close.
+//
+// Readonly files have nothing to write and never touch disk. If a readonly
+// file was desynchronized, it catches up with the file on storage, as with
+// lfs3_file_resync.
 //
 // Returns a negative error code on failure.
 int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
@@ -1570,6 +1584,11 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 //
 // An explicit and successful call to either lfs3_file_sync or
 // lfs3_file_resync reverses this, marking the file as synchronized again.
+//
+// Some errors can leave a file partially updated, matching neither its
+// contents before nor after the failed operation. lfs3_file_sync then
+// returns LFS3_ERR_INVAL instead of writing it out, and only
+// lfs3_file_resync can recover the file.
 //
 // Returns a negative error code on failure.
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);

@@ -733,6 +733,60 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that reads larger than the file are clamped to the file, however
+# large they are
+[cases.test_files_read_big]
+defines.SIZE = [
+    '0',
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.MODE = ['LFS3_O_RDONLY', 'LFS3_O_RDWR']
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    uint8_t wbuf[SIZE];
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // read with the largest possible size
+    lfs3_file_open(&lfs3, &file, "hello", MODE) => 0;
+    uint8_t rbuf[SIZE+1];
+    memset(rbuf, 0xaa, SIZE+1);
+    lfs3_file_read(&lfs3, &file, rbuf, -1) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    assert(rbuf[SIZE] == 0xaa);
+    lfs3_file_read(&lfs3, &file, rbuf, -1) => 0;
+
+    // from the middle of the file
+    lfs3_file_seek(&lfs3, &file, SIZE/2, LFS3_SEEK_SET) => SIZE/2;
+    memset(rbuf, 0xaa, SIZE+1);
+    lfs3_file_read(&lfs3, &file, rbuf, -1) => SIZE-SIZE/2;
+    assert(memcmp(rbuf, &wbuf[SIZE/2], SIZE-SIZE/2) == 0);
+    assert(rbuf[SIZE-SIZE/2] == 0xaa);
+
+    // and from the file limit
+    lfs3_file_seek(&lfs3, &file, LFS3_FILE_MAX, LFS3_SEEK_SET)
+            => LFS3_FILE_MAX;
+    lfs3_file_read(&lfs3, &file, rbuf, 1) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, -1) => 0;
+    lfs3_file_tell(&lfs3, &file) => LFS3_FILE_MAX;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test creating multiple files
 [cases.test_files_many]
 defines.N = [1, 2, 4, 8, 16, 32, 64]

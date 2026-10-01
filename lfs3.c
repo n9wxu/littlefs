@@ -7196,6 +7196,10 @@ static inline bool lfs3_o_isunflush(uint32_t flags) {
     return flags & LFS3_o_UNFLUSH;
 }
 
+static inline bool lfs3_o_istorn(uint32_t flags) {
+    return flags & LFS3_o_TORN;
+}
+
 // custom attr flags
 static inline bool lfs3_a_islazy(uint32_t flags) {
     return flags & LFS3_A_LAZY;
@@ -12811,11 +12815,14 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
     LFS3_ASSERT(!lfs3_o_isrdonly(flags) || !lfs3_o_isexcl(flags));
     LFS3_ASSERT(!lfs3_o_isrdonly(flags) || !lfs3_o_istrunc(flags));
     for (lfs3_size_t i = 0; i < cfg->attr_count; i++) {
-        // these flags require a writable attr
-        LFS3_ASSERT(!lfs3_o_isrdonly(cfg->attrs[i].flags)
-                || !lfs3_o_iscreat(cfg->attrs[i].flags));
-        LFS3_ASSERT(!lfs3_o_isrdonly(cfg->attrs[i].flags)
-                || !lfs3_o_isexcl(cfg->attrs[i].flags));
+        // don't allow the forbidden mode!
+        LFS3_ASSERT((cfg->attrs[i].flags & 3) != 3);
+        // unknown attr flags?
+        LFS3_ASSERT((cfg->attrs[i].flags & ~(
+                LFS3_A_RDONLY
+                    | LFS3_A_WRONLY
+                    | LFS3_A_RDWR
+                    | LFS3_A_LAZY)) == 0);
     }
     #endif
 
@@ -12983,8 +12990,9 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
     // can't read from writeonly files
     LFS3_ASSERT(!lfs3_o_iswronly(file->b.h.flags));
-    LFS3_ASSERT(file->pos + size <= 0x7fffffff);
 
+    // note reads are clamped to our file size, which always fits in
+    // lfs3_ssize_t, so size can be anything
     lfs3_off_t pos_ = file->pos;
     uint8_t *buffer_ = buffer;
     while (size > 0 && pos_ < lfs3_file_size_(file)) {
@@ -13139,6 +13147,7 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
     lfs3_rattr_t *r = rattrs;
     lfs3_bptr_t l_bptr;
     lfs3_bptr_t r_bptr;
+    bool torn = false;
     int err;
 
     // need a hole?
@@ -13227,6 +13236,8 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
             if (err) {
                 goto failed;
             }
+            // we can't undo this commit if a later one fails
+            torn = true;
 
             delta += lfs3_min(weight, bid+1 - pos);
             weight -= lfs3_min(weight, bid+1 - pos);
@@ -13334,6 +13345,11 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
 failed:;
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
+    // failed after a partial graft? our bshrub/btree no longer matches
+    // any version of our file, so it must never be synced
+    if (torn) {
+        file->b.h.flags |= LFS3_o_TORN;
+    }
     return err;
 }
 #endif
@@ -13656,6 +13672,17 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             return block_;
         }
 
+        // fruncate keeps our block alignment, so our block may start
+        // before our file (block_pos < 0), there's nothing to rewrite
+        // there, so shift our crystal to start at our file
+        if ((lfs3_soff_t)block_pos < 0) {
+            crystal_limit = lfs3_min(
+                    crystal_limit - block_pos,
+                    lfs3_max(
+                        pos + size,
+                        file->b.b.r.weight));
+            block_pos = 0;
+        }
         off_ = 0;
         pos_ = block_pos;
         lfs3->pcksum = 0;
@@ -13679,6 +13706,12 @@ static int lfs3_file_crystallize(lfs3_t *lfs3, lfs3_file_t *file) {
     int err = lfs3_alloc_ckpoint(lfs3);
     if (err) {
         return err;
+    }
+
+    // can't resume without erased-state? this happens if crystal_thresh
+    // prevented prog alignment, finish crystallizing in a new block
+    if (!lfs3_bptr_iserased(&file->leaf.bptr)) {
+        file->b.h.flags &= ~LFS3_o_UNCRYST;
     }
 
     // finish crystallizing
@@ -13932,18 +13965,21 @@ static int lfs3_file_flush_(lfs3_t *lfs3, lfs3_file_t *file,
             // note we use the actual block start here! not the sliced
             // view! this avoids excessive recrystallizations when
             // fruncating
-            if (crystal_start - (bid-(weight-1)-lfs3_bptr_off(&bptr))
-                        < lfs3->cfg->block_size
+            //
+            // fragments aren't in a block, their off is an rbyd offset
+            lfs3_off_t l_start = bid-(weight-1)
+                    - ((lfs3_bptr_isbptr(&bptr))
+                        ? lfs3_bptr_off(&bptr)
+                        : 0);
+            if (crystal_start - l_start < lfs3->cfg->block_size
                     && lfs3_bptr_size(&bptr) > 0) {
                 crystal_start = bid-(weight-1);
 
             // no? is our left neighbor at least our left block neighbor?
             // align to block alignment
-            } else if (crystal_start - (bid-(weight-1)-lfs3_bptr_off(&bptr))
-                        < 2*lfs3->cfg->block_size
+            } else if (crystal_start - l_start < 2*lfs3->cfg->block_size
                     && lfs3_bptr_size(&bptr) > 0) {
-                crystal_start = bid-(weight-1)-lfs3_bptr_off(&bptr)
-                        + lfs3->cfg->block_size;
+                crystal_start = l_start + lfs3->cfg->block_size;
             }
         }
 
@@ -14121,21 +14157,21 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         return 0;
     }
 
+    // update pos if we are appending
+    lfs3_off_t pos = file->pos;
+    if (lfs3_o_isappend(file->b.h.flags)) {
+        pos = lfs3_file_size_(file);
+    }
+
     // would this write make our file larger than our file limit?
     int err;
-    if (size > lfs3->file_limit - file->pos) {
+    if (size > lfs3->file_limit - pos) {
         err = LFS3_ERR_FBIG;
         goto failed;
     }
 
     // mark as unsynced in case we fail
     file->b.h.flags |= LFS3_o_UNSYNC;
-
-    // update pos if we are appending
-    lfs3_off_t pos = file->pos;
-    if (lfs3_o_isappend(file->b.h.flags)) {
-        pos = lfs3_file_size_(file);
-    }
 
     const uint8_t *buffer_ = buffer;
     lfs3_size_t written = 0;
@@ -14563,11 +14599,23 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     }
 
     #ifndef LFS3_RDONLY
+    // readonly? we have nothing to write, but we may need to catch up
+    // with disk if we were desynced
+    if (lfs3_o_isrdonly(file->b.h.flags)) {
+        return lfs3_file_resync(lfs3, file);
+    }
+
+    // partially grafted? only lfs3_file_resync can recover from this
+    int err;
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        err = LFS3_ERR_INVAL;
+        goto failed;
+    }
+
     // can we get away with a small file flush?
     //
     // this merges the data flush with metadata sync in a single commit
     // if the file is small enough to fit in the cache
-    int err;
     if (file->cache.size == lfs3_file_size_(file)
             && file->cache.size <= lfs3->cfg->shrub_size
             && file->cache.size <= lfs3->cfg->fragment_size
@@ -14649,6 +14697,7 @@ int lfs3_file_resync(lfs3_t *lfs3, lfs3_file_t *file) {
         if (err) {
             goto failed;
         }
+        file->b.h.flags &= ~LFS3_o_TORN;
     }
     #endif
 
@@ -14740,13 +14789,13 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     // make sure any incomplete are at least grafted
     err = lfs3_file_graft(lfs3, file);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // checkpoint the allocator
     err = lfs3_alloc_ckpoint(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // truncate our btree
@@ -14830,13 +14879,13 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     // make sure any incomplete are at least grafted
     err = lfs3_file_graft(lfs3, file);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // checkpoint the allocator
     err = lfs3_alloc_ckpoint(lfs3);
     if (err) {
-        return err;
+        goto failed;
     }
 
     // fruncate our btree
@@ -15047,6 +15096,14 @@ lfs3_ssize_t lfs3_size(lfs3_t *lfs3, const char *path) {
 #ifndef LFS3_RDONLY
 int lfs3_set(lfs3_t *lfs3, const char *path,
         const void *buffer, lfs3_size_t size) {
+    // would this make our file larger than our file limit?
+    //
+    // wrset passes our data via the file cache, so lfs3_file_write
+    // never gets a chance to check this
+    if (size > lfs3->file_limit) {
+        return LFS3_ERR_FBIG;
+    }
+
     // LFS3_o_WRSET is a special mode specifically to make lfs3_set work
     // atomically when possible
     //
@@ -15112,6 +15169,11 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #ifndef LFS3_RDONLY
     LFS3_ASSERT(lfs3->cfg->pcache_size != 0);
     #endif
+    // file caches without an fcache_buffer are allocated with
+    // lfs3_malloc, and lfs3_malloc(0) may fail
+    #ifndef LFS3_NO_MALLOC
+    LFS3_ASSERT(lfs3->cfg->fcache_size != 0);
+    #endif
 
     // cache sizes must be a multiple of their operation sizes
     LFS3_ASSERT(lfs3->cfg->rcache_size % lfs3->cfg->read_size == 0);
@@ -15154,6 +15216,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     LFS3_ASSERT(lfs3->cfg->shrub_size <= lfs3->cfg->block_size/4);
     // fragment_size must be <= block_size/4
     LFS3_ASSERT(lfs3->cfg->fragment_size <= lfs3->cfg->block_size/4);
+    // fragment_size must be > 0, otherwise fragmenting can't make
+    // progress, unless crystal_thresh <= 1 and we never fragment
+    LFS3_ASSERT(lfs3->cfg->fragment_size > 0
+            || lfs3->cfg->crystal_thresh <= 1);
     #endif
 
     // TODO move this to mount?
