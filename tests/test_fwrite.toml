@@ -5531,6 +5531,146 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test with crystal_thresh < prog_size, crystals we can't prog-align
+# are padded and can't be resumed, this is useful for small blocks
+# where prog_size=block_size (SD/eMMC)
+[cases.test_fwrite_rwtf_unaligned_fuzz]
+defines.N = 20
+defines.ERASE_SIZE = [4096, 512]
+defines.PROG_SIZE = [16, 64, 'BLOCK_SIZE']
+defines.CRYSTAL_THRESH = [0, 1, 'PROG_SIZE/2']
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    'BLOCK_SIZE',
+    '4*BLOCK_SIZE',
+]
+# chunk is more an upper limit here
+defines.CHUNK = [64, 16]
+defines.SYNC = [false, true]
+defines.REMOUNT = [false, true]
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+if = [
+    'PROG_SIZE <= 512',
+    'FRAGMENT_SIZE <= BLOCK_SIZE/4',
+    'CHUNK <= SIZE',
+    # this just saves testing time
+    'SIZE <= 4*1024*FRAGMENT_SIZE',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    // simulate our file in ram
+    uint8_t sim[SIZE];
+    memset(sim, 0, SIZE);
+    lfs3_off_t size = 0;
+    uint32_t prng = SEED;
+
+    for (lfs3_size_t i = 0; i < N; i++) {
+        // and if we are writing, truncating, or fruncating
+        uint8_t op = TEST_PRNG(&prng) % 4;
+
+        // writing?
+        if (op <= 1) {
+            // choose a random location
+            lfs3_off_t off = TEST_PRNG(&prng) % SIZE;
+            // and a random size, up to the chunk size
+            lfs3_size_t chunk = lfs3_min(
+                    (TEST_PRNG(&prng) % (CHUNK+1-1)) + 1,
+                    SIZE - off);
+
+            // seek
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+
+            // update the sim
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            size = lfs3_max(size, off+chunk);
+
+            // update the file
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+
+        // truncating?
+        } else if (op == 2) {
+            // choose a random new file size
+            lfs3_off_t size_ = TEST_PRNG(&prng) % SIZE;
+
+            // update the sim
+            if (size_ < size) {
+                memset(sim+size_, 0, size-size_);
+            }
+            size = size_;
+
+            // truncate the file
+            lfs3_file_truncate(&lfs3, &file, size_) => 0;
+
+        // fruncating?
+        } else if (op == 3) {
+            // choose a random new file size
+            lfs3_off_t size_ = TEST_PRNG(&prng) % SIZE;
+
+            // update the sim
+            if (size_ > size) {
+                memmove(sim+size_-size, sim, size);
+                memset(sim, 0, size_-size);
+            } else if (size_ < size) {
+                memmove(sim, sim+size-size_, size_);
+                memset(sim+size_, 0, size-size_);
+            }
+            size = size_;
+
+            // fruncate the file
+            lfs3_file_fruncate(&lfs3, &file, size_) => 0;
+        }
+
+        // sync?
+        if (SYNC) {
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+
+        // remount?
+        if (REMOUNT) {
+            lfs3_file_close(&lfs3, &file) => 0;
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDWR) => 0;
+        }
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our file with stat
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == size);
+
+        // try reading our file
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => size;
+        uint8_t rbuf[2*SIZE];
+        memset(rbuf, 0xaa, 2*SIZE);
+        lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => size;
+        assert(memcmp(rbuf, sim, size) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 
 # test that we don't error on fragments > weight

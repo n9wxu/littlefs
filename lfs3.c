@@ -13693,6 +13693,12 @@ static int lfs3_file_crystallize(lfs3_t *lfs3, lfs3_file_t *file) {
         return err;
     }
 
+    // can't resume without erased-state? this happens if crystal_thresh
+    // prevented prog alignment, finish crystallizing in a new block
+    if (!lfs3_bptr_iserased(&file->leaf.bptr)) {
+        file->b.h.flags &= ~LFS3_o_UNCRYST;
+    }
+
     // finish crystallizing
     err = lfs3_file_crystallize_(lfs3, file,
             file->leaf.pos - lfs3_bptr_off(&file->leaf.bptr), -1, -1,
