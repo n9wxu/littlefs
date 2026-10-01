@@ -1922,9 +1922,11 @@ code = '''
 
 # test what happens if we find an unknown config
 [cases.test_mount_incompat_unknown_config]
-# unknown configs before, between, and after our known configs
+# unknown configs before, between, and after our known configs, and with
+# the reserved subtype bit 7 set
 defines.CONFIG = [
     '0x00', '0x01', '0x30', '0x32', '0x33', '0x3b', '0x42', '0x7f',
+    '0x80', '0xff',
 ]
 in = 'lfs3.c'
 code = '''
@@ -1938,11 +1940,91 @@ code = '''
     // create an unknown config
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
-            LFS3_RATTR(3, LFS3_TAG_CONFIG + CONFIG, 0, LFS3_FROM_DATA),
+            LFS3_RATTR(3, LFS3_TAG_CONFIG + (CONFIG & 0x7f), 0,
+                LFS3_FROM_DATA),
             LFS3_RATTR_ARG(strlen("oh no!")),
             LFS3_RATTR_ARG("oh no!"),
             LFS3_RATTR_NULL)) => 0;
+    lfs3_block_t block = lfs3.mroot.r.blocks[0];
     lfs3_unmount(&lfs3) => 0;
+
+    // we can't write tags with bit 7 set, so set it on disk, and fix
+    // the last 4 data bytes so the tag+data checksum, and so the
+    // commit, still matches, crc32c is linear so this is a 32x32
+    // system over GF(2)
+    if (CONFIG & 0x80) {
+        uint8_t *buf = malloc(BLOCK_SIZE);
+        CFG->read(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+
+        // find our tag, ignoring the valid bit
+        lfs3_size_t off = 0;
+        lfs3_size_t found = 0;
+        for (lfs3_size_t i = 0; i+4+6 <= BLOCK_SIZE; i++) {
+            if ((buf[i] & 0x7f) == (LFS3_TAG_CONFIG >> 8)
+                    && buf[i+1] == (CONFIG & 0x7f)
+                    && buf[i+2] == 0
+                    && buf[i+3] == 6
+                    && memcmp(&buf[i+4], "oh no!", 6) == 0) {
+                off = i;
+                found += 1;
+            }
+        }
+        assert(found == 1);
+
+        uint8_t x[4+6];
+        memcpy(x, &buf[off], 4+6);
+        x[0] &= 0x7f;
+        uint32_t target = lfs3_crc32c(0, x, 4+6);
+        x[1] |= 0x80;
+        memset(&x[6], 0, 4);
+        uint32_t base = lfs3_crc32c(0, x, 4+6);
+
+        // what each bit of the last 4 bytes changes
+        uint32_t cols[32];
+        uint32_t sels[32];
+        for (int k = 0; k < 32; k++) {
+            x[6 + k/8] ^= 1 << (k%8);
+            cols[k] = lfs3_crc32c(0, x, 4+6) ^ base;
+            x[6 + k/8] ^= 1 << (k%8);
+            sels[k] = (uint32_t)1 << k;
+        }
+
+        // gauss-jordan, until cols[k] = 1 << k
+        for (int k = 0; k < 32; k++) {
+            int p = k;
+            while (p < 32 && !(cols[p] & ((uint32_t)1 << k))) {
+                p += 1;
+            }
+            assert(p < 32);
+            LFS3_SWAP(uint32_t, &cols[k], &cols[p]);
+            LFS3_SWAP(uint32_t, &sels[k], &sels[p]);
+            for (int j = 0; j < 32; j++) {
+                if (j != k && (cols[j] & ((uint32_t)1 << k))) {
+                    cols[j] ^= cols[k];
+                    sels[j] ^= sels[k];
+                }
+            }
+        }
+
+        uint32_t fix = 0;
+        for (int k = 0; k < 32; k++) {
+            if ((target ^ base) & ((uint32_t)1 << k)) {
+                fix ^= sels[k];
+            }
+        }
+        for (int k = 0; k < 32; k++) {
+            if (fix & ((uint32_t)1 << k)) {
+                x[6 + k/8] ^= 1 << (k%8);
+            }
+        }
+        assert(lfs3_crc32c(0, x, 4+6) == target);
+
+        x[0] |= buf[off] & 0x80;
+        memcpy(&buf[off], x, 4+6);
+        CFG->erase(CFG, block) => 0;
+        CFG->prog(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+        free(buf);
+    }
 
     // mount should now fail
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOTSUP;
