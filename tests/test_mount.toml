@@ -1044,7 +1044,7 @@ code = '''
     // to close them after all open calls, otherwise we just end up with
     // one orphan (littlefs is eager to clean up orphans)
     //
-    lfs3_file_t orphans[ORPHANS];
+    lfs3_file_t orphans[lfs3_max(ORPHANS, 1)];
     for (lfs3_size_t i = 0; i < ORPHANS; i++) {
         char name[256];
         sprintf(name, "jellyfish%03x", i);
@@ -1150,7 +1150,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1242,7 +1242,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }

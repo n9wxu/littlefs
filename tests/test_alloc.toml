@@ -329,7 +329,7 @@ code = '''
         char name[256];
         sprintf(name, "file%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -354,13 +354,13 @@ code = '''
         assert(info.size == SIZE);
 
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
         lfs3_file_t file;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
         lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -461,13 +461,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -508,7 +508,7 @@ code = '''
         char name[256];
         sprintf(name, "file%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -522,12 +522,12 @@ code = '''
     prng = 42;
     for (lfs3_size_t i = 0; i < N; i++) {
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_rewind(&lfs3, &files[i]) => 0;
         lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -608,12 +608,12 @@ code = '''
     prng = 42;
     for (lfs3_size_t i = 0; i < N; i++) {
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_rewind(&lfs3, &files[i]) => 0;
         lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -643,13 +643,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -874,7 +874,7 @@ code = '''
         char name[256];
         sprintf(name, "file%08d", n);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -921,13 +921,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
