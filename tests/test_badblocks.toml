@@ -7426,3 +7426,233 @@ code = '''
     }
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test progs/erases that silently do nothing, without prog checking
+#
+# we can't relocate what we can't detect, but we should never return data
+# that wasn't committed, every read should either find a committed state
+# of the file or error
+#
+# littlefs doesn't check data on reads by default, so either we check each
+# file with lfs3_file_ck before reading, or we read with ckdatacksums
+[cases.test_badblocks_silent_nockprogs]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+defines.CKDATACKSUMS = [false, true]
+defines.N = [8, 32]
+defines.OPS = '4*N'
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.SEED = 'range(20)'
+fuzz = 'SEED'
+if = 'LFS3_IFDEF_CKDATACKSUMS(true, !CKDATACKSUMS)'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKDATACKSUMS)
+                ? LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, -1)
+                : 0);
+    uint32_t prng = SEED;
+
+    // mark some random blocks as bad
+    for (lfs3_size_t i = 0; i < BLOCK_COUNT/8; i++) {
+        lfs3_block_t block = FORMAT_BLOCK_COUNT
+                + (TEST_PRNG(&prng) % (BLOCK_COUNT-FORMAT_BLOCK_COUNT));
+        lfs3_emubd_mkbad(CFG, block) => 0;
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // keep track of every state we've tried to commit, and which of these
+    // each file may hold, failed writes may still be committed and renames
+    // may be rolled back
+    uint32_t *seeds = malloc(OPS*sizeof(uint32_t));
+    lfs3_size_t seed_count = 0;
+    uint8_t (*states)[OPS] = malloc(N*sizeof(uint8_t[OPS]));
+    memset(states, 0, N*sizeof(uint8_t[OPS]));
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE);
+
+    for (lfs3_size_t i = 0;; i++) {
+        // check every file every 10 operations and at the end
+        if (i % 10 == 0 || i == OPS) {
+            lfs3_dir_t dir;
+            lfs3_dir_open(&lfs3, &dir, "/") => 0;
+            while (true) {
+                struct lfs3_info info;
+                int err = lfs3_dir_read(&lfs3, &dir, &info);
+                assert(!err
+                        || err == LFS3_ERR_NOENT
+                        || err == LFS3_ERR_CORRUPT);
+                if (err) {
+                    break;
+                }
+                if (strcmp(info.name, ".") == 0
+                        || strcmp(info.name, "..") == 0) {
+                    continue;
+                }
+
+                // only files we've tried to commit should exist
+                unsigned x;
+                int n = sscanf(info.name, "amethyst%03x", &x);
+                assert(n == 1);
+                assert(x < N);
+                bool any = false;
+                for (lfs3_size_t j = 0; j < seed_count; j++) {
+                    any |= states[x][j];
+                }
+                assert(any);
+
+                lfs3_file_t file;
+                char name[256];
+                sprintf(name, "amethyst%03x", x);
+                err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+                assert(!err || err == LFS3_ERR_CORRUPT);
+                if (err) {
+                    continue;
+                }
+                if (!CKDATACKSUMS) {
+                    err = lfs3_file_ck(&lfs3, &file,
+                            LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+                    assert(!err || err == LFS3_ERR_CORRUPT);
+                }
+                if (!err) {
+                    lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf, SIZE);
+                    assert(d == SIZE || d == LFS3_ERR_CORRUPT);
+                    if (d == SIZE) {
+                        // does this match a committed state?
+                        bool found = false;
+                        for (lfs3_size_t j = 0; j < seed_count; j++) {
+                            if (!states[x][j]) {
+                                continue;
+                            }
+                            uint32_t wprng = seeds[j];
+                            for (lfs3_size_t k = 0; k < SIZE; k++) {
+                                wbuf[k] = 'a' + (TEST_PRNG(&wprng) % 26);
+                            }
+                            if (memcmp(rbuf, wbuf, SIZE) == 0) {
+                                found = true;
+                                break;
+                            }
+                        }
+                        assert(found);
+                    }
+                }
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+            lfs3_dir_close(&lfs3, &dir) => 0;
+        }
+
+        if (i == OPS) {
+            break;
+        }
+
+        // remount every 10 operations, if we can't mount we've at least
+        // detected our corruption
+        if (i % 10 == 0) {
+            lfs3_unmount(&lfs3) => 0;
+            int err = lfs3_mount(&lfs3, flags, CFG);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (err) {
+                printf("detected at op %d\n", i);
+                goto done;
+            }
+        }
+
+        // choose which operation to do
+        uint8_t op = TEST_PRNG(&prng) % 3;
+
+        // pick an existing file to remove/rename
+        char name[256];
+        unsigned x = -1;
+        if (op != 0) {
+            lfs3_dir_t dir;
+            lfs3_dir_open(&lfs3, &dir, "/") => 0;
+            lfs3_size_t count = 0;
+            uint32_t pick = TEST_PRNG(&prng);
+            while (true) {
+                struct lfs3_info info;
+                int err = lfs3_dir_read(&lfs3, &dir, &info);
+                assert(!err
+                        || err == LFS3_ERR_NOENT
+                        || err == LFS3_ERR_CORRUPT);
+                if (err) {
+                    break;
+                }
+                unsigned x_;
+                if (sscanf(info.name, "amethyst%03x", &x_) == 1) {
+                    count += 1;
+                    if (pick % count == 0) {
+                        x = x_;
+                    }
+                }
+            }
+            lfs3_dir_close(&lfs3, &dir) => 0;
+            if (x == (unsigned)-1) {
+                op = 0;
+            }
+        }
+
+        // creating/overwriting a file?
+        if (op == 0) {
+            x = TEST_PRNG(&prng) % N;
+            uint32_t seed = TEST_PRNG(&prng);
+            uint32_t wprng = seed;
+            for (lfs3_size_t k = 0; k < SIZE; k++) {
+                wbuf[k] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            seeds[seed_count] = seed;
+            states[x][seed_count] = 1;
+            seed_count += 1;
+
+            sprintf(name, "amethyst%03x", x);
+            lfs3_file_t file;
+            int err = lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (!err) {
+                lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+                assert(d == SIZE || d == LFS3_ERR_CORRUPT);
+                err = lfs3_file_close(&lfs3, &file);
+                assert(!err || err == LFS3_ERR_CORRUPT);
+            }
+
+        // removing a file?
+        } else if (op == 1) {
+            sprintf(name, "amethyst%03x", x);
+            int err = lfs3_remove(&lfs3, name);
+            assert(!err
+                    || err == LFS3_ERR_NOENT
+                    || err == LFS3_ERR_CORRUPT);
+
+        // renaming a file?
+        } else {
+            unsigned y = TEST_PRNG(&prng) % N;
+            // y may end up with any state of x
+            for (lfs3_size_t j = 0; j < seed_count; j++) {
+                states[y][j] |= states[x][j];
+            }
+
+            sprintf(name, "amethyst%03x", x);
+            char name_[256];
+            sprintf(name_, "amethyst%03x", y);
+            int err = lfs3_rename(&lfs3, name, name_);
+            assert(!err
+                    || err == LFS3_ERR_NOENT
+                    || err == LFS3_ERR_CORRUPT);
+        }
+    }
+
+done:;
+    lfs3_unmount(&lfs3) => 0;
+    free(seeds);
+    free(states);
+    free(wbuf);
+    free(rbuf);
+'''
