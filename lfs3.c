@@ -7359,7 +7359,10 @@ static inline bool lfs3_m_isckdatacksums(uint32_t flags) {
 #ifdef LFS3_GBMAP
 static inline bool lfs3_f_isgbmap(uint32_t flags) {
     (void)flags;
-    #ifdef LFS3_YES_GBMAP
+    #if defined(LFS3_RDONLY)
+    // rdonly builds don't load the gbmap, it's only needed for writes
+    return false;
+    #elif defined(LFS3_YES_GBMAP)
     return true;
     #else
     return flags & LFS3_F_GBMAP;
@@ -7543,7 +7546,7 @@ static int lfs3_data_readgrm(lfs3_t *lfs3, lfs3_data_t *data,
 static lfs3_data_t lfs3_data_fromgbmap(const lfs3_gbmap_t *gbmap,
         uint8_t buffer[static LFS3_GBMAP_DSIZE]);
 #endif
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
         lfs3_gbmap_t *gbmap);
 #endif
@@ -10525,7 +10528,7 @@ static lfs3_data_t lfs3_data_fromgbmap(const lfs3_gbmap_t *gbmap,
 }
 #endif
 
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
         lfs3_gbmap_t *gbmap) {
     int err = lfs3_data_readleb128(lfs3, data, &gbmap->window);
@@ -10558,7 +10561,7 @@ static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
 
 // on-disk global block-map operations
 
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static lfs3_stag_t lfs3_gbmap_lookupnext(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_bid_t bid,
         lfs3_bid_t *bid_, lfs3_bid_t *weight_, lfs3_ecksum_t *ecksum_) {
@@ -15167,7 +15170,8 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, 0)
                 | LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, 0)
                 | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)
-                | LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0))) == 0);
+                | LFS3_IFDEF_RDONLY(0,
+                    LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0)))) == 0);
     // TODO this all needs to be cleaned up
     lfs3->cfg = cfg;
     int err = 0;
@@ -15213,10 +15217,12 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     //
     // metadata can't be compacted below block_size/2, and metadata can't
     // exceed a block
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == 0
             || lfs3->cfg->gc_compact_thresh >= lfs3->cfg->block_size/2);
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == (lfs3_size_t)-1
             || lfs3->cfg->gc_compact_thresh <= lfs3->cfg->block_size);
+    #endif
     #endif
 
     #ifndef LFS3_RDONLY
@@ -15285,7 +15291,7 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #endif
 
     // setup ptail, nothing should actually check off=0
-    #ifdef LFS3_CKMETAPARITY
+    #if !defined(LFS3_RDONLY) && defined(LFS3_CKMETAPARITY)
     lfs3->ptail.block = 0;
     lfs3->ptail.off = 0;
     #endif
@@ -16959,16 +16965,20 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
                 | LFS3_GC_CKMETA
                 | LFS3_GC_CKDATA)) == 0);
     // these flags require a writable filesystem
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_ismkconsistent(lfs3->cfg->gc_flags));
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_islookahead(lfs3->cfg->gc_flags));
+    #endif
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_ispreerase(lfs3->cfg->gc_flags));
     #endif
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_compact(lfs3->cfg->gc_flags));
+    #endif
     // we can't use preerased blocks without revperturb, so this is
     // likely a mistake
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)

@@ -91,6 +91,14 @@
 #define LFS3_BLEAFCACHE
 #endif
 
+// LFS3_RDONLY leaves out write-only features
+#ifdef LFS3_RDONLY
+#undef LFS3_REVPERTURB
+#undef LFS3_REVNOISE
+#undef LFS3_CKPROGS
+#undef LFS3_PREERASE
+#endif
+
 // LFS3_NO_LOG disables all logging macros
 #ifdef LFS3_NO_LOG
 #ifndef LFS3_NO_DEBUG
