@@ -16547,6 +16547,9 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(lfs3_m_isrevperturb(flags) || !lfs3_t_ispreerase(flags));
     #endif
+    // the mroot anchor needs blocks 0 and 1, and the gbmap needs one more
+    LFS3_ASSERT(LFS3_IFDEF_GBMAP((lfs3_f_isgbmap(flags)) ? 3 : 2, 2)
+            <= cfg->block_count);
 
     int err = lfs3_init(lfs3,
             flags & (

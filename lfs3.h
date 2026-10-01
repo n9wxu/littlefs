@@ -521,7 +521,8 @@ struct lfs3_cfg {
     // the read and program sizes.
     lfs3_size_t block_size;
 
-    // Number of erasable blocks on the device.
+    // Number of erasable blocks on the device. Formatting needs at least
+    // 2 blocks, or 3 with LFS3_F_GBMAP.
     lfs3_block_t block_count;
 
     // Number of erase cycles before metadata blocks are relocated for
