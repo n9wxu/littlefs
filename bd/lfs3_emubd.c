@@ -18,6 +18,7 @@
 #include "bd/lfs3_emubd.h"
 
 #include <stdlib.h>
+#include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <errno.h>
@@ -85,6 +86,14 @@ static inline void lfs3_emubd_memzero(const struct lfs3_cfg *cfg,
 // it (rc == 1)
 //
 
+// with ck_progonce, a bitmap of programmed bytes follows the data
+static size_t lfs3_emubd_blocksize(const struct lfs3_cfg *cfg) {
+    lfs3_emubd_t *bd = cfg->context;
+    return sizeof(lfs3_emubd_block_t)
+            + cfg->block_size
+            + ((bd->cfg->ck_progonce) ? (cfg->block_size+7)/8 : 0);
+}
+
 static lfs3_emubd_block_t *lfs3_emubd_incblock(lfs3_emubd_block_t *block) {
     if (block) {
         block->rc += 1;
@@ -110,14 +119,12 @@ static lfs3_emubd_block_t *lfs3_emubd_mutblock(
 
     } else if (block) {
         // rc > 1? need to create a copy
-        lfs3_emubd_block_t *block_ = malloc(
-                sizeof(lfs3_emubd_block_t) + cfg->block_size);
+        lfs3_emubd_block_t *block_ = malloc(lfs3_emubd_blocksize(cfg));
         if (!block_) {
             return NULL;
         }
 
-        memcpy(block_, block,
-                sizeof(lfs3_emubd_block_t) + cfg->block_size);
+        memcpy(block_, block, lfs3_emubd_blocksize(cfg));
         block_->rc = 1;
 
         lfs3_emubd_decblock(block);
@@ -125,21 +132,44 @@ static lfs3_emubd_block_t *lfs3_emubd_mutblock(
 
     } else {
         // no block? need to allocate
-        lfs3_emubd_block_t *block_ = malloc(
-                sizeof(lfs3_emubd_block_t) + cfg->block_size);
+        lfs3_emubd_block_t *block_ = malloc(lfs3_emubd_blocksize(cfg));
         if (!block_) {
             return NULL;
         }
 
         block_->rc = 1;
         block_->wear = 0;
+        block_->progs = 0;
         block_->metastable = false;
         block_->bad_bit = 0;
 
         // zero for consistency
         lfs3_emubd_memzero(cfg, block_->data, cfg->block_size);
+        // nothing programmed yet
+        memset(&block_->data[cfg->block_size], 0,
+                lfs3_emubd_blocksize(cfg)
+                    - (sizeof(lfs3_emubd_block_t) + cfg->block_size));
 
         return block_;
+    }
+}
+
+// note a write to a block, for per-block prog counts and the prog-once
+// check, an interrupted prog that is then continued is counted once
+static void lfs3_emubd_markprog(const struct lfs3_cfg *cfg,
+        lfs3_emubd_block_t *b, lfs3_off_t off, lfs3_size_t size,
+        bool *written) {
+    lfs3_emubd_t *bd = cfg->context;
+    if (!*written) {
+        b->progs += 1;
+        *written = true;
+    }
+
+    if (bd->cfg->ck_progonce) {
+        uint8_t *progged = &b->data[cfg->block_size];
+        for (lfs3_off_t i = off; i < off+size; i++) {
+            progged[i/8] |= 1 << (i%8);
+        }
     }
 }
 
@@ -188,7 +218,8 @@ int lfs3_emubd_createcfg(const struct lfs3_cfg *cfg, const char *path,
                     ".seed=%"PRIu32", "
                     ".read_sleep=%"PRIu64", "
                     ".prog_sleep=%"PRIu64", "
-                    ".erase_sleep=%"PRIu64"})",
+                    ".erase_sleep=%"PRIu64", "
+                    ".ck_progonce=%d})",
             (void*)cfg,
             cfg->context,
             (void*)(uintptr_t)cfg->read,
@@ -211,7 +242,8 @@ int lfs3_emubd_createcfg(const struct lfs3_cfg *cfg, const char *path,
             bdcfg->seed,
             bdcfg->read_sleep,
             bdcfg->prog_sleep,
-            bdcfg->erase_sleep);
+            bdcfg->erase_sleep,
+            bdcfg->ck_progonce);
     lfs3_emubd_t *bd = cfg->context;
     bd->cfg = bdcfg;
 
@@ -479,6 +511,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                 "0x%"PRIx32", %"PRIu32", %p, %"PRIu32")",
             (void*)cfg, block, off, buffer, size);
     lfs3_emubd_t *bd = cfg->context;
+    bool written = false;
 
     // check if write is valid
     LFS3_ASSERT(block < cfg->block_count);
@@ -488,6 +521,21 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
 
     // were we erased properly?
     LFS3_ASSERT(bd->blocks[block]);
+    if (bd->cfg->ck_progonce) {
+        const uint8_t *progged = &bd->blocks[block]->data[cfg->block_size];
+        for (lfs3_off_t i = off; i < off+size; i++) {
+            if (progged[i/8] & (1 << (i%8))) {
+                printf("%s:%d:assert: prog-once check failed, "
+                            "block 0x%"PRIx32" off %"PRIu32" "
+                            "was already programmed "
+                            "(prog off %"PRIu32" size %"PRIu32")\n",
+                        __FILE__, __LINE__,
+                        block, i, off, size);
+                fflush(NULL);
+                abort();
+            }
+        }
+    }
     if (bd->cfg->erase_value >= 0
             && bd->blocks[block]->wear <= bd->cfg->erase_cycles) {
         for (lfs3_off_t i = 0; i < size; i++) {
@@ -515,6 +563,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                 lfs3_size_t bit = lfs3_emubd_prng_(&bd->prng)
                         % (cfg->prog_size*8);
                 b->data[off + (bit/8)] ^= 1 << (bit%8);
+                lfs3_emubd_markprog(cfg, b, off + (bit/8), 1, &written);
 
                 // mirror to disk file?
                 if (bd->disk) {
@@ -555,6 +604,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                 lfs3_size_t bit = lfs3_emubd_prng_(&bd->prng)
                         % (cfg->prog_size*8);
                 b->data[off + (bit/8)] ^= 1 << (bit%8);
+                lfs3_emubd_markprog(cfg, b, off, size, &written);
 
                 // mirror to disk file?
                 if (bd->disk) {
@@ -627,6 +677,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
 
                 // prog data
                 lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
+                lfs3_emubd_markprog(cfg, b, off, size, &written);
 
                 // choose a new bad bit unless overridden
                 if (!(0x80000000 & b->bad_bit)) {
@@ -727,6 +778,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                 // prog data
                 lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
                 b->data[bit/8] ^= 1 << (bit%8);
+                lfs3_emubd_markprog(cfg, b, off, size, &written);
                 goto progged;
             }
 
@@ -735,6 +787,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                     == LFS3_EMUBD_BADBLOCK_READFLIP) {
             // prog data
             lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
+            lfs3_emubd_markprog(cfg, b, off, size, &written);
             b->metastable = true;
             goto progged;
         }
@@ -742,6 +795,7 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
 
     // prog data
     lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
+    lfs3_emubd_markprog(cfg, b, off, size, &written);
 
     // clear any metastability
     b->metastable = false;
@@ -1071,6 +1125,11 @@ int lfs3_emubd_erase(const struct lfs3_cfg *cfg, lfs3_block_t block) {
     b->metastable = false;
 
 erased:;
+    // every byte is programmable again
+    if (bd->cfg->ck_progonce) {
+        memset(&b->data[cfg->block_size], 0, (cfg->block_size+7)/8);
+    }
+
     // track erases
     if (!bd->paused) {
         bd->erases += lfs3_alignup(cfg->block_size,
@@ -1260,6 +1319,52 @@ int lfs3_emubd_setwear(const struct lfs3_cfg *cfg,
     b->wear = wear;
 
     LFS3_EMUBD_TRACE("lfs3_emubd_setwear -> %d", 0);
+    return 0;
+}
+
+lfs3_emubd_sio_t lfs3_emubd_blockprogs(const struct lfs3_cfg *cfg,
+        lfs3_block_t block) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_blockprogs(%p, %"PRIu32")",
+            (void*)cfg, block);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if block is valid
+    LFS3_ASSERT(block < cfg->block_count);
+
+    // get the prog count
+    lfs3_emubd_io_t progs;
+    const lfs3_emubd_block_t *b = bd->blocks[block];
+    if (b) {
+        progs = b->progs;
+    } else {
+        progs = 0;
+    }
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_blockprogs -> %"PRIu64, progs);
+    return progs;
+}
+
+int lfs3_emubd_mkprogged(const struct lfs3_cfg *cfg, lfs3_block_t block) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkprogged(%p, %"PRIu32")",
+            (void*)cfg, block);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if block is valid, and that we have a bitmap to mark
+    LFS3_ASSERT(block < cfg->block_count);
+    LFS3_ASSERT(bd->cfg->ck_progonce);
+
+    // mutate the block
+    lfs3_emubd_block_t *b = lfs3_emubd_mutblock(cfg, bd->blocks[block]);
+    if (!b) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_mkprogged -> %d", LFS3_ERR_NOMEM);
+        return LFS3_ERR_NOMEM;
+    }
+    bd->blocks[block] = b;
+
+    // mark every byte as programmed
+    memset(&b->data[cfg->block_size], 0xff, (cfg->block_size+7)/8);
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkprogged -> %d", 0);
     return 0;
 }
 

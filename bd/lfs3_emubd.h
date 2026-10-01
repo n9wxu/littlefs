@@ -153,17 +153,26 @@ struct lfs3_emubd_cfg {
     // Seed for prng, which may be used for emulating failed progs. This does
     // not affect normal operation.
     uint32_t seed;
+
+    // Fail the test if a prog touches a byte that was programmed since the
+    // block's last successful erase. A byte counts as programmed once emubd
+    // writes it, including by an interrupted prog. Failed progs (bad blocks,
+    // injected errors) write nothing and so mark nothing. This costs an
+    // extra bit per byte.
+    bool ck_progonce;
 };
 
 // A reference counted block
 typedef struct lfs3_emubd_block {
     uint32_t rc;
     lfs3_emubd_wear_t wear;
+    lfs3_emubd_io_t progs;
     bool metastable;
     // sign(bad_bit)=0 => randomized on erase
     // sign(bad_bit)=1 => fixed
     lfs3_size_t bad_bit;
 
+    // with ck_progonce, data is followed by a bitmap of programmed bytes
     uint8_t data[];
 } lfs3_emubd_block_t;
 
@@ -276,6 +285,14 @@ lfs3_emubd_swear_t lfs3_emubd_wear(const struct lfs3_cfg *cfg,
 // Manually set simulated wear on a given block
 int lfs3_emubd_setwear(const struct lfs3_cfg *cfg,
         lfs3_block_t block, lfs3_emubd_wear_t wear);
+
+// Get the number of progs that wrote to a given block, this is never reset
+lfs3_emubd_sio_t lfs3_emubd_blockprogs(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
+
+// Mark every byte in a block as programmed, so that with ck_progonce any
+// prog before the block's next erase fails the test
+int lfs3_emubd_mkprogged(const struct lfs3_cfg *cfg, lfs3_block_t block);
 
 // Mark a block as bad, this is equivalent to setting wear to maximum
 int lfs3_emubd_mkbad(const struct lfs3_cfg *cfg, lfs3_block_t block);

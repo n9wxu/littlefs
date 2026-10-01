@@ -309,3 +309,100 @@ code = '''
 
     lfs3_emubd_destroy(&cfg) => 0;
 '''
+
+# the prog-once check must not fire on progs separated by erases, even
+# when the progged value matches the erase value
+[cases.test_bd_progonce]
+defines.CKPROGONCE = true
+defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
+defines.ERASE_VALUE = ['0xff', '0x00', '-1']
+code = '''
+    uint8_t buffer[PROG];
+    lfs3_emubd_blockprogs(CFG, 0) => 0;
+    lfs3_emubd_blockprogs(CFG, 1) => 0;
+
+    for (lfs3_size_t cycle = 0; cycle < 3; cycle++) {
+        CFG->erase(CFG, 0) => 0;
+        for (lfs3_off_t i = 0; i < CFG->block_size; i += PROG) {
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                buffer[j] = ((i+j) % 2 == 0)
+                        ? (uint8_t)ERASE_VALUE
+                        : (cycle+i+j) % 251;
+            }
+            CFG->prog(CFG, 0, i, buffer, PROG) => 0;
+        }
+
+        // one count per prog call
+        lfs3_emubd_blockprogs(CFG, 0) => (cycle+1)*(CFG->block_size/PROG);
+
+        for (lfs3_off_t i = 0; i < CFG->block_size; i += PROG) {
+            CFG->read(CFG, 0, i, buffer, PROG) => 0;
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                LFS3_ASSERT(buffer[j] == (((i+j) % 2 == 0)
+                        ? (uint8_t)ERASE_VALUE
+                        : (cycle+i+j) % 251));
+            }
+        }
+    }
+
+    // other blocks are untouched
+    lfs3_emubd_blockprogs(CFG, 1) => 0;
+
+    // an erase clears a block marked as programmed
+    lfs3_emubd_mkprogged(CFG, 1) => 0;
+    CFG->erase(CFG, 1) => 0;
+    memset(buffer, 0x55, PROG);
+    CFG->prog(CFG, 1, 0, buffer, PROG) => 0;
+    lfs3_emubd_blockprogs(CFG, 1) => 1;
+'''
+
+# an interrupted prog or erase that then continues must not trip the
+# prog-once check, and counts as one prog
+[cases.test_bd_progonce_powerloss]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+]
+defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_continue,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    for (lfs3_size_t cycle = 0; cycle < 2; cycle++) {
+        // lose power during the erase on the second cycle
+        if (cycle > 0) {
+            lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+        }
+        cfg.erase(&cfg, 0) => 0;
+
+        // lose power during the first prog
+        lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+        for (lfs3_off_t i = 0; i < 4*PROG; i += PROG) {
+            memset(buffer, 'a'+cycle+i/PROG, PROG);
+            cfg.prog(&cfg, 0, i, buffer, PROG) => 0;
+        }
+        lfs3_emubd_powercycles(&cfg) => 0;
+        lfs3_emubd_blockprogs(&cfg, 0) => (cycle+1)*4;
+
+        for (lfs3_off_t i = 0; i < 4*PROG; i += PROG) {
+            cfg.read(&cfg, 0, i, buffer, PROG) => 0;
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                LFS3_ASSERT(buffer[j] == 'a'+cycle+i/PROG);
+            }
+        }
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
