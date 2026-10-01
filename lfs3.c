@@ -10805,7 +10805,9 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
                 lfs3->cfg->lookgbmap_thresh,
                 lfs3->block_count-1)) {
         int err = lfs3_alloc_lookgbmap(lfs3);
-        if (err) {
+        // no room for a new gbmap? fall back to the lookahead buffer,
+        // a full disk must not prevent removes from freeing blocks
+        if (err && err != LFS3_ERR_NOSPC) {
             return err;
         }
 

@@ -950,6 +950,87 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that we can always remove files, even with a full disk
+[cases.test_gbmap_nospc_remove]
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.N = 4
+# try to rmgbmap before removing files?
+defines.RMGBMAP = [false, true]
+if = 'LFS3_IFYES_GBMAP(!RMGBMAP, true, true)'
+code = '''
+    lfs3_t lfs3;
+    // note the gbmap flag
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a couple files
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'a', SIZE);
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "file%08d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // fill up the disk
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "big",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    while (true) {
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+        assert(d == SIZE || d == LFS3_ERR_NOSPC);
+        if (d == LFS3_ERR_NOSPC) {
+            break;
+        }
+        int err = lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err == LFS3_ERR_NOSPC) {
+            break;
+        }
+    }
+    int err = lfs3_file_close(&lfs3, &file);
+    assert(!err || err == LFS3_ERR_NOSPC);
+
+    // we should always be able to remove the gbmap
+    #ifndef LFS3_YES_GBMAP
+    if (RMGBMAP) {
+        lfs3_fs_rmgbmap(&lfs3) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!(fsinfo.flags & LFS3_I_GBMAP));
+    }
+    #endif
+
+    // and files
+    lfs3_remove(&lfs3, "big") => 0;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "file%08d", i);
+        lfs3_remove(&lfs3, name) => 0;
+    }
+
+    // and write again
+    lfs3_file_open(&lfs3, &file, "file",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    memset(wbuf, 'b', SIZE);
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKDATA, CFG) => 0;
+    lfs3_file_open(&lfs3, &file, "file", LFS3_O_RDONLY) => 0;
+    uint8_t rbuf[SIZE];
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that the gbmap with gc generally works
 [cases.test_gbmap_gc_files]
 defines.COUNT = [
