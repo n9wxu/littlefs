@@ -237,6 +237,122 @@ death_code = '''
     assert(TEST_DEATH.erases == 0);
 '''
 
+# test that nothing on a rdonly mount writes to the disk, including
+# syncing rdonly files with writable attrs
+[cases.test_mount_rdonly_nowrite]
+defines.MODE = ['LFS3_A_WRONLY', 'LFS3_A_RDWR']
+defines.DESYNC = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // a dir, a small file with an attr, and a file big enough for a
+    // btree
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "dir/cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_setattr(&lfs3, "dir/cat", 'a', "purr", strlen("purr")) => 0;
+
+    uint32_t prng = 42;
+    uint8_t wbuf[4*BLOCK_SIZE];
+    for (lfs3_size_t j = 0; j < 4*BLOCK_SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_open(&lfs3, &file, "dir/whale",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, 4*BLOCK_SIZE) => 4*BLOCK_SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+
+    // count syncs with a far-off injected sync error
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 1000, 0) => 0;
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+
+    // open a rdonly file with a writable attr, change the attr, and sync
+    uint8_t a_buf[256];
+    lfs3_ssize_t a_size;
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'a',
+            .flags = MODE,
+            .buffer = a_buf,
+            .buffer_size = sizeof(a_buf),
+            .size = &a_size,
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 1,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "dir/cat", LFS3_O_RDONLY, &filecfg) => 0;
+    if (DESYNC) {
+        lfs3_file_desync(&lfs3, &file) => 0;
+    }
+    memcpy(a_buf, "hiss", strlen("hiss"));
+    a_size = strlen("hiss");
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_file_desync(&lfs3, &file) => 0;
+    lfs3_file_resync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // read everything
+    uint8_t rbuf[4*BLOCK_SIZE];
+    lfs3_file_open(&lfs3, &file, "dir/whale", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 4*BLOCK_SIZE) => 4*BLOCK_SIZE;
+    assert(memcmp(rbuf, wbuf, 4*BLOCK_SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_getattr(&lfs3, "dir/cat", 'a', rbuf, sizeof(rbuf))
+            => strlen("purr");
+    assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
+
+    // traverse, check, and ask about the filesystem
+    lfs3_trv_t trv;
+    lfs3_trv_open(&lfs3, &trv,
+            LFS3_T_RDONLY | LFS3_T_CKMETA | LFS3_T_CKDATA) => 0;
+    while (true) {
+        struct lfs3_tinfo tinfo;
+        int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+        assert(!err || err == LFS3_ERR_NOENT);
+        if (err == LFS3_ERR_NOENT) {
+            break;
+        }
+    }
+    lfs3_trv_close(&lfs3, &trv) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_RDONLY);
+    assert(lfs3_fs_usage(&lfs3) > 0);
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // nothing should have been written
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+    assert(lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) == 1000);
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 0, 0) => 0;
+
+    // and the attr should be unchanged
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_getattr(&lfs3, "dir/cat", 'a', rbuf, sizeof(rbuf))
+            => strlen("purr");
+    assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that every mutating call on a rdonly mount asserts before
 # writing anything
 #
