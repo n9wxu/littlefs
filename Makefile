@@ -39,6 +39,8 @@ TEST_TRACE := $(TEST_RUNNER:%=%.trace)
 TEST_CSV   := $(TEST_RUNNER:%=%.csv)
 
 RDONLY_RUNNER ?= $(BUILDDIR)/runners/rdonly_runner
+RDONLY_DIR ?= $(BUILDDIR)/rdonly
+RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
@@ -527,6 +529,32 @@ rdonly-runner: $(RDONLY_RUNNER)
 test: test-runner
 	./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
 
+## Check that LFS3_RDONLY builds read images written by full builds
+#
+# The default and LFS3_YES_GBMAP builds write images with the cases in
+# RDONLY_IMAGES and their manifests, the LFS3_RDONLY and LFS3_YES_RDONLY
+# builds of runners/rdonly_runner.c then check them. Everything goes in
+# RDONLY_DIR.
+.PHONY: test-rdonly
+test-rdonly:
+	$(MAKE) BUILDDIR=$(RDONLY_DIR)/rw test-runner rdonly-runner
+	$(MAKE) BUILDDIR=$(RDONLY_DIR)/rwgb LFS3_YES_GBMAP=1 \
+		test-runner rdonly-runner
+	$(MAKE) BUILDDIR=$(RDONLY_DIR)/ro LFS3_RDONLY=1 rdonly-runner
+	$(MAKE) BUILDDIR=$(RDONLY_DIR)/yro LFS3_YES_RDONLY=1 rdonly-runner
+	rm -f $(RDONLY_DIR)/*.disk $(RDONLY_DIR)/*.disk.manifest
+	for b in rw rwgb ; do \
+		for c in $(RDONLY_IMAGES) ; do \
+			./scripts/test.py -R$(RDONLY_DIR)/$$b/runners/test_runner \
+					-Pnone -d $(RDONLY_DIR)/$$b-$$c.disk $$c \
+				&& $(RDONLY_DIR)/$$b/runners/rdonly_runner \
+					-m $(RDONLY_DIR)/$$b-$$c.disk \
+				|| exit 1 ; \
+		done ; \
+	done
+	$(RDONLY_DIR)/ro/runners/rdonly_runner $(RDONLY_DIR)/*.disk
+	$(RDONLY_DIR)/yro/runners/rdonly_runner $(RDONLY_DIR)/*.disk
+
 ## List the tests
 .PHONY: test-list list-tests
 test-list list-tests: test-runner
@@ -867,6 +895,7 @@ clean:
 	rm -f $(TEST_CSV)
 	rm -f $(RDONLY_RUNNER)
 	rm -f $(BUILDDIR)/runners/rdonly_runner.o
+	rm -rf $(RDONLY_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)
