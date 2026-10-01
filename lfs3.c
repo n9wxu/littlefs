@@ -5535,7 +5535,7 @@ typedef struct lfs3_bcommit {
 
     // scratch space for lfs3_btree_commit_ state that needs to persist
     // until the root is committed
-    lfs3_rattr_t rscratch[16];
+    lfs3_rattr_t rscratch[LFS3_IFDEF_CKDATACKSUMS(18, 16)];
 } lfs3_bcommit_t;
 #endif
 
@@ -6041,10 +6041,16 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         *r++ = LFS3_RATTR_ARG(sibling.trunk);
         *r++ = LFS3_RATTR_ARG(sibling.cksum);
         if (lfs3_tag_suptype(split_tag) == LFS3_TAG_NAME) {
-            *r++ = LFS3_RATTR(4, LFS3_TAG_BNAME, 0, LFS3_FROM_DATA);
+            // on-disk data also carries its cksize/cksum
+            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+                    LFS3_TAG_BNAME, 0, LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(split_name.size);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.block);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.off);
+            #ifdef LFS3_CKDATACKSUMS
+            *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksize);
+            *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksum);
+            #endif
         }
         *r++ = LFS3_RATTR_NULL;
         LFS3_ASSERT((lfs3_size_t)(r-bcommit->rscratch)
@@ -14322,7 +14328,7 @@ LFS3_NOINLINE
 static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         const lfs3_rattr_t *rname) {
     // build a commit of any pending file metadata
-    lfs3_rattr_t rattrs[14];
+    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(16, 14)];
     lfs3_rattr_t shrub_rattrs[5];
 
     // uncreated files must be unsync
@@ -14356,11 +14362,17 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                 return name_tag;
             }
 
-            *r++ = LFS3_RATTR(4, LFS3_tag_MASK8 | LFS3_TAG_REG, 0,
+            // on-disk data also carries its cksize/cksum
+            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+                    LFS3_tag_MASK8 | LFS3_TAG_REG, 0,
                     LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(name_data.size);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.block);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.off);
+            #ifdef LFS3_CKDATACKSUMS
+            *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksize);
+            *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksum);
+            #endif
         }
 
         // pending small file flush?
