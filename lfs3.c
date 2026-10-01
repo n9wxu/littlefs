@@ -10888,12 +10888,15 @@ static inline bool lfs3_alloc_cansyncgbmap(const lfs3_t *lfs3) {
 // changes
 #ifndef LFS3_RDONLY
 static inline void lfs3_alloc_discard(lfs3_t *lfs3) {
-    // discard lookahead state
+    // discard lookahead state, if block_count shrank (a failed grow)
+    // our window may be out-of-bounds
+    lfs3->lookahead.window %= lfs3->block_count;
     lfs3->lookahead.known = 0;
     lfs3_memset(lfs3->lookahead.buffer, 0, lfs3->cfg->lookahead_size);
 
     // discard the gbmap window
     #ifdef LFS3_GBMAP
+    lfs3->gbmap.window %= lfs3->block_count;
     lfs3->gbmap.known = 0;
     lfs3->gbmap.next = 0;
     #endif
