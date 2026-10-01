@@ -226,6 +226,7 @@ int lfs3_emubd_createcfg(const struct lfs3_cfg *cfg, const char *path,
     bd->erased = 0;
     bd->prng = bd->cfg->seed;
     bd->power_cycles = bd->cfg->power_cycles;
+    bd->badread = 0;
     bd->badsync = false;
     bd->ooo_before = NULL;
     bd->ooo_after = NULL;
@@ -405,6 +406,15 @@ int lfs3_emubd_read(const struct lfs3_cfg *cfg, lfs3_block_t block,
     LFS3_ASSERT(off  % cfg->read_size == 0);
     LFS3_ASSERT(size % cfg->read_size == 0);
     LFS3_ASSERT(off+size <= cfg->block_size);
+
+    // read error?
+    if (bd->badread > 0) {
+        bd->badread -= 1;
+        if (bd->badread == 0) {
+            LFS3_EMUBD_TRACE("lfs3_emubd_read -> %d", LFS3_ERR_IO);
+            return LFS3_ERR_IO;
+        }
+    }
 
     // get the block
     const lfs3_emubd_block_t *b = bd->blocks[block];
@@ -1474,6 +1484,25 @@ int lfs3_emubd_flip(const struct lfs3_cfg *cfg) {
     return 0;
 }
 
+int32_t lfs3_emubd_badread(const struct lfs3_cfg *cfg) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_badread(%p)", (void*)cfg);
+    lfs3_emubd_t *bd = cfg->context;
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_badread -> %"PRIu32, bd->badread);
+    return bd->badread;
+}
+
+int lfs3_emubd_setbadread(const struct lfs3_cfg *cfg, uint32_t reads) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_setbadread(%p, %"PRIu32")",
+            (void*)cfg, reads);
+    lfs3_emubd_t *bd = cfg->context;
+
+    bd->badread = reads;
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_setbadread -> %d", 0);
+    return 0;
+}
+
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg) {
     LFS3_EMUBD_TRACE("lfs3_emubd_mkbadsync(%p)", (void*)cfg);
     lfs3_emubd_t *bd = cfg->context;
@@ -1583,6 +1612,7 @@ int lfs3_emubd_cpy(const struct lfs3_cfg *cfg, lfs3_emubd_t *copy) {
     copy->erased = bd->erased;
     copy->prng = bd->prng;
     copy->power_cycles = bd->power_cycles;
+    copy->badread = bd->badread;
     copy->badsync = bd->badsync;
     copy->disk = bd->disk;
     if (copy->disk) {

@@ -7743,6 +7743,10 @@ static int lfs3_fs_consumegdelta(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
     #ifdef LFS3_GBMAP
     tag = lfs3_rbyd_lookup(lfs3, &mdir->r, -1, LFS3_TAG_GBMAPDELTA,
             &data);
+    if (tag < 0 && tag != LFS3_ERR_NOENT) {
+        return tag;
+    }
+
     if (tag != LFS3_ERR_NOENT) {
         uint8_t gbmapdelta[LFS3_GBMAP_DSIZE];
         lfs3_ssize_t d = lfs3_data_read(lfs3, &data,

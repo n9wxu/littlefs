@@ -192,6 +192,7 @@ typedef struct lfs3_emubd {
     // some other test state
     uint32_t prng;
     lfs3_emubd_powercycles_t power_cycles;
+    uint32_t badread;
     bool badsync;
     lfs3_emubd_block_t **ooo_before;
     lfs3_emubd_block_t **ooo_after;
@@ -304,6 +305,12 @@ int lfs3_emubd_flipbit(const struct lfs3_cfg *cfg,
 
 // Flip all bits marked as bad
 int lfs3_emubd_flip(const struct lfs3_cfg *cfg);
+
+// Get the remaining reads before a read error, 0 if disabled
+int32_t lfs3_emubd_badread(const struct lfs3_cfg *cfg);
+
+// Error with LFS3_ERR_IO on the nth read from now, 0 disables
+int lfs3_emubd_setbadread(const struct lfs3_cfg *cfg, uint32_t reads);
 
 // Mark sync as bad, every sync errors with LFS3_ERR_IO until marked good
 int lfs3_emubd_mkbadsync(const struct lfs3_cfg *cfg);
