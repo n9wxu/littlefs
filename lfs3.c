@@ -7871,7 +7871,7 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
-        revs[i] = lfs3_fromle32(&revs[i]);
+        revs[0] = lfs3_fromle32(&revs[0]);
 
         if (i == 0
                 || err == LFS3_ERR_CORRUPT
