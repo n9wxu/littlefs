@@ -7778,3 +7778,171 @@ code = '''
         lfs3_unmount(&lfs3) => 0;
     }
 '''
+
+# test growing a filesystem with bad blocks
+#
+# bad blocks in the new region should just be relocated around, a bad
+# mroot partner may make grow fail, but then we must not touch the new
+# region
+[cases.test_badblocks_grow]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+]
+# we need prog checking to detect read errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+# BADBLOCKS=0x1 => every 4th block in the new region
+# BADBLOCKS=0x2 => the mroot's partner
+defines.BADBLOCKS = [0x1, 0x2, 0x3]
+defines.GBMAP = [false, true]
+defines.FORMAT_BLOCK_COUNT = '(GBMAP) ? 3 : 2'
+defines.OLD_BLOCK_COUNT = 'BLOCK_COUNT/2'
+# count erases without wearing out
+defines.ERASE_CYCLES = 0xfffffffe
+defines.SIZE = 'BLOCK_SIZE'
+defines.SEED = 42
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
+]
+in = 'lfs3.c'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0);
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = OLD_BLOCK_COUNT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            flags
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // create enough dirs that our mroot splits, so we can still write
+    // files if our mroot gets stuck
+    lfs3_file_t file;
+    for (lfs3_size_t i = 0; lfs3.mtree.r.weight == 0; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_SIZE);
+
+        char name[256];
+        sprintf(name, "dir%03x", i);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+
+    // pretend our mroot is full, so grow needs to compact it
+    lfs3_mdir_claim(&lfs3.mroot);
+
+    // mark our bad blocks
+    if (BADBLOCKS & 0x1) {
+        for (lfs3_block_t i = OLD_BLOCK_COUNT; i < BLOCK_COUNT; i += 4) {
+            lfs3_emubd_mkbad(CFG, i) => 0;
+        }
+    }
+    if (BADBLOCKS & 0x2) {
+        lfs3_emubd_mkbad(CFG, lfs3.mroot.r.blocks[1]) => 0;
+    }
+
+    // grow
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+    int err = lfs3_fs_grow(&lfs3, BLOCK_COUNT);
+    assert(!err || err == LFS3_ERR_NOSPC);
+    // only a bad mroot partner can make grow fail
+    assert(!err || (BADBLOCKS & 0x2));
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == (lfs3_size_t)((err) ? OLD_BLOCK_COUNT : BLOCK_COUNT));
+    bool grown = !err;
+    if (!grown) {
+        // nothing should have changed
+        uint32_t cksum_;
+        lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+        assert(cksum_ == cksum);
+    }
+
+    // after a failed grow, nothing should touch the new region
+    lfs3_emubd_sio_t progs[BLOCK_COUNT];
+    lfs3_emubd_swear_t wear[BLOCK_COUNT];
+    for (lfs3_block_t i = 0; i < BLOCK_COUNT; i++) {
+        progs[i] = lfs3_emubd_blockprogs(CFG, i);
+        wear[i] = lfs3_emubd_wear(CFG, i);
+    }
+
+    // fill the disk
+    uint8_t wbuf[SIZE];
+    lfs3_size_t count = 0;
+    for (;; count++) {
+        // a bit hacky, but this catches infinite loops
+        assert(count < BLOCK_COUNT);
+
+        char name[256];
+        sprintf(name, "spider%03x", count);
+        uint32_t prng = SEED + count;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+        assert(d == SIZE || d == LFS3_ERR_NOSPC);
+        err = (d < 0) ? d : lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        lfs3_file_close(&lfs3, &file);
+        if (err) {
+            break;
+        }
+    }
+    // we should have used most of our disk, unless our mroot anchor got
+    // stuck
+    printf("grown: %d, count: %d\n", grown, count);
+    assert(count > 0);
+    assert(!grown || (BADBLOCKS & 0x2) || count >= OLD_BLOCK_COUNT);
+
+    if (!grown) {
+        for (lfs3_block_t i = OLD_BLOCK_COUNT; i < BLOCK_COUNT; i++) {
+            assert(lfs3_emubd_blockprogs(CFG, i) == progs[i]);
+            assert(lfs3_emubd_wear(CFG, i) == wear[i]);
+        }
+    }
+
+    // note lfs3_fs_ck also syncs the gbmap on a writable mount, which
+    // can't work with a stuck mroot, so check with a read-only mount
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        }
+
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.block_count
+                == (lfs3_size_t)((grown) ? BLOCK_COUNT : OLD_BLOCK_COUNT));
+
+        // check our files
+        for (lfs3_size_t i = 0; i < count; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t prng = SEED + i;
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            uint8_t rbuf[SIZE];
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        if (remount) {
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
