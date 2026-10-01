@@ -7946,3 +7946,243 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test making and removing the gbmap on a device with bad blocks
+[cases.test_badblocks_gbmap_mkrm]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+    'LFS3_EMUBD_BADBLOCK_PROGFLIP',
+]
+# we need prog checking to detect read errors and silent errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+# BADBLOCKS=0 => a large region of bad blocks
+# BADBLOCKS=1 => every other block is bad
+defines.BADBLOCKS = [0, 1]
+defines.N = 8
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.ROUNDS = 4
+defines.SEED = 42
+ifdef = 'LFS3_GBMAP'
+ifndef = 'LFS3_YES_GBMAP'
+if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0);
+
+    // mark our bad blocks
+    for (lfs3_block_t i = FORMAT_BLOCK_COUNT; i < BLOCK_COUNT; i++) {
+        if ((BADBLOCKS == 0 && i < BLOCK_COUNT/2)
+                || (BADBLOCKS == 1 && i % 2 == 1)) {
+            lfs3_emubd_mkbad(CFG, i) => 0;
+        }
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, flags, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    uint32_t prngs[N];
+    uint32_t prng = SEED;
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE];
+    for (lfs3_size_t round = 0; round < 2*ROUNDS; round++) {
+        // alternate making and removing the gbmap
+        if (round % 2 == 0) {
+            lfs3_fs_mkgbmap(&lfs3) => 0;
+        } else {
+            lfs3_fs_rmgbmap(&lfs3) => 0;
+        }
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!!(fsinfo.flags & LFS3_I_GBMAP) == (round % 2 == 0));
+
+        // rewrite our files
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            prngs[i] = TEST_PRNG(&prng);
+            uint32_t wprng = prngs[i];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+            lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        // remount every other round
+        if (round % 4 >= 2) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, flags, CFG) => 0;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(!!(fsinfo.flags & LFS3_I_GBMAP) == (round % 2 == 0));
+        }
+
+        // check our files
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t wprng = prngs[i];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test the gbmap becoming unreadable, we should either error or work
+# around it, but never lose or corrupt data
+#
+# rmgbmap is the way out, it shouldn't need to read the gbmap
+[cases.test_badblocks_gbmap_readerror]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+defines.N = 8
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.SEED = 42
+ifdef = 'LFS3_GBMAP'
+ifndef = 'LFS3_YES_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write some files, keep track of the old and new state of each file
+    // in case a write fails
+    uint32_t seeds[N][2];
+    uint32_t prng = SEED;
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        seeds[i][0] = TEST_PRNG(&prng);
+        seeds[i][1] = seeds[i][0];
+        uint32_t wprng = seeds[i][0];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // make our gbmap's root unreadable
+    lfs3_block_t badblock = lfs3.gbmap.b.r.blocks[0];
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_emubd_mkbad(CFG, badblock) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write until we need the gbmap, this should error
+    lfs3_size_t errors = 0;
+    for (lfs3_size_t round = 0; round < 2; round++) {
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t seed = TEST_PRNG(&prng);
+            uint32_t wprng = seed;
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_TRUNC) => 0;
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+            assert(d == SIZE || d == LFS3_ERR_CORRUPT);
+            int err = (d < 0) ? d : lfs3_file_sync(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            lfs3_file_close(&lfs3, &file);
+            if (err) {
+                errors += 1;
+            } else {
+                seeds[i][0] = seed;
+                seeds[i][1] = seed;
+            }
+        }
+    }
+    // once we need the gbmap we should notice it's unreadable
+    assert(errors > 0);
+
+    // checks should notice too
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+
+    // but every file should still be readable
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        uint32_t wprng = seeds[i][0];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // removing the gbmap should let us keep going
+    lfs3_fs_rmgbmap(&lfs3) => 0;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        seeds[i][0] = TEST_PRNG(&prng);
+        uint32_t wprng = seeds[i][0];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_TRUNC) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!(fsinfo.flags & LFS3_I_GBMAP));
+
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t wprng = seeds[i][0];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    // and we can bring the gbmap back
+    lfs3_fs_mkgbmap(&lfs3) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
