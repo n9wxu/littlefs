@@ -1479,6 +1479,10 @@ code = '''
 
 # test what happens if we find an unknown config
 [cases.test_mount_incompat_unknown_config]
+# unknown configs before, between, and after our known configs
+defines.CONFIG = [
+    '0x00', '0x01', '0x30', '0x32', '0x33', '0x3b', '0x42', '0x7f',
+]
 in = 'lfs3.c'
 code = '''
     // create a superblock
@@ -1491,7 +1495,7 @@ code = '''
     // create an unknown config
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
-            LFS3_RATTR(3, LFS3_TAG_CONFIG + 0x42, 0, LFS3_FROM_DATA),
+            LFS3_RATTR(3, LFS3_TAG_CONFIG + CONFIG, 0, LFS3_FROM_DATA),
             LFS3_RATTR_ARG(strlen("oh no!")),
             LFS3_RATTR_ARG("oh no!"),
             LFS3_RATTR_NULL)) => 0;
