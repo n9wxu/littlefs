@@ -919,6 +919,20 @@ code = '''
     lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
 
+    // a checkpoint repopulates at exactly known == lookgbmap_thresh,
+    // including known == 0 with a threshold of 0, and not at
+    // known == lookgbmap_thresh+1
+    //
+    // note shrinking the known window only forgets blocks, so this is
+    // safe
+    assert(lfs3.gbmap.known > LOOKGBMAP_THRESH+1);
+    lfs3.gbmap.known = LOOKGBMAP_THRESH+1;
+    lfs3_alloc_ckpoint(&lfs3) => 0;
+    assert(lfs3.gbmap.known == LOOKGBMAP_THRESH+1);
+    lfs3.gbmap.known = LOOKGBMAP_THRESH;
+    lfs3_alloc_ckpoint(&lfs3) => 0;
+    assert(lfs3.gbmap.known > LOOKGBMAP_THRESH+1);
+
     // rewrite a file repeatedly until we're sure we've wrapped around
     // a few times
     uint32_t prng = 42;
