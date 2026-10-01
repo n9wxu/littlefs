@@ -5538,7 +5538,7 @@ typedef struct lfs3_bcommit {
 
     // scratch space for lfs3_btree_commit_ state that needs to persist
     // until the root is committed
-    lfs3_rattr_t rscratch[16];
+    lfs3_rattr_t rscratch[LFS3_IFDEF_CKDATACKSUMS(18, 16)];
 } lfs3_bcommit_t;
 #endif
 
@@ -6044,10 +6044,16 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         *r++ = LFS3_RATTR_ARG(sibling.trunk);
         *r++ = LFS3_RATTR_ARG(sibling.cksum);
         if (lfs3_tag_suptype(split_tag) == LFS3_TAG_NAME) {
-            *r++ = LFS3_RATTR(4, LFS3_TAG_BNAME, 0, LFS3_FROM_DATA);
+            // on-disk data also carries its cksize/cksum
+            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+                    LFS3_TAG_BNAME, 0, LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(split_name.size);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.block);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.off);
+            #ifdef LFS3_CKDATACKSUMS
+            *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksize);
+            *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksum);
+            #endif
         }
         *r++ = LFS3_RATTR_NULL;
         LFS3_ASSERT((lfs3_size_t)(r-bcommit->rscratch)
@@ -6974,14 +6980,14 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
         LFS3_DEBUG("Committed bshrub "
                     "0x{%"PRIx32",%"PRIx32"}.%"PRIx32" w%"PRId32,
                 bshrub->h.mdir.r.blocks[0], bshrub->h.mdir.r.blocks[1],
-                lfs3_shrub_trunk(&bshrub->b),
-                bshrub->b.weight);
+                lfs3_shrub_trunk(&bshrub->b.r),
+                bshrub->b.r.weight);
     } else {
         LFS3_DEBUG("Committed btree 0x%"PRIx32".%"PRIx32" w%"PRId32", "
                     "cksum %"PRIx32,
-                bshrub->b.blocks[0], lfs3_shrub_trunk(&bshrub->b),
-                bshrub->b.weight,
-                bshrub->b.cksum);
+                bshrub->b.r.blocks[0], lfs3_shrub_trunk(&bshrub->b.r),
+                bshrub->b.r.weight,
+                bshrub->b.r.cksum);
     }
     #endif
     return 0;
@@ -7360,7 +7366,10 @@ static inline bool lfs3_m_isckdatacksums(uint32_t flags) {
 #ifdef LFS3_GBMAP
 static inline bool lfs3_f_isgbmap(uint32_t flags) {
     (void)flags;
-    #ifdef LFS3_YES_GBMAP
+    #if defined(LFS3_RDONLY)
+    // rdonly builds don't load the gbmap, it's only needed for writes
+    return false;
+    #elif defined(LFS3_YES_GBMAP)
     return true;
     #else
     return flags & LFS3_F_GBMAP;
@@ -7544,7 +7553,7 @@ static int lfs3_data_readgrm(lfs3_t *lfs3, lfs3_data_t *data,
 static lfs3_data_t lfs3_data_fromgbmap(const lfs3_gbmap_t *gbmap,
         uint8_t buffer[static LFS3_GBMAP_DSIZE]);
 #endif
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
         lfs3_gbmap_t *gbmap);
 #endif
@@ -7876,7 +7885,7 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
-        revs[i] = lfs3_fromle32(&revs[i]);
+        revs[0] = lfs3_fromle32(&revs[0]);
 
         if (i == 0
                 || err == LFS3_ERR_CORRUPT
@@ -8736,7 +8745,13 @@ compact:;
     }
 
     // TODO do we need to include mdir commit overhead here? in rbyd_estimate?
-    if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2) {
+    //
+    // only split if we can, mroot commits and an mroot with an mtree have
+    // nothing to split, so these compact as long as they fit
+    if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2
+            && split_rid_
+            && !(lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                && lfs3->mtree.r.weight != 0)) {
         return LFS3_ERR_RANGE;
     }
 
@@ -8766,10 +8781,10 @@ compact:;
             start_rid_ = lfs3_smax(start_rid_, -1);
         }
 
-        // compact our mdir
+        // compact our mdir, this can only overflow if we skipped
+        // splitting above
         err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 overrecyclable &= relocated;
@@ -8780,12 +8795,12 @@ compact:;
 
         // now try to commit again
         //
-        // upper layers should make sure this can't fail by limiting the
-        // maximum commit size
+        // this can still fail with LFS3_ERR_RANGE if the commit is
+        // larger than what compaction freed, in which case our caller
+        // can try splitting
         err = lfs3_mdir_commit___(lfs3, mdir_, start_rid_, end_rid,
                 mid, rattrs);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 overrecyclable &= relocated;
@@ -8964,9 +8979,13 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     lfs3_btree_t mtree_ = lfs3->mtree;
     // need to split?
     if (err == LFS3_ERR_RANGE) {
-        // this should not happen unless we can't fit our mroot's metadata
-        LFS3_ASSERT(lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0
-                || lfs3->mtree.r.weight == 0);
+        // an mroot with an mtree has nothing to split, its mdir-level
+        // attrs just don't fit
+        if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                && lfs3->mtree.r.weight != 0) {
+            err = LFS3_ERR_NOSPC;
+            goto failed;
+        }
 
         // if we're not the mroot, we need to consume the gstate so
         // we don't lose any info during the split
@@ -9014,7 +9033,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     ((i^l) == 0) ? split_rid :        -1,
                     mdir->mid, rattrs);
             if (err && err != LFS3_ERR_NOENT) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
+                // still too big? an entry can't be split
+                if (err == LFS3_ERR_RANGE) {
+                    err = LFS3_ERR_NOSPC;
+                    goto failed;
+                }
                 // bad prog? try another block
                 if (err == LFS3_ERR_CORRUPT) {
                     goto split_relocate;
@@ -9236,7 +9259,10 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     LFS3_RATTR_ARG(rattrs),
                     LFS3_RATTR_NULL));
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // mroot can't split, mdir-level attrs just don't fit
+            if (err == LFS3_ERR_RANGE) {
+                err = LFS3_ERR_NOSPC;
+            }
             goto failed;
         }
     }
@@ -9599,6 +9625,33 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
         LFS3_ASSERT(tag == LFS3_TAG_MNAME
                 || tag == LFS3_TAG_MDIR);
 
+        // smaller than every mname in the subtree we were routed to?
+        //
+        // bnames are only lower bounds, they outlive the first mdir they
+        // named when that mdir is dropped, and names routed through them
+        // land in the mdirs before the subtree, so walk back to the last
+        // mname <= our name
+        //
+        // the first mdir has no mname, so this always terminates
+        while (cmp == LFS3_CMP_GT) {
+            LFS3_ASSERT(bid >= (lfs3_bid_t)(1 << lfs3->mbits));
+            bid -= (1 << lfs3->mbits);
+            tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MNAME,
+                    &data);
+            if (tag < 0 && tag != LFS3_ERR_NOENT) {
+                return tag;
+            }
+
+            cmp = (tag == LFS3_ERR_NOENT)
+                    ? LFS3_CMP_LT
+                    : lfs3_data_namecmp(lfs3, &data, did, name, name_len);
+            if (cmp < 0) {
+                return cmp;
+            }
+            // lookup this mdir below
+            tag = LFS3_TAG_MNAME;
+        }
+
         // if we found an mname, lookup the mdir
         if (tag == LFS3_TAG_MNAME) {
             tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MDIR,
@@ -9662,11 +9715,17 @@ static inline bool lfs3_path_isdir(const char *path) {
 // - LFS3_ERR_NOENT, islast(path), isdir(path)  => dir not found
 // - LFS3_ERR_NOENT, !islast(path)              => parent not found
 // - LFS3_ERR_NOTDIR                            => parent not a dir
+// - LFS3_ERR_INVAL                             => parent under ancestor
 //
 // if not found, mdir/did_ will be set to the parent's mdir/did, all
 // ready for file creation
 //
-static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
+// ancestor is the mid of a dir the path must not descend through, this
+// is how rename refuses to move a dir into itself, -1 (root) never
+// matches
+//
+static lfs3_stag_t lfs3_mtree_pathlookup_(lfs3_t *lfs3, const char **path,
+        lfs3_smid_t ancestor,
         lfs3_mdir_t *mdir_, lfs3_did_t *did_) {
     // setup root
     *mdir_ = lfs3->mroot;
@@ -9742,6 +9801,10 @@ static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
 
         // read the next did from the mdir if this is not the root
         if (mdir_->mid != -1) {
+            if (mdir_->mid == ancestor) {
+                return LFS3_ERR_INVAL;
+            }
+
             lfs3_data_t data;
             tag = lfs3_mdir_lookup(lfs3, mdir_, LFS3_TAG_DID,
                     &data);
@@ -9777,6 +9840,11 @@ static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
         path_ += name_len;
     next:;
     }
+}
+
+static lfs3_stag_t lfs3_mtree_pathlookup(lfs3_t *lfs3, const char **path,
+        lfs3_mdir_t *mdir_, lfs3_did_t *did_) {
+    return lfs3_mtree_pathlookup_(lfs3, path, -1, mdir_, did_);
 }
 
 
@@ -10471,7 +10539,7 @@ static lfs3_data_t lfs3_data_fromgbmap(const lfs3_gbmap_t *gbmap,
 }
 #endif
 
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
         lfs3_gbmap_t *gbmap) {
     int err = lfs3_data_readleb128(lfs3, data, &gbmap->window);
@@ -10504,7 +10572,7 @@ static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
 
 // on-disk global block-map operations
 
-#ifdef LFS3_GBMAP
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static lfs3_stag_t lfs3_gbmap_lookupnext(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_bid_t bid,
         lfs3_bid_t *bid_, lfs3_bid_t *weight_, lfs3_ecksum_t *ecksum_) {
@@ -11886,10 +11954,11 @@ int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
         return LFS3_ERR_BUSY;
     }
 
-    // lookup new entry
+    // lookup new entry, a dir can't be moved into its own subtree
     lfs3_mdir_t new_mdir;
     lfs3_did_t new_did;
-    lfs3_stag_t new_tag = lfs3_mtree_pathlookup(lfs3, &new_path,
+    lfs3_stag_t new_tag = lfs3_mtree_pathlookup_(lfs3, &new_path,
+            old_mdir.mid,
             &new_mdir, &new_did);
     if (new_tag < 0
             && !(new_tag == LFS3_ERR_NOENT
@@ -12266,8 +12335,9 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
 
     // then seek to the requested offset
     //
-    // note the -2 to adjust for dot entries
-    lfs3_off_t off_ = off - 2;
+    // note the -2 to adjust for dot entries, rewind already leaves
+    // the mid at the first real entry
+    lfs3_off_t off_ = lfs3_smax(off - 2, 0);
     while (off_ > 0) {
         // next mdir?
         if (lfs3_mrid(lfs3, dir->h.mdir.mid)
@@ -12616,7 +12686,7 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         const lfs3_rattr_t *rname);
 #endif
 
-int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
+static int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
         const char *path, uint32_t flags,
         const struct lfs3_file_cfg *cfg) {
     #ifndef LFS3_RDONLY
@@ -14366,7 +14436,7 @@ LFS3_NOINLINE
 static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         const lfs3_rattr_t *rname) {
     // build a commit of any pending file metadata
-    lfs3_rattr_t rattrs[14];
+    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(16, 14)];
     lfs3_rattr_t shrub_rattrs[5];
 
     // uncreated files must be unsync
@@ -14400,11 +14470,17 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                 return name_tag;
             }
 
-            *r++ = LFS3_RATTR(4, LFS3_tag_MASK8 | LFS3_TAG_REG, 0,
+            // on-disk data also carries its cksize/cksum
+            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+                    LFS3_tag_MASK8 | LFS3_TAG_REG, 0,
                     LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(name_data.size);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.block);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.off);
+            #ifdef LFS3_CKDATACKSUMS
+            *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksize);
+            *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksum);
+            #endif
         }
 
         // pending small file flush?
@@ -14771,7 +14847,7 @@ lfs3_soff_t lfs3_file_tell(lfs3_t *lfs3, lfs3_file_t *file) {
     return file->pos;
 }
 
-lfs3_soff_t lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file) {
+int lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file) {
     (void)lfs3;
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
 
@@ -15176,7 +15252,8 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, 0)
                 | LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, 0)
                 | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)
-                | LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0))) == 0);
+                | LFS3_IFDEF_RDONLY(0,
+                    LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0)))) == 0);
     // TODO this all needs to be cleaned up
     lfs3->cfg = cfg;
     int err = 0;
@@ -15227,10 +15304,12 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     //
     // metadata can't be compacted below block_size/2, and metadata can't
     // exceed a block
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == 0
             || lfs3->cfg->gc_compact_thresh >= lfs3->cfg->block_size/2);
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == (lfs3_size_t)-1
             || lfs3->cfg->gc_compact_thresh <= lfs3->cfg->block_size);
+    #endif
     #endif
 
     #ifndef LFS3_RDONLY
@@ -15247,6 +15326,8 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     // TODO move this to mount?
     // setup flags
     lfs3->flags = flags
+            // rdonly builds are always mounted rdonly
+            | LFS3_IFDEF_RDONLY(LFS3_I_RDONLY, 0)
             // assume we contain orphans until proven otherwise
             | LFS3_IFDEF_RDONLY(0, LFS3_I_MKCONSISTENT)
             // default to lookaheadable
@@ -15261,6 +15342,14 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
 
     // copy block_count so we can mutate it
     lfs3->block_count = lfs3->cfg->block_count;
+
+    // zero our buffers first, lfs3_deinit frees whatever was allocated if
+    // an allocation fails
+    lfs3->rcache.buffer = NULL;
+    #ifndef LFS3_RDONLY
+    lfs3->pcache.buffer = NULL;
+    lfs3->lookahead.buffer = NULL;
+    #endif
 
     // setup read cache
     lfs3->rcache.block = 0;
@@ -15293,7 +15382,7 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #endif
 
     // setup ptail, nothing should actually check off=0
-    #ifdef LFS3_CKMETAPARITY
+    #if !defined(LFS3_RDONLY) && defined(LFS3_CKMETAPARITY)
     lfs3->ptail.block = 0;
     lfs3->ptail.off = 0;
     #endif
@@ -15331,6 +15420,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     if (!lfs3->file_limit) {
         lfs3->file_limit = LFS3_FILE_MAX;
     }
+    #else
+    // no limits to configure, accept anything we can represent
+    lfs3->name_limit = LFS3_NAME_MAX;
+    lfs3->file_limit = LFS3_FILE_MAX;
     #endif
 
     // TODO do we need to recalculate these after mount?
@@ -15812,6 +15905,18 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
 
     lfs3->name_limit = name_limit;
 
+    // names also end up as bnames in the mtree, and a btree split must fit
+    // a bname, two branches, and their tags in the half block left after
+    // compaction, so block_size limits the names we can create
+    #ifndef LFS3_RDONLY
+    lfs3->name_limit = lfs3_min(lfs3->name_limit, lfs3_smax(
+            (lfs3_ssize_t)(lfs3->cfg->block_size/2)
+                - 3*lfs3->rattr_estimate
+                - 2*LFS3_BRANCH_DSIZE
+                - LFS3_LEB128_DSIZE,
+            0));
+    #endif
+
     // read the file limit
     lfs3_off_t file_limit = 0x7fffffff;
     tag = lfs3_mdir_lookup(lfs3, mroot, LFS3_TAG_FILELIMIT,
@@ -15838,18 +15943,37 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
 
     lfs3->file_limit = file_limit;
 
-    // check for unknown configs
-    tag = lfs3_mdir_lookupnext(lfs3, mroot, LFS3_tag_UNKNOWNCONFIG,
-            NULL);
-    if (tag < 0 && tag != LFS3_ERR_NOENT) {
-        return tag;
-    }
+    // check for unknown configs, these can be anywhere in the config
+    // range, not just after our known configs
+    tag = LFS3_TAG_CONFIG;
+    while (true) {
+        tag = lfs3_mdir_lookupnext(lfs3, mroot, tag,
+                NULL);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+            return tag;
+        }
 
-    if (tag != LFS3_ERR_NOENT
-            && lfs3_tag_suptype(tag) == LFS3_TAG_CONFIG) {
-        LFS3_ERROR("Unknown config 0x%04"PRIx16,
-                tag);
-        return LFS3_ERR_NOTSUP;
+        if (lfs3_tag_suptype(tag) != LFS3_TAG_CONFIG) {
+            break;
+        }
+
+        if (tag != LFS3_TAG_MAGIC
+                && tag != LFS3_TAG_VERSION
+                && tag != LFS3_TAG_RCOMPAT
+                && tag != LFS3_TAG_WCOMPAT
+                && tag != LFS3_TAG_OCOMPAT
+                && tag != LFS3_TAG_GEOMETRY
+                && tag != LFS3_TAG_NAMELIMIT
+                && tag != LFS3_TAG_FILELIMIT) {
+            LFS3_ERROR("Unknown config 0x%04"PRIx16,
+                    tag);
+            return LFS3_ERR_NOTSUP;
+        }
+
+        tag += 1;
     }
 
     return 0;
@@ -16937,16 +17061,20 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
                 | LFS3_GC_CKMETA
                 | LFS3_GC_CKDATA)) == 0);
     // these flags require a writable filesystem
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_ismkconsistent(lfs3->cfg->gc_flags));
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_islookahead(lfs3->cfg->gc_flags));
+    #endif
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_ispreerase(lfs3->cfg->gc_flags));
     #endif
+    #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags)
             || !lfs3_t_compact(lfs3->cfg->gc_flags));
+    #endif
     // we can't use preerased blocks without revperturb, so this is
     // likely a mistake
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
@@ -16995,8 +17123,13 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags) {
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
     // filesystem must be writeable
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
-    // shrinking the filesystem is not supported
-    LFS3_ASSERT(block_count_ >= lfs3->block_count);
+
+    // shrinking the filesystem is not supported, and we can't grow past
+    // our block device
+    if (block_count_ < lfs3->block_count
+            || block_count_ > lfs3->cfg->block_count) {
+        return LFS3_ERR_INVAL;
+    }
 
     // do nothing if block_count doesn't change
     if (block_count_ == lfs3->block_count) {

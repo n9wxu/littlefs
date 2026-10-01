@@ -593,6 +593,20 @@ void test_trace_resume(void) {
 }
 
 
+// allocation failure injection
+size_t test_malloc_fail = 0;
+
+void *test_malloc(size_t size) {
+    if (test_malloc_fail) {
+        test_malloc_fail -= 1;
+        if (!test_malloc_fail) {
+            return NULL;
+        }
+    }
+    return malloc(size);
+}
+
+
 // test prng
 uint32_t test_prng(uint32_t *state) {
     // A simple xorshift32 generator, easily reproducible. Keep in mind

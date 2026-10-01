@@ -57,6 +57,9 @@ void test_trace(const char *fmt, ...);
 #define LFS3_KIWIBD_TRACE(...)
 #endif
 
+// override lfs3_malloc so tests can inject allocation failures
+#define LFS3_MALLOC test_malloc
+
 
 // note these are indirectly included in any generated files
 #define TEST_INCLUDE
@@ -140,6 +143,11 @@ extern const size_t test_suite_count;
 // this variable tracks the number of powerlosses triggered during the
 // current test permutation, this is useful for both tests and debugging
 extern volatile test_powercycles_t TEST_PLS;
+
+// lfs3_malloc goes through test_malloc, setting test_malloc_fail=n fails
+// the nth allocation from now, 0 never fails
+void *test_malloc(size_t size);
+extern size_t test_malloc_fail;
 
 // deterministic prng for pseudo-randomness in tests
 uint32_t test_prng(uint32_t *state);

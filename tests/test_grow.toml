@@ -546,6 +546,66 @@ code = '''
 '''
 
 
+# growing past the block device, or shrinking, should error and change
+# nothing
+[cases.test_grow_invalid]
+defines.SMALLER_BLOCK_COUNT = [
+    'BLOCK_COUNT/2',
+    'BLOCK_COUNT/4',
+]
+code = '''
+    // create a smaller fs
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = SMALLER_BLOCK_COUNT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // try to grow past our block device
+    lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT+1) => LFS3_ERR_INVAL;
+    lfs3_fs_grow(&lfs3, BLOCK_COUNT) => LFS3_ERR_INVAL;
+    // try to shrink
+    lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT-1) => LFS3_ERR_INVAL;
+    lfs3_fs_grow(&lfs3, FORMAT_BLOCK_COUNT) => LFS3_ERR_INVAL;
+
+    // fsstat unchanged?
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
+
+    // fill the filesystem, this should never touch blocks past our
+    // block_count
+    uint8_t wbuf[1024];
+    memset(wbuf, 'a', sizeof(wbuf));
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    while (true) {
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, sizeof(wbuf));
+        assert(d == sizeof(wbuf) || d == LFS3_ERR_NOSPC);
+        if (d == LFS3_ERR_NOSPC) {
+            break;
+        }
+        int err = lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            break;
+        }
+    }
+    lfs3_file_close(&lfs3, &file);
+    lfs3_unmount(&lfs3) => 0;
+
+    // we should still mount with our original config
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 # These tests try various fuzz tests while incrementally growing the
 # filesystem. When encountering LFS3_ERR_NOSPC, the filesystem is grown by

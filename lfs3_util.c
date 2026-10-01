@@ -8,7 +8,7 @@
 #include "lfs3_util.h"
 
 // Only compile if user does not provide custom config
-#ifndef LFS3_CONFIG
+#ifndef LFS3_CFG
 
 // Need lfs3.h for error codes
 // TODO should we actually move the error codes to lfs3_util.h?
@@ -37,9 +37,10 @@ ssize_t lfs3_toleb128(uint32_t word, void *buffer, size_t size) {
 ssize_t lfs3_fromleb128(uint32_t *word, const void *buffer, size_t size) {
     const uint8_t *data = buffer;
 
-    int32_t word_ = 0;
-    for (size_t i = 0; i < size; i++) {
-        int32_t dat = data[i];
+    // 32-bit words need at most 5 bytes, past that we overflow
+    uint32_t word_ = 0;
+    for (size_t i = 0; i < size && i < 5; i++) {
+        uint32_t dat = data[i];
         word_ |= (dat & 0x7f) << 7*i;
         if (!(dat & 0x80)) {
             // did we overflow?
@@ -52,7 +53,7 @@ ssize_t lfs3_fromleb128(uint32_t *word, const void *buffer, size_t size) {
         }
     }
 
-    // truncated?
+    // truncated or overflowed?
     return LFS3_ERR_CORRUPT;
 }
 
@@ -207,7 +208,7 @@ uint32_t lfs3_crc32c(uint32_t crc, const void *buffer, size_t size) {
         // align to 32-bits
         if ((uintptr_t)&buffer_[i] % sizeof(uint32_t) == 0
                 && i+sizeof(uint32_t) < size) {
-            crc = crc ^ lfs3_fromle32_(&buffer_[i]);
+            crc = crc ^ lfs3_fromle32(&buffer_[i]);
             crc = lfs3_pmul(
                         lfs3_pmul(crc, 0xdea713f1),
                         0x82f63b78)
