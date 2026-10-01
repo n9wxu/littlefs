@@ -41,9 +41,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -271,9 +271,9 @@ def collect_syms(obj_path, global_=False, sections=None, *,
     symbol_pattern = re.compile(
             '^(?P<addr>[0-9a-fA-F]+)'
                 ' (?P<scope>.).*'
-                '\s+(?P<section>[^\s]+)'
-                '\s+(?P<size>[0-9a-fA-F]+)'
-                '\s+(?P<name>[^\s]+)\s*$')
+                '\\s+(?P<section>[^\\s]+)'
+                '\\s+(?P<size>[0-9a-fA-F]+)'
+                '\\s+(?P<name>[^\\s]+)\\s*$')
 
     # find symbol addresses and sizes
     syms = []
@@ -418,12 +418,12 @@ def collect_dwarf_info(obj_path, tags=None, *,
         objdump_path=OBJDUMP_PATH,
         **args):
     info_pattern = re.compile(
-            '^\s*<(?P<level>[^>]*)>'
-                    '\s*<(?P<off>[^>]*)>'
-                    '.*\(\s*(?P<tag>[^)]*?)\s*\)\s*$'
-                '|' '^\s*<(?P<off_>[^>]*)>'
-                    '\s*(?P<at>[^>:]*?)'
-                    '\s*:(?P<v>.*)\s*$')
+            '^\\s*<(?P<level>[^>]*)>'
+                    '\\s*<(?P<off>[^>]*)>'
+                    '.*\\(\\s*(?P<tag>[^)]*?)\\s*\\)\\s*$'
+                '|' '^\\s*<(?P<off_>[^>]*)>'
+                    '\\s*(?P<at>[^>:]*?)'
+                    '\\s*:(?P<v>.*)\\s*$')
 
     # collect dwarf entries
     info = co.OrderedDict()
@@ -494,7 +494,7 @@ def collect_ctx(obj_paths, *,
                 break
         else:
             # guess from obj path
-            file = re.sub('(\.o)?$', '.c', obj_path, 1)
+            file = re.sub('(\\.o)?$', '.c', obj_path, 1)
 
         # simplify path
         if os.path.commonpath([

@@ -32,6 +32,7 @@
     TEST_DEFINE(BADBLOCK_BEHAVIOR,      LFS3_EMUBD_BADBLOCK_PROGERROR       )
     TEST_DEFINE(POWERLOSS_BEHAVIOR,     LFS3_EMUBD_POWERLOSS_ATOMIC         )
     TEST_DEFINE(BD_SEED,                0                                   )
+    TEST_DEFINE(CKPROGONCE,             false                               )
     #endif
 #endif
 
@@ -84,6 +85,7 @@
         .badblock_behavior              = BADBLOCK_BEHAVIOR,
         .powerloss_behavior             = POWERLOSS_BEHAVIOR,
         .seed                           = BD_SEED,
+        .ck_progonce                    = CKPROGONCE,
     };
     struct lfs3_emubd_cfg *TEST_BDCFG = &_bdcfg;
     #else

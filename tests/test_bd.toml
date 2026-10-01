@@ -6,6 +6,52 @@
 # Note we use 251, a prime, in places to avoid aliasing powers of 2.
 #
 
+code = '''
+#include <setjmp.h>
+
+// a powerloss callback that returns, so the interrupted operation
+// continues, the way the exhaustive runner branches
+__attribute__((unused))
+static void test_bd_powerloss_continue(void *data) {
+    (void)data;
+}
+
+// a powerloss callback that abandons the interrupted operation, the way
+// the linear runner does
+__attribute__((unused))
+static void test_bd_powerloss_longjmp(void *data) {
+    longjmp(*(jmp_buf*)data, 1);
+}
+
+// children for test_death
+__attribute__((unused))
+static void test_bd_death_survive(void *data) {
+    (void)data;
+}
+
+__attribute__((unused))
+static void test_bd_death_abort(void *data) {
+    (void)data;
+    abort();
+}
+
+__attribute__((unused))
+static void test_bd_death_assert(void *data) {
+    (void)data;
+    int test_bd_death_marker = 1;
+    assert(test_bd_death_marker == 2);
+}
+
+__attribute__((unused))
+static void test_bd_death_prog(void *data) {
+    const struct lfs3_cfg *cfg = data;
+    uint8_t buffer[cfg->prog_size];
+    memset(buffer, 'x', cfg->prog_size);
+    cfg->prog(cfg, 0, 0, buffer, cfg->prog_size) => 0;
+    assert(false);
+}
+'''
+
 [cases.test_bd_one_block]
 defines.READ = ['READ_SIZE', 'BLOCK_SIZE']
 defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
@@ -245,3 +291,607 @@ code = '''
     }
 '''
 
+
+# a powerloss whose callback returns must leave every block as if the
+# interrupted prog or erase had completed
+[cases.test_bd_powerloss_continue]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_continue,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    // lose power during a prog of block 1, then prog more of block 1
+    uint8_t buffer[PROG];
+    cfg.erase(&cfg, 0) => 0;
+    cfg.erase(&cfg, 1) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    memset(buffer, 'a', PROG);
+    cfg.prog(&cfg, 1, 0, buffer, PROG) => 0;
+    memset(buffer, 'b', PROG);
+    cfg.prog(&cfg, 1, PROG, buffer, PROG) => 0;
+
+    // lose power during an erase of block 0, then prog block 0
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    cfg.erase(&cfg, 0) => 0;
+    memset(buffer, 'c', PROG);
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+    lfs3_emubd_powercycles(&cfg) => 0;
+
+    cfg.read(&cfg, 0, 0, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'c');
+    }
+    cfg.read(&cfg, 1, 0, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'a');
+    }
+    cfg.read(&cfg, 1, PROG, buffer, PROG) => 0;
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        LFS3_ASSERT(buffer[j] == 'b');
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
+# the prog-once check must not fire on progs separated by erases, even
+# when the progged value matches the erase value
+[cases.test_bd_progonce]
+defines.CKPROGONCE = true
+defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
+defines.ERASE_VALUE = ['0xff', '0x00', '-1']
+code = '''
+    uint8_t buffer[PROG];
+    lfs3_emubd_blockprogs(CFG, 0) => 0;
+    lfs3_emubd_blockprogs(CFG, 1) => 0;
+
+    for (lfs3_size_t cycle = 0; cycle < 3; cycle++) {
+        CFG->erase(CFG, 0) => 0;
+        for (lfs3_off_t i = 0; i < CFG->block_size; i += PROG) {
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                buffer[j] = ((i+j) % 2 == 0)
+                        ? (uint8_t)ERASE_VALUE
+                        : (cycle+i+j) % 251;
+            }
+            CFG->prog(CFG, 0, i, buffer, PROG) => 0;
+        }
+
+        // one count per prog call
+        lfs3_emubd_blockprogs(CFG, 0) => (cycle+1)*(CFG->block_size/PROG);
+
+        for (lfs3_off_t i = 0; i < CFG->block_size; i += PROG) {
+            CFG->read(CFG, 0, i, buffer, PROG) => 0;
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                LFS3_ASSERT(buffer[j] == (((i+j) % 2 == 0)
+                        ? (uint8_t)ERASE_VALUE
+                        : (cycle+i+j) % 251));
+            }
+        }
+    }
+
+    // other blocks are untouched
+    lfs3_emubd_blockprogs(CFG, 1) => 0;
+
+    // an erase clears a block marked as programmed
+    lfs3_emubd_mkprogged(CFG, 1) => 0;
+    CFG->erase(CFG, 1) => 0;
+    memset(buffer, 0x55, PROG);
+    CFG->prog(CFG, 1, 0, buffer, PROG) => 0;
+    lfs3_emubd_blockprogs(CFG, 1) => 1;
+'''
+
+# an interrupted prog or erase that then continues must not trip the
+# prog-once check, and counts as one prog
+[cases.test_bd_progonce_powerloss]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.PROG = ['PROG_SIZE', '4*PROG_SIZE']
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_continue,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    for (lfs3_size_t cycle = 0; cycle < 2; cycle++) {
+        // lose power during the erase on the second cycle
+        if (cycle > 0) {
+            lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+        }
+        cfg.erase(&cfg, 0) => 0;
+
+        // lose power during the first prog
+        lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+        for (lfs3_off_t i = 0; i < 4*PROG; i += PROG) {
+            memset(buffer, 'a'+cycle+i/PROG, PROG);
+            cfg.prog(&cfg, 0, i, buffer, PROG) => 0;
+        }
+        lfs3_emubd_powercycles(&cfg) => 0;
+        lfs3_emubd_blockprogs(&cfg, 0) => (cycle+1)*4;
+
+        for (lfs3_off_t i = 0; i < 4*PROG; i += PROG) {
+            cfg.read(&cfg, 0, i, buffer, PROG) => 0;
+            for (lfs3_off_t j = 0; j < PROG; j++) {
+                LFS3_ASSERT(buffer[j] == 'a'+cycle+i/PROG);
+            }
+        }
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
+# only the nth op of the given kind fails, with the given error, and the
+# failed op changes nothing
+[cases.test_bd_ioerror]
+defines.OP = [
+    'LFS3_EMUBD_OP_READ',
+    'LFS3_EMUBD_OP_PROG',
+    'LFS3_EMUBD_OP_ERASE',
+]
+defines.ERR = ['0', 'LFS3_ERR_CORRUPT']
+defines.N = [1, 2, 5]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    uint8_t buffer[SIZE];
+    lfs3_block_t scratch = 2*N;
+    for (lfs3_block_t b = 0; b < 2*N; b++) {
+        CFG->erase(CFG, b) => 0;
+        memset(buffer, 'a'+b, SIZE);
+        CFG->prog(CFG, b, 0, buffer, SIZE) => 0;
+    }
+    CFG->erase(CFG, scratch) => 0;
+
+    lfs3_emubd_ioerror(CFG, OP) => 0;
+    lfs3_emubd_mkioerror(CFG, OP, N, ERR) => 0;
+    lfs3_emubd_ioerror(CFG, OP) => N;
+
+    for (lfs3_block_t b = 0; b < 2*N; b++) {
+        bool fail = (b+1 == N);
+        int err = (fail) ? ((ERR) ? ERR : LFS3_ERR_IO) : 0;
+
+        // ops of other kinds don't count
+        if (OP != LFS3_EMUBD_OP_READ) {
+            CFG->read(CFG, scratch, 0, buffer, SIZE) => 0;
+        }
+        if (OP != LFS3_EMUBD_OP_PROG) {
+            memset(buffer, 'z', SIZE);
+            CFG->prog(CFG, scratch, b*SIZE, buffer, SIZE) => 0;
+        }
+        if (OP != LFS3_EMUBD_OP_ERASE) {
+            CFG->erase(CFG, scratch+1) => 0;
+        }
+
+        if (OP == LFS3_EMUBD_OP_READ) {
+            memset(buffer, 0xcc, SIZE);
+            CFG->read(CFG, b, 0, buffer, SIZE) => err;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? 0xcc : 'a'+b));
+            }
+
+        } else if (OP == LFS3_EMUBD_OP_PROG) {
+            memset(buffer, 'A'+b, SIZE);
+            CFG->prog(CFG, b, SIZE, buffer, SIZE) => err;
+            CFG->read(CFG, b, SIZE, buffer, SIZE) => 0;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? ERASE_VALUE : 'A'+b));
+            }
+
+        } else if (OP == LFS3_EMUBD_OP_ERASE) {
+            CFG->erase(CFG, b) => err;
+            CFG->read(CFG, b, 0, buffer, SIZE) => 0;
+            for (lfs3_off_t j = 0; j < SIZE; j++) {
+                assert(buffer[j] == ((fail) ? 'a'+b : ERASE_VALUE));
+            }
+        }
+    }
+
+    // only the nth op failed
+    lfs3_emubd_ioerror(CFG, OP) => 0;
+'''
+
+# only the nth sync fails, while mkbadsync fails every sync until
+# mkgoodsync
+[cases.test_bd_badsync]
+defines.N = [1, 2, 5]
+defines.ERR = ['0', 'LFS3_ERR_CORRUPT']
+code = '''
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, N, ERR) => 0;
+    lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) => N;
+    for (lfs3_size_t i = 0; i < 2*N; i++) {
+        CFG->sync(CFG) => (i+1 == N) ? ((ERR) ? ERR : LFS3_ERR_IO) : 0;
+    }
+    lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) => 0;
+
+    lfs3_emubd_mkbadsync(CFG) => 0;
+    for (lfs3_size_t i = 0; i < 2*N; i++) {
+        CFG->sync(CFG) => LFS3_ERR_IO;
+    }
+    lfs3_emubd_mkgoodsync(CFG) => 0;
+    CFG->sync(CFG) => 0;
+'''
+
+# a failed sync must not make writes durable, under OOO a later powerloss
+# reverts them
+[cases.test_bd_badsync_ooo]
+defines.BAD = [false, true]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_OOO,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[SIZE];
+    cfg.erase(&cfg, 0) => 0;
+    cfg.erase(&cfg, 1) => 0;
+    cfg.sync(&cfg) => 0;
+
+    memset(buffer, 'b', SIZE);
+    cfg.prog(&cfg, 1, 0, buffer, SIZE) => 0;
+    if (BAD) {
+        lfs3_emubd_mkioerror(&cfg, LFS3_EMUBD_OP_SYNC, 1, 0) => 0;
+        cfg.sync(&cfg) => LFS3_ERR_IO;
+    } else {
+        cfg.sync(&cfg) => 0;
+    }
+
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.erase(&cfg, 0) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.read(&cfg, 1, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == ((BAD) ? ERASE_VALUE : 'b'));
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
+# the next n reads of a block fail with LFS3_ERR_CORRUPT, then reads of
+# the intact data succeed, other blocks are unaffected
+[cases.test_bd_transient]
+defines.N = [1, 3]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+code = '''
+    uint8_t buffer[SIZE];
+    for (lfs3_block_t b = 0; b < 2; b++) {
+        CFG->erase(CFG, b) => 0;
+        memset(buffer, 'a'+b, SIZE);
+        CFG->prog(CFG, b, 0, buffer, SIZE) => 0;
+    }
+
+    lfs3_emubd_transient(CFG, 0) => 0;
+    lfs3_emubd_mktransient(CFG, 0, N) => 0;
+    lfs3_emubd_transient(CFG, 0) => N;
+
+    // a copy, as the exhaustive runner makes, keeps its own count
+    lfs3_emubd_t copy;
+    lfs3_emubd_cpy(CFG, &copy) => 0;
+    struct lfs3_cfg copy_cfg = *CFG;
+    copy_cfg.context = &copy;
+
+    for (lfs3_size_t i = 0; i < N; i++) {
+        CFG->read(CFG, 1, 0, buffer, SIZE) => 0;
+        memset(buffer, 0xcc, SIZE);
+        CFG->read(CFG, 0, 0, buffer, SIZE) => LFS3_ERR_CORRUPT;
+        for (lfs3_off_t j = 0; j < SIZE; j++) {
+            assert(buffer[j] == 0xcc);
+        }
+    }
+    lfs3_emubd_transient(CFG, 0) => 0;
+    CFG->read(CFG, 0, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == 'a');
+    }
+
+    lfs3_emubd_transient(&copy_cfg, 0) => N;
+    copy_cfg.read(&copy_cfg, 0, 0, buffer, SIZE) => LFS3_ERR_CORRUPT;
+    lfs3_emubd_destroy(&copy_cfg) => 0;
+
+    // 0 clears
+    lfs3_emubd_mktransient(CFG, 1, N) => 0;
+    lfs3_emubd_mktransient(CFG, 1, 0) => 0;
+    CFG->read(CFG, 1, 0, buffer, SIZE) => 0;
+    for (lfs3_off_t j = 0; j < SIZE; j++) {
+        assert(buffer[j] == 'b');
+    }
+'''
+
+# a torn tail leaves the first prog_size bytes erased and progs a run of
+# the bytes after them, with one bit flipped
+[cases.test_bd_torntail]
+defines.PROG = ['PROG_SIZE', '2*PROG_SIZE', '16*PROG_SIZE']
+defines.BD_SEED = 'range(4)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_TORNTAIL,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .seed = BD_SEED,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t wbuf[PROG];
+    for (lfs3_off_t j = 0; j < PROG; j++) {
+        wbuf[j] = 'a' + j%26;
+    }
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, wbuf, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    uint8_t rbuf[PROG];
+    cfg.read(&cfg, 0, 0, rbuf, PROG) => 0;
+    // the head is erased
+    for (lfs3_off_t j = 0; j < PROG_SIZE; j++) {
+        assert(rbuf[j] == ERASE_VALUE);
+    }
+    if (PROG == PROG_SIZE) {
+        lfs3_emubd_blockprogs(&cfg, 0) => 0;
+    } else {
+        // then a run of progged bytes with one flipped bit, then erased
+        // bytes
+        lfs3_off_t j = PROG_SIZE;
+        lfs3_size_t flipped = 0;
+        while (j < PROG && rbuf[j] != ERASE_VALUE) {
+            flipped += lfs3_popc(rbuf[j] ^ wbuf[j]);
+            j += 1;
+        }
+        assert(j > PROG_SIZE);
+        assert(flipped == 1);
+        for (; j < PROG; j++) {
+            assert(rbuf[j] == ERASE_VALUE);
+        }
+        lfs3_emubd_blockprogs(&cfg, 0) => 1;
+    }
+
+    // the head was not programmed, so it can be programmed
+    cfg.prog(&cfg, 0, 0, wbuf, PROG_SIZE) => 0;
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
+# lfs3_malloc and lfs3_free go through the runner's hooks, which count
+# them and can fail the nth lfs3_malloc
+[cases.test_bd_malloc]
+code = '''
+    assert(test_malloc_count == 0);
+    assert(test_malloc_live == 0);
+    void *p = lfs3_malloc(16);
+    assert(p);
+    assert(test_malloc_count == 1);
+    assert(test_malloc_live == 1);
+    lfs3_free(p);
+    lfs3_free(NULL);
+    assert(test_malloc_count == 1);
+    assert(test_malloc_live == 0);
+
+    // only the nth call fails
+    test_malloc_fail = 2;
+    void *a = lfs3_malloc(16);
+    void *b = lfs3_malloc(16);
+    void *c = lfs3_malloc(16);
+    assert(a && !b && c);
+    assert(test_malloc_count == 4);
+    assert(test_malloc_live == 2);
+    lfs3_free(a);
+    lfs3_free(c);
+    assert(test_malloc_live == 0);
+
+    // littlefs's own allocations go through the hooks
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    size_t mallocs = test_malloc_count;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    size_t n = test_malloc_count - mallocs;
+    assert(n > 0);
+    assert(test_malloc_live == n);
+    lfs3_unmount(&lfs3) => 0;
+    assert(test_malloc_live == 0);
+
+    // so failing any of them fails the mount, without leaking
+    for (size_t i = 1; i <= n; i++) {
+        memset(&lfs3, 0xab, sizeof(lfs3));
+        test_malloc_fail = i;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
+        assert(test_malloc_live == 0);
+    }
+'''
+
+# test_death reports how a child died, and the child's counters, without
+# its writes reaching the parent
+[cases.test_bd_death]
+code = '''
+    test_death(CFG, "", test_bd_death_survive, NULL) => TEST_DEATH_SURVIVED;
+    test_death(CFG, "", test_bd_death_abort, NULL) => TEST_DEATH_KILLED;
+
+    // match any assert, the report, or the source line
+    test_death(CFG, "", test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "assert failed with 1",
+            test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "test_bd_death_marker == 2",
+            test_bd_death_assert, NULL) => TEST_DEATH_DIED;
+    test_death(CFG, "test_bd_death_marker == 3",
+            test_bd_death_assert, NULL) => TEST_DEATH_MISMATCH;
+
+    CFG->erase(CFG, 0) => 0;
+    lfs3_emubd_sio_t progged = lfs3_emubd_progged(CFG);
+    test_death(CFG, "", test_bd_death_prog, (void*)CFG) => TEST_DEATH_DIED;
+    assert(TEST_DEATH.progged == (uint64_t)progged + PROG_SIZE);
+    lfs3_emubd_progged(CFG) => progged;
+
+    // the block is still erased here
+    uint8_t buffer[PROG_SIZE];
+    memset(buffer, 'y', PROG_SIZE);
+    CFG->prog(CFG, 0, 0, buffer, PROG_SIZE) => 0;
+'''
+
+# a death case passes when the permutation dies on a matching assert, and
+# its death_code sees the child's counters since lfs3_emubd_simreset
+[cases.test_bd_death_case]
+defines.SIZE = 'LFS3_MAX(READ_SIZE, PROG_SIZE)'
+death = 'test_bd_death_case_marker'
+code = '''
+    uint8_t buffer[SIZE];
+    CFG->erase(CFG, 0) => 0;
+    memset(buffer, 'a', SIZE);
+    CFG->prog(CFG, 0, 0, buffer, SIZE) => 0;
+    CFG->read(CFG, 0, 0, buffer, SIZE) => 0;
+    lfs3_emubd_simreset(CFG) => 0;
+
+    CFG->prog(CFG, 0, SIZE, buffer, SIZE) => 0;
+    bool test_bd_death_case_marker = false;
+    assert(test_bd_death_case_marker);
+'''
+death_code = '''
+    assert(TEST_DEATH.progged == SIZE);
+    assert(TEST_DEATH.readed == 0);
+    assert(TEST_DEATH.erased == 0);
+'''
+
+# with ck_progonce, a prog over programmed bytes fails the test, even
+# bytes programmed with the erase value, and before the prog counts
+[cases.test_bd_death_progonce]
+defines.CKPROGONCE = true
+defines.PROG = ['PROG_SIZE', 'BLOCK_SIZE']
+defines.MKPROGGED = [false, true]
+death = 'prog-once check failed'
+code = '''
+    uint8_t buffer[PROG];
+    memset(buffer, (uint8_t)ERASE_VALUE, PROG);
+    CFG->erase(CFG, 0) => 0;
+    if (MKPROGGED) {
+        lfs3_emubd_mkprogged(CFG, 0) => 0;
+    } else {
+        CFG->prog(CFG, 0, 0, buffer, PROG) => 0;
+    }
+
+    lfs3_emubd_simreset(CFG) => 0;
+    CFG->prog(CFG, 0, 0, buffer, PROG) => 0;
+'''
+death_code = '''
+    assert(TEST_DEATH.progged == 0);
+'''
+
+# an interrupted prog that writes something marks what it wrote, so
+# programming the same range again fails
+[cases.test_bd_death_progonce_powerloss]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.PROG = '4*PROG_SIZE'
+death = 'prog-once check failed'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    memset(buffer, 'a', PROG);
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+'''
+
+# an interrupted prog that writes nothing marks nothing
+[cases.test_bd_progonce_interrupted]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.PROG = '4*PROG_SIZE'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .ck_progonce = true,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    uint8_t buffer[PROG];
+    memset(buffer, 'a', PROG);
+    cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    cfg.prog(&cfg, 0, 0, buffer, PROG) => 0;
+    lfs3_emubd_blockprogs(&cfg, 0) => 1;
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''

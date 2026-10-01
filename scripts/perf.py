@@ -55,9 +55,9 @@ class CsvInt(co.namedtuple('CsvInt', 'a')):
                 a = int(a, 0)
             except ValueError:
                 # also accept +-∞ and +-inf
-                if re.match('^\s*\+?\s*(?:∞|inf)\s*$', a):
+                if re.match('^\\s*\\+?\\s*(?:∞|inf)\\s*$', a):
                     a = mt.inf
-                elif re.match('^\s*-\s*(?:∞|inf)\s*$', a):
+                elif re.match('^\\s*-\\s*(?:∞|inf)\\s*$', a):
                     a = -mt.inf
                 else:
                     raise
@@ -369,9 +369,9 @@ def collect_syms(obj_path, global_=False, sections=None, *,
     symbol_pattern = re.compile(
             '^(?P<addr>[0-9a-fA-F]+)'
                 ' (?P<scope>.).*'
-                '\s+(?P<section>[^\s]+)'
-                '\s+(?P<size>[0-9a-fA-F]+)'
-                '\s+(?P<name>[^\s]+)\s*$')
+                '\\s+(?P<section>[^\\s]+)'
+                '\\s+(?P<size>[0-9a-fA-F]+)'
+                '\\s+(?P<name>[^\\s]+)\\s*$')
 
     # find symbol addresses and sizes
     syms = []
@@ -508,19 +508,19 @@ def collect_dwarf_lines(obj_path, *,
         **args):
     line_pattern = re.compile(
             # matches dir/file table
-            '^\s*(?P<no>[0-9]+)'
-                    '(?:\s+(?P<dir>[0-9]+))?'
-                    '.*\s+(?P<path>[^\s]+)\s*$'
+            '^\\s*(?P<no>[0-9]+)'
+                    '(?:\\s+(?P<dir>[0-9]+))?'
+                    '.*\\s+(?P<path>[^\\s]+)\\s*$'
                 # matches line opcodes
-                '|' '^\s*\[[^\]]*\]' '(?:'
-                    '\s+(?P<op_special>Special)'
-                        '|' '\s+(?P<op_copy>Copy)'
-                        '|' '\s+(?P<op_end>End of Sequence)'
-                        '|' '\s+File.*?to.*?(?P<op_file>[0-9]+)'
-                        '|' '\s+Line.*?to.*?(?P<op_line>[0-9]+)'
-                        '|' '\s+(?:Address|PC)'
-                            '\s+.*?to.*?(?P<op_addr>[0xX0-9a-fA-F]+)'
-                        '|' '\s+[^\s]+' ')+\s*$',
+                '|' '^\\s*\\[[^\\]]*\\]' '(?:'
+                    '\\s+(?P<op_special>Special)'
+                        '|' '\\s+(?P<op_copy>Copy)'
+                        '|' '\\s+(?P<op_end>End of Sequence)'
+                        '|' '\\s+File.*?to.*?(?P<op_file>[0-9]+)'
+                        '|' '\\s+Line.*?to.*?(?P<op_line>[0-9]+)'
+                        '|' '\\s+(?:Address|PC)'
+                            '\\s+.*?to.*?(?P<op_addr>[0xX0-9a-fA-F]+)'
+                        '|' '\\s+[^\\s]+' ')+\\s*$',
             re.IGNORECASE)
 
     # state machine for dwarf line numbers, note that objdump's
@@ -590,15 +590,15 @@ def collect_decompressed(path, *,
         depth=1,
         **args):
     sample_pattern = re.compile(
-            '(?P<comm>\w+)'
-            '\s+(?P<pid>\w+)'
-            '\s+(?P<time>[\w.]+):'
-            '\s*(?P<period>\w+)'
-            '\s+(?P<event>[^:]+):')
+            '(?P<comm>\\w+)'
+            '\\s+(?P<pid>\\w+)'
+            '\\s+(?P<time>[\\w.]+):'
+            '\\s*(?P<period>\\w+)'
+            '\\s+(?P<event>[^:]+):')
     frame_pattern = re.compile(
-            '\s+(?P<addr>\w+)'
-            '\s+(?P<sym>[^\s\+]+)(?:\+(?P<off>\w+))?'
-            '\s+\((?P<dso>[^\)]+)\)')
+            '\\s+(?P<addr>\\w+)'
+            '\\s+(?P<sym>[^\\s\\+]+)(?:\\+(?P<off>\\w+))?'
+            '\\s+\\((?P<dso>[^\\)]+)\\)')
     events = {
             'cycles':           'cycles',
             'branch-misses':    'bmisses',
@@ -723,7 +723,7 @@ def collect_decompressed(path, *,
                         if line_ is not None:
                             file, line = line_.file, line_.line
                         else:
-                            file, line = re.sub('(\.o)?$', '.c', dso, 1), 0
+                            file, line = re.sub('(\\.o)?$', '.c', dso, 1), 0
 
                         # ignore filtered sources
                         if sources is not None:
@@ -750,7 +750,7 @@ def collect_decompressed(path, *,
 
                         at_cache[(dso,addr)] = file, line
                 else:
-                    file, line = re.sub('(\.o)?$', '.c', dso, 1), 0
+                    file, line = re.sub('(\\.o)?$', '.c', dso, 1), 0
 
                 # strip compiler suffixes
                 if not no_strip:
