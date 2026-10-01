@@ -915,8 +915,8 @@ defines.PROG_SIZE = [1, 16, 256]
 defines.CHUNK = [16, 64]
 defines.FILES = [1, 2]
 defines.SIZE = '2*BLOCK_SIZE + BLOCK_SIZE/2'
-# turns on emubd's prog-once check where emubd supports it
-defines.CKPROGONCE = false
+# no byte may be programmed twice without an erase
+defines.CKPROGONCE = true
 reentrant = true
 code = '''
     // format once per test
