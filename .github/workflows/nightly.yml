@@ -1,0 +1,269 @@
+name: nightly
+on:
+  # run every night, note GitHub only runs schedules from the default
+  # branch's copy of this file
+  schedule:
+    - cron: '0 4 * * *'
+  # or run by hand on any branch
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash -euv -o pipefail {0}
+
+env:
+  CFLAGS: -Werror
+  MAKEFLAGS: -j
+  TESTFLAGS: -k
+  BENCHFLAGS:
+
+jobs:
+  # test other geometries
+  #
+  # v3 has no -G, so geometries are just define overrides. Note we
+  # override READ/PROG/ERASE_SIZE and not BLOCK_SIZE, since some suites
+  # need specific block sizes and -D overrides those too.
+  test-geometry:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        geometry: [eeprom, prog16, emmc, nand, bignand]
+        build: [default, biggest]
+        include:
+          - geometry: eeprom
+            defines: -DREAD_SIZE=1 -DPROG_SIZE=1 -DERASE_SIZE=512
+          - geometry: prog16
+            defines: -DREAD_SIZE=16 -DPROG_SIZE=16 -DERASE_SIZE=512
+          - geometry: emmc
+            defines: -DREAD_SIZE=512 -DPROG_SIZE=512 -DERASE_SIZE=512
+          - geometry: nand
+            defines: -DREAD_SIZE=4096 -DPROG_SIZE=4096 -DERASE_SIZE=32768
+          - geometry: bignand
+            defines: >-
+              -DREAD_SIZE=2048 -DPROG_SIZE=2048 -DERASE_SIZE=131072
+              -DDISK_SIZE=16777216
+          - build: biggest
+            cflags: -DLFS3_BIGGEST
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-geometry
+        run: |
+          CFLAGS="$CFLAGS ${{matrix.cflags}}" \
+          TESTFLAGS="$TESTFLAGS ${{matrix.defines}}" \
+            make test
+
+  # test other erase values, -1 simulates erase as a noop
+  test-erase-value:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        value: ['0x00', '-1']
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-erase-value
+        run: |
+          TESTFLAGS="$TESTFLAGS -DERASE_VALUE=${{matrix.value}}" make test
+
+  # run as many exhaustive tests as fits in GitHub's time limits
+  #
+  # this grows exponentially, so it doesn't turn out to be that many
+  test-pls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        pls: [1, 2]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-pls
+        if: ${{matrix.pls <= 1}}
+        run: |
+          TESTFLAGS="$TESTFLAGS -P'permute(${{matrix.pls}})'" make test
+      # >=2pls takes multiple days to run fully, so we can only
+      # run a subset of tests, these are the most important
+      - name: test-limited-pls
+        if: ${{matrix.pls > 1}}
+        run: |
+          TESTFLAGS="$TESTFLAGS -P'permute(${{matrix.pls}})' \
+              test_dirs test_relocations test_powerloss" \
+            make test
+
+  # run the reentrant tests with the other powerloss behaviors, by
+  # default only test_powerloss tests these
+  test-powerloss-behavior:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        behavior: [0, 1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      # non-reentrant tests only run without powerloss, so -Plinear
+      # selects the reentrant tests
+      - name: test-powerloss-behavior
+        run: |
+          TESTFLAGS="$TESTFLAGS -Plinear \
+              -DPOWERLOSS_BEHAVIOR=${{matrix.behavior}}" \
+            make test
+
+  # run with each LFS3_YES_* option, which force the relevant feature on
+  #
+  # LFS3_YES_GBMAP runs on every push, and LFS3_YES_RDONLY can't run the
+  # tests
+  test-yes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        yes:
+          - FLUSH
+          - SYNC
+          - REVPERTURB
+          - REVNOISE
+          - CKPROGS
+          - CKFETCHES
+          - CKMETAPARITY
+          - CKDATACKSUMS
+          - GC
+          - BLEAFCACHE
+          - TRACE
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-yes
+        run: |
+          CFLAGS="$CFLAGS -DLFS3_YES_${{matrix.yes}}" make test
+
+  # run benchmarks
+  #
+  # note there's no real benefit to running these on multiple archs
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        disk: [nor, nand]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: bench
+        run: |
+          # disk geometry
+          export BENCH_${{matrix.disk == 'nand' && 'NAND' || 'NOR'}}=1
+
+          PERFBDGEN=1 make bench
+
+          # find bench results
+          make lfs3.bench.csv
+          ./scripts/csv.py lfs3.bench.csv \
+            -Uprobe=stack,heap,usage \
+            -bsuite \
+            -freaded=bench_readed \
+            -fprogged=bench_progged \
+            -ferased=bench_erased
+          mkdir -p bench
+          cp lfs3.bench.csv bench/${{matrix.disk}}.bench.csv
+
+          # find perfbd results
+          make lfs3.perfbd.csv
+          ./scripts/perfbd.py -u lfs3.perfbd.csv
+          mkdir -p bench
+          cp lfs3.perfbd.csv bench/${{matrix.disk}}.perfbd.csv
+
+      # create bench statuses
+      - name: upload-bench
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-${{matrix.disk}}
+          path: bench
+      - name: status-bench
+        run: |
+          mkdir -p status
+          f=bench/${{matrix.disk}}.bench.csv
+          for s in readed progged erased
+          do
+            export STEP="bench"
+            export CONTEXT="bench (${{matrix.disk}}) / $s"
+            export PREV="$(curl -sS \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/status/master`
+                `?per_page=100" \
+              | jq -re 'select(.sha != env.GITHUB_SHA) | .statuses[]
+                | select(.context == env.CONTEXT).description
+                | capture("(?<prev>[0-9]+)").prev' \
+              || echo 0)"
+            export DESCRIPTION="$(./scripts/csv.py $f \
+                -Uprobe=stack,heap,usage \
+                -f$s=bench_$s -Y \
+              | awk '
+                NR==2 {$1=0; printf "%s B",$NF}
+                NR==2 && ENVIRON["PREV"]+0 != 0 {
+                  printf " (%+.1f%%)",100*($NF-ENVIRON["PREV"])/ENVIRON["PREV"]
+                }')"
+            jq -n '{
+              state: "success",
+              context: env.CONTEXT,
+              description: env.DESCRIPTION,
+              target_job: "${{github.job}} (${{matrix.disk}})",
+              target_step: env.STEP,
+            }' | tee status/$(basename $f .csv)-$s.json
+          done
+      - name: upload-status-bench
+        uses: actions/upload-artifact@v4
+        with:
+          name: status-bench-${{matrix.disk}}
+          path: status
+          retention-days: 1
