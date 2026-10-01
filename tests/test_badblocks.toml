@@ -6716,3 +6716,89 @@ code = '''
     lfs3_file_close(&lfs3, &file) => 0;
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test a file's last block going bad after a sync, so appending can't
+# resume in the block and needs to relocate
+[cases.test_badblocks_resume_append]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_PROGFLIP',
+]
+# we need prog checking to detect silent prog errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_PROGNOOP'
+defines.PROG_SIZE = [1, 16]
+defines.REOPEN = [false, true]
+defines.SIZE = 2000
+defines.APPEND = 64
+defines.SEED = 42
+if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
+in = 'lfs3.c'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0);
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // write and sync a file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    uint8_t sim[SIZE+APPEND];
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < SIZE+APPEND; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // find the block holding our last byte and mark it bad, mark the
+    // first unwritten bit so flipping progs hit it
+    lfs3_bid_t bid;
+    lfs3_bid_t weight;
+    lfs3_bptr_t bptr;
+    lfs3_file_lookupnext(&lfs3, &file, SIZE-1,
+            &bid, &weight, &bptr) => 0;
+    assert(lfs3_bptr_isbptr(&bptr));
+    lfs3_block_t badblock = lfs3_bptr_block(&bptr);
+    lfs3_emubd_mkbadbit(CFG, badblock, 8*lfs3_bptr_cksize(&bptr)) => 0;
+
+    if (REOPEN) {
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_APPEND) => 0;
+    }
+
+    // append
+    lfs3_file_write(&lfs3, &file, &sim[SIZE], APPEND) => APPEND;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_size(&lfs3, &file) => SIZE+APPEND;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, flags, CFG) => 0;
+        }
+
+        // check our file
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == SIZE+APPEND);
+
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[2*(SIZE+APPEND)];
+        lfs3_file_read(&lfs3, &file, rbuf, 2*(SIZE+APPEND))
+                => SIZE+APPEND;
+        assert(memcmp(rbuf, sim, SIZE+APPEND) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
