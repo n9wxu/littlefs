@@ -15299,8 +15299,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_RDONLY(0, LFS3_GC_COMPACT)
                 | LFS3_GC_CKMETA
                 | LFS3_GC_CKDATA)) == 0);
+    #endif
 
-    // check that gc_compact_thresh makes sense
+    // check that gc_compact_thresh makes sense, note this is also used
+    // by LFS3_M_COMPACT and lfs3_fs_ck without LFS3_GC
     //
     // metadata can't be compacted below block_size/2, and metadata can't
     // exceed a block
@@ -15309,7 +15311,6 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
             || lfs3->cfg->gc_compact_thresh >= lfs3->cfg->block_size/2);
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == (lfs3_size_t)-1
             || lfs3->cfg->gc_compact_thresh <= lfs3->cfg->block_size);
-    #endif
     #endif
 
     #ifndef LFS3_RDONLY
