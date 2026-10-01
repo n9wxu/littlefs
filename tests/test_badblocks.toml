@@ -27,6 +27,220 @@ static int test_badblocks_sync(const struct lfs3_cfg *cfg) {
     test_badblocks_syncs += 1;
     return 0;
 }
+
+// a model for the reentrant workloads, files map to the step that wrote
+// their contents, and the contents are a pure function of that step
+#define TEST_BADBLOCKS_PL_MAX 64
+
+typedef struct test_badblocks_plsim {
+    int32_t files[TEST_BADBLOCKS_PL_MAX];
+    bool dirs[TEST_BADBLOCKS_PL_MAX];
+} test_badblocks_plsim_t;
+
+enum test_badblocks_plop_kind {
+    TEST_BADBLOCKS_PL_WRITE,
+    TEST_BADBLOCKS_PL_REMOVE,
+    TEST_BADBLOCKS_PL_RENAME,
+    TEST_BADBLOCKS_PL_MKDIR,
+    TEST_BADBLOCKS_PL_RMDIR,
+    TEST_BADBLOCKS_PL_MVDIR,
+    TEST_BADBLOCKS_PL_NOOP,
+};
+
+typedef struct test_badblocks_plop {
+    int kind;
+    lfs3_size_t x;
+    lfs3_size_t y;
+} test_badblocks_plop_t;
+
+static lfs3_size_t test_badblocks_plsize(lfs3_size_t step,
+        lfs3_size_t block_size) {
+    return (step % 3 == 0) ? 2*block_size
+            : (step % 3 == 1) ? block_size/2
+            : 16;
+}
+
+static void test_badblocks_plgen(uint32_t seed, lfs3_size_t step,
+        uint8_t *buffer, lfs3_size_t size) {
+    uint32_t prng = seed ^ (0x9e3779b9 * (step+1));
+    for (lfs3_size_t i = 0; i < size; i++) {
+        buffer[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+}
+
+// pick a random existing entry, or -1 if there are none
+static lfs3_size_t test_badblocks_plpick(uint32_t *prng,
+        const test_badblocks_plsim_t *sim, bool dirs, lfs3_size_t n) {
+    lfs3_size_t count = 0;
+    for (lfs3_size_t i = 0; i < n; i++) {
+        count += (dirs) ? sim->dirs[i] : (sim->files[i] >= 0);
+    }
+    if (count == 0) {
+        return -1;
+    }
+
+    lfs3_size_t j = TEST_PRNG(prng) % count;
+    for (lfs3_size_t i = 0; i < n; i++) {
+        if ((dirs) ? sim->dirs[i] : (sim->files[i] >= 0)) {
+            if (j == 0) {
+                return i;
+            }
+            j -= 1;
+        }
+    }
+    LFS3_UNREACHABLE();
+}
+
+// choose the next operation and play it out in our model
+static test_badblocks_plop_t test_badblocks_plstep(uint32_t *prng,
+        test_badblocks_plsim_t *sim, lfs3_size_t step, lfs3_size_t n) {
+    test_badblocks_plop_t op;
+    op.kind = TEST_PRNG(prng) % 6;
+    op.x = TEST_PRNG(prng) % n;
+    op.y = TEST_PRNG(prng) % n;
+
+    // removing or renaming needs something to remove or rename
+    if (op.kind == TEST_BADBLOCKS_PL_REMOVE
+            || op.kind == TEST_BADBLOCKS_PL_RENAME
+            || op.kind == TEST_BADBLOCKS_PL_RMDIR
+            || op.kind == TEST_BADBLOCKS_PL_MVDIR) {
+        bool dirs = (op.kind >= TEST_BADBLOCKS_PL_MKDIR);
+        op.x = test_badblocks_plpick(prng, sim, dirs, n);
+        if (op.x == (lfs3_size_t)-1) {
+            op.kind = (dirs) ? TEST_BADBLOCKS_PL_MKDIR : TEST_BADBLOCKS_PL_WRITE;
+            op.x = op.y;
+        }
+    }
+
+    switch (op.kind) {
+    case TEST_BADBLOCKS_PL_WRITE:;
+        sim->files[op.x] = step;
+        break;
+    case TEST_BADBLOCKS_PL_REMOVE:;
+        sim->files[op.x] = -1;
+        break;
+    case TEST_BADBLOCKS_PL_RENAME:;
+        if (op.x == op.y) {
+            op.kind = TEST_BADBLOCKS_PL_NOOP;
+            break;
+        }
+        sim->files[op.y] = sim->files[op.x];
+        sim->files[op.x] = -1;
+        break;
+    case TEST_BADBLOCKS_PL_MKDIR:;
+        if (sim->dirs[op.x]) {
+            op.kind = TEST_BADBLOCKS_PL_NOOP;
+            break;
+        }
+        sim->dirs[op.x] = true;
+        break;
+    case TEST_BADBLOCKS_PL_RMDIR:;
+        sim->dirs[op.x] = false;
+        break;
+    case TEST_BADBLOCKS_PL_MVDIR:;
+        // don't rename over dirs
+        if (sim->dirs[op.y]) {
+            op.kind = TEST_BADBLOCKS_PL_NOOP;
+            break;
+        }
+        sim->dirs[op.y] = true;
+        sim->dirs[op.x] = false;
+        break;
+    default:;
+        LFS3_UNREACHABLE();
+    }
+
+    return op;
+}
+
+// does the disk match our model? asserts on anything that isn't a
+// mismatch
+static bool test_badblocks_plck(lfs3_t *lfs3,
+        const test_badblocks_plsim_t *sim, lfs3_size_t n, uint32_t seed,
+        lfs3_size_t block_size) {
+    // check what's in the root dir
+    bool seen_files[TEST_BADBLOCKS_PL_MAX] = {false};
+    bool seen_dirs[TEST_BADBLOCKS_PL_MAX] = {false};
+    lfs3_dir_t dir;
+    int err = lfs3_dir_open(lfs3, &dir, "/");
+    assert(!err);
+    while (true) {
+        struct lfs3_info info;
+        err = lfs3_dir_read(lfs3, &dir, &info);
+        assert(!err || err == LFS3_ERR_NOENT);
+        if (err == LFS3_ERR_NOENT) {
+            break;
+        }
+        if (strcmp(info.name, ".") == 0
+                || strcmp(info.name, "..") == 0
+                || strcmp(info.name, "state") == 0) {
+            continue;
+        }
+
+        unsigned x;
+        char c;
+        int d = sscanf(info.name, "%c%03x", &c, &x);
+        assert(d == 2 && (c == 'f' || c == 'd') && x < n);
+        if (c == 'f') {
+            assert(info.type == LFS3_TYPE_REG);
+            seen_files[x] = true;
+        } else {
+            assert(info.type == LFS3_TYPE_DIR);
+            seen_dirs[x] = true;
+        }
+    }
+    err = lfs3_dir_close(lfs3, &dir);
+    assert(!err);
+
+    for (lfs3_size_t x = 0; x < n; x++) {
+        if (seen_dirs[x] != sim->dirs[x]
+                || seen_files[x] != (sim->files[x] >= 0)) {
+            return false;
+        }
+    }
+
+    // check each file's step attribute and contents
+    for (lfs3_size_t x = 0; x < n; x++) {
+        if (sim->files[x] < 0) {
+            continue;
+        }
+
+        char name[256];
+        sprintf(name, "f%03x", (unsigned)x);
+        int32_t step = -1;
+        struct lfs3_attr attrs[] = {{
+            .type = 's',
+            .flags = LFS3_A_RDONLY,
+            .buffer = &step,
+            .buffer_size = sizeof(step),
+        }};
+        struct lfs3_file_cfg filecfg = {
+            .attrs = attrs,
+            .attr_count = 1,
+        };
+        lfs3_file_t file;
+        err = lfs3_file_opencfg(lfs3, &file, name, LFS3_O_RDONLY, &filecfg);
+        assert(!err);
+        // the step attribute should always match the data
+        lfs3_size_t size = test_badblocks_plsize(step, block_size);
+        uint8_t *wbuf = malloc(size);
+        uint8_t *rbuf = malloc(size+1);
+        test_badblocks_plgen(seed, step, wbuf, size);
+        lfs3_ssize_t d = lfs3_file_read(lfs3, &file, rbuf, size+1);
+        assert(d == (lfs3_ssize_t)size);
+        assert(memcmp(rbuf, wbuf, size) == 0);
+        free(wbuf);
+        free(rbuf);
+        err = lfs3_file_close(lfs3, &file);
+        assert(!err);
+
+        if (step != sim->files[x]) {
+            return false;
+        }
+    }
+
+    return true;
+}
 '''
 
 
@@ -8371,5 +8585,367 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDONLY, &cfg) => 0;
     lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test power-loss during bad-block relocation, with a large region of bad blocks
+#
+# files and dirs are created, removed and renamed, each file carries
+# the step that wrote it as an attribute, committed atomically with its
+# data, so after any power-loss we can rebuild exactly what the disk
+# should hold
+#
+# MIDBAD marks a block holding file data bad halfway through, so
+# relocation happens in the middle of the workload
+[cases.test_badblocks_region_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# we need prog checking to detect read errors and silent errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+defines.MIDBAD = [false, true]
+defines.N = 16
+defines.OPS = 64
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    # a live block that can't be read is a different test
+    '!MIDBAD || BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_READERROR',
+]
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0);
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, flags, CFG);
+    if (err) {
+        // mark our bad blocks, emubd keeps these across power-loss
+        for (lfs3_block_t i = FORMAT_BLOCK_COUNT; i < BLOCK_COUNT; i++) {
+            if (i < BLOCK_COUNT/2) {
+                lfs3_emubd_mkbad(CFG, i) => 0;
+            }
+        }
+
+        lfs3_format(&lfs3, flags, CFG) => 0;
+        lfs3_mount(&lfs3, flags, CFG) => 0;
+    }
+
+    // how many steps have we completed?
+    lfs3_size_t s = 0;
+    lfs3_file_t state;
+    lfs3_file_open(&lfs3, &state, "state",
+            LFS3_O_RDWR | LFS3_O_CREAT) => 0;
+    lfs3_ssize_t d = lfs3_file_read(&lfs3, &state, &s, sizeof(s));
+    assert(d == 0 || d == sizeof(s));
+
+    // rebuild our model
+    test_badblocks_plsim_t sim;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sim.files[i] = -1;
+        sim.dirs[i] = false;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < s; i++) {
+        test_badblocks_plstep(&prng, &sim, i, N);
+    }
+
+    // the disk should be before or after our next step
+    if (!test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE)) {
+        assert(s < OPS);
+        test_badblocks_plstep(&prng, &sim, s, N);
+        assert(test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE));
+        s += 1;
+        lfs3_file_rewind(&lfs3, &state) => 0;
+        lfs3_file_write(&lfs3, &state, &s, sizeof(s)) => sizeof(s);
+        lfs3_file_sync(&lfs3, &state) => 0;
+    }
+
+    for (; s < OPS; s++) {
+        // mark a block holding file data bad halfway through
+        if (MIDBAD && s == OPS/2) {
+            // pick a data block
+            lfs3_block_t blocks[BLOCK_COUNT];
+            lfs3_size_t count = 0;
+            lfs3_trv_t trv;
+            lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+            while (true) {
+                struct lfs3_tinfo tinfo;
+                err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err == LFS3_ERR_NOENT) {
+                    break;
+                }
+                if (tinfo.btype == LFS3_BTYPE_DATA) {
+                    blocks[count] = tinfo.block;
+                    count += 1;
+                }
+            }
+            lfs3_trv_close(&lfs3, &trv) => 0;
+            if (count > 0) {
+                uint32_t prng_ = SEED;
+                lfs3_emubd_mkbad(CFG,
+                        blocks[TEST_PRNG(&prng_) % count]) => 0;
+            }
+        }
+
+        test_badblocks_plop_t op = test_badblocks_plstep(&prng, &sim, s, N);
+        char name[256];
+        char name_[256];
+        if (op.kind == TEST_BADBLOCKS_PL_WRITE) {
+            // write our file with its step attribute
+            int32_t step = s;
+            struct lfs3_attr attrs[] = {{
+                .type = 's',
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(step),
+            }};
+            struct lfs3_file_cfg filecfg = {
+                .attrs = attrs,
+                .attr_count = 1,
+            };
+            lfs3_size_t size = test_badblocks_plsize(s, BLOCK_SIZE);
+            uint8_t *wbuf = malloc(size);
+            test_badblocks_plgen(SEED, s, wbuf, size);
+            sprintf(name, "f%03x", op.x);
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC,
+                    &filecfg) => 0;
+            lfs3_file_write(&lfs3, &file, wbuf, size) => size;
+            lfs3_file_close(&lfs3, &file) => 0;
+            free(wbuf);
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_REMOVE
+                || op.kind == TEST_BADBLOCKS_PL_RMDIR) {
+            sprintf(name, "%c%03x",
+                    (op.kind == TEST_BADBLOCKS_PL_REMOVE) ? 'f' : 'd',
+                    op.x);
+            lfs3_remove(&lfs3, name) => 0;
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_RENAME
+                || op.kind == TEST_BADBLOCKS_PL_MVDIR) {
+            char c = (op.kind == TEST_BADBLOCKS_PL_RENAME) ? 'f' : 'd';
+            sprintf(name, "%c%03x", c, op.x);
+            sprintf(name_, "%c%03x", c, op.y);
+            lfs3_rename(&lfs3, name, name_) => 0;
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_MKDIR) {
+            sprintf(name, "d%03x", op.x);
+            lfs3_mkdir(&lfs3, name) => 0;
+        }
+
+        // update our state
+        lfs3_size_t s_ = s+1;
+        lfs3_file_rewind(&lfs3, &state) => 0;
+        lfs3_file_write(&lfs3, &state, &s_, sizeof(s_)) => sizeof(s_);
+        lfs3_file_sync(&lfs3, &state) => 0;
+    }
+    lfs3_file_close(&lfs3, &state) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, flags, CFG) => 0;
+        }
+
+        assert(test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE));
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test power-loss during bad-block relocation, with a bad block in every other block
+#
+# files and dirs are created, removed and renamed, each file carries
+# the step that wrote it as an attribute, committed atomically with its
+# data, so after any power-loss we can rebuild exactly what the disk
+# should hold
+#
+# MIDBAD marks a block holding file data bad halfway through, so
+# relocation happens in the middle of the workload
+[cases.test_badblocks_alternating_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# we need prog checking to detect read errors and silent errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+defines.MIDBAD = [false, true]
+defines.N = 16
+defines.OPS = 64
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    # a live block that can't be read is a different test
+    '!MIDBAD || BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_READERROR',
+]
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0);
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, flags, CFG);
+    if (err) {
+        // mark our bad blocks, emubd keeps these across power-loss
+        for (lfs3_block_t i = FORMAT_BLOCK_COUNT; i < BLOCK_COUNT; i++) {
+            if (i % 2 == 1) {
+                lfs3_emubd_mkbad(CFG, i) => 0;
+            }
+        }
+
+        lfs3_format(&lfs3, flags, CFG) => 0;
+        lfs3_mount(&lfs3, flags, CFG) => 0;
+    }
+
+    // how many steps have we completed?
+    lfs3_size_t s = 0;
+    lfs3_file_t state;
+    lfs3_file_open(&lfs3, &state, "state",
+            LFS3_O_RDWR | LFS3_O_CREAT) => 0;
+    lfs3_ssize_t d = lfs3_file_read(&lfs3, &state, &s, sizeof(s));
+    assert(d == 0 || d == sizeof(s));
+
+    // rebuild our model
+    test_badblocks_plsim_t sim;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        sim.files[i] = -1;
+        sim.dirs[i] = false;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < s; i++) {
+        test_badblocks_plstep(&prng, &sim, i, N);
+    }
+
+    // the disk should be before or after our next step
+    if (!test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE)) {
+        assert(s < OPS);
+        test_badblocks_plstep(&prng, &sim, s, N);
+        assert(test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE));
+        s += 1;
+        lfs3_file_rewind(&lfs3, &state) => 0;
+        lfs3_file_write(&lfs3, &state, &s, sizeof(s)) => sizeof(s);
+        lfs3_file_sync(&lfs3, &state) => 0;
+    }
+
+    for (; s < OPS; s++) {
+        // mark a block holding file data bad halfway through
+        if (MIDBAD && s == OPS/2) {
+            // pick a data block
+            lfs3_block_t blocks[BLOCK_COUNT];
+            lfs3_size_t count = 0;
+            lfs3_trv_t trv;
+            lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+            while (true) {
+                struct lfs3_tinfo tinfo;
+                err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err == LFS3_ERR_NOENT) {
+                    break;
+                }
+                if (tinfo.btype == LFS3_BTYPE_DATA) {
+                    blocks[count] = tinfo.block;
+                    count += 1;
+                }
+            }
+            lfs3_trv_close(&lfs3, &trv) => 0;
+            if (count > 0) {
+                uint32_t prng_ = SEED;
+                lfs3_emubd_mkbad(CFG,
+                        blocks[TEST_PRNG(&prng_) % count]) => 0;
+            }
+        }
+
+        test_badblocks_plop_t op = test_badblocks_plstep(&prng, &sim, s, N);
+        char name[256];
+        char name_[256];
+        if (op.kind == TEST_BADBLOCKS_PL_WRITE) {
+            // write our file with its step attribute
+            int32_t step = s;
+            struct lfs3_attr attrs[] = {{
+                .type = 's',
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(step),
+            }};
+            struct lfs3_file_cfg filecfg = {
+                .attrs = attrs,
+                .attr_count = 1,
+            };
+            lfs3_size_t size = test_badblocks_plsize(s, BLOCK_SIZE);
+            uint8_t *wbuf = malloc(size);
+            test_badblocks_plgen(SEED, s, wbuf, size);
+            sprintf(name, "f%03x", op.x);
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC,
+                    &filecfg) => 0;
+            lfs3_file_write(&lfs3, &file, wbuf, size) => size;
+            lfs3_file_close(&lfs3, &file) => 0;
+            free(wbuf);
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_REMOVE
+                || op.kind == TEST_BADBLOCKS_PL_RMDIR) {
+            sprintf(name, "%c%03x",
+                    (op.kind == TEST_BADBLOCKS_PL_REMOVE) ? 'f' : 'd',
+                    op.x);
+            lfs3_remove(&lfs3, name) => 0;
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_RENAME
+                || op.kind == TEST_BADBLOCKS_PL_MVDIR) {
+            char c = (op.kind == TEST_BADBLOCKS_PL_RENAME) ? 'f' : 'd';
+            sprintf(name, "%c%03x", c, op.x);
+            sprintf(name_, "%c%03x", c, op.y);
+            lfs3_rename(&lfs3, name, name_) => 0;
+
+        } else if (op.kind == TEST_BADBLOCKS_PL_MKDIR) {
+            sprintf(name, "d%03x", op.x);
+            lfs3_mkdir(&lfs3, name) => 0;
+        }
+
+        // update our state
+        lfs3_size_t s_ = s+1;
+        lfs3_file_rewind(&lfs3, &state) => 0;
+        lfs3_file_write(&lfs3, &state, &s_, sizeof(s_)) => sizeof(s_);
+        lfs3_file_sync(&lfs3, &state) => 0;
+    }
+    lfs3_file_close(&lfs3, &state) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, flags, CFG) => 0;
+        }
+
+        assert(test_badblocks_plck(&lfs3, &sim, N, SEED, BLOCK_SIZE));
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
     lfs3_unmount(&lfs3) => 0;
 '''
