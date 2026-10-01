@@ -6551,3 +6551,168 @@ code = '''
     }
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test that a read error on the source of a copy is reported as
+# corruption, and not mistaken for a bad destination
+#
+# relocating can't fix an unreadable source, so this should error after at
+# most one erase instead of relocating until we run out of blocks
+[cases.test_badblocks_source_readerror]
+# SOURCE=0 => an mdir, compacted when we commit to it
+# SOURCE=1 => a btree node, rewritten when we commit to it
+# SOURCE=2 => a data block, copied when we rewrite part of it
+# SOURCE=3 => a data block, carved into a fragment in our mdir's bshrub
+# SOURCE=4 => a data block, carved into a fragment in our btree
+defines.SOURCE = [0, 1, 2, 3, 4]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+# FLIP=1 => flip a bit instead of failing reads, only data checksums can
+# catch this
+defines.FLIP = [false, true]
+defines.CKDATACKSUMS = [false, true]
+defines.PROG_SIZE = [1, 16]
+defines.SHRUB_SIZE = 'SOURCE == 1 || SOURCE == 4 ? 0 : BLOCK_SIZE/4'
+defines.SIZE = 'SOURCE == 2 ? 2*BLOCK_SIZE : BLOCK_SIZE/2'
+defines.SEED = 42
+if = [
+    'LFS3_IFDEF_CKDATACKSUMS(true, !CKDATACKSUMS)',
+    '!FLIP || (CKDATACKSUMS && SOURCE >= 2)',
+]
+in = 'lfs3.c'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CKDATACKSUMS)
+                ? LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, -1)
+                : 0);
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // create enough files that the mroot splits, so our file lives in
+    // a normal mdir
+    uint32_t prng = SEED;
+    lfs3_file_t file;
+    char name[256];
+    for (lfs3_size_t i = 0; lfs3.mtree.r.weight == 0; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_SIZE);
+
+        sprintf(name, "filler%04d", i);
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t wbuf[64];
+        for (lfs3_size_t j = 0; j < 64; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_write(&lfs3, &file, wbuf, 64) => 64;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // write and sync our file
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    uint8_t sim[SIZE];
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    assert(file.b.h.mdir.mid >= 0);
+
+    // find our source
+    lfs3_block_t badblock;
+    if (SOURCE == 0) {
+        assert(lfs3_bshrub_isbshrub(&file.b));
+        badblock = file.b.h.mdir.r.blocks[0];
+    } else if (SOURCE == 1) {
+        assert(!lfs3_bshrub_isbshrub(&file.b));
+        badblock = file.b.b.r.blocks[0];
+    } else {
+        assert(lfs3_bshrub_isbshrub(&file.b) == (SOURCE != 4));
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, 0,
+                &bid, &weight, &bptr) => 0;
+        assert(lfs3_bptr_isbptr(&bptr));
+        badblock = lfs3_bptr_block(&bptr);
+    }
+    if (FLIP) {
+        lfs3_emubd_flipbit(CFG, badblock, 0) => 0;
+    } else {
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+    }
+
+    // update our file, this needs to copy our source
+    lfs3_emubd_sio_t erased = lfs3_emubd_erased(CFG);
+    uint8_t wbuf[BLOCK_SIZE];
+    for (lfs3_size_t i = 0; i < BLOCK_SIZE; i++) {
+        wbuf[i] = 'A' + (TEST_PRNG(&prng) % 26);
+    }
+    int err;
+    if (SOURCE == 0) {
+        err = lfs3_file_truncate(&lfs3, &file, 0);
+        if (!err) {
+            err = lfs3_file_sync(&lfs3, &file);
+        }
+    } else if (SOURCE == 1) {
+        lfs3_file_seek(&lfs3, &file, SIZE/2, LFS3_SEEK_SET) => SIZE/2;
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, 1);
+        err = (d < 0) ? d : lfs3_file_sync(&lfs3, &file);
+    } else if (SOURCE == 2) {
+        // rewrite the middle of our first block, this needs to copy the
+        // start of the block
+        lfs3_file_seek(&lfs3, &file, BLOCK_SIZE/2, LFS3_SEEK_SET)
+                => BLOCK_SIZE/2;
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE/4);
+        err = (d < 0) ? d : lfs3_file_sync(&lfs3, &file);
+    } else {
+        // write a small fragment near the start of our block, this
+        // carves the start of the block into a fragment
+        lfs3_file_seek(&lfs3, &file, CRYSTAL_THRESH/2, LFS3_SEEK_SET)
+                => CRYSTAL_THRESH/2;
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, 1);
+        err = (d < 0) ? d : lfs3_file_sync(&lfs3, &file);
+    }
+    // relocating can't help, we should error after at most one erase
+    assert(err == LFS3_ERR_CORRUPT);
+    assert((lfs3_emubd_erased(CFG) - erased) / BLOCK_SIZE <= 1);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // our metadata should be fine, only the unreadable data is lost
+    if (SOURCE >= 2) {
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+                => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // if our block recovers, nothing should have changed
+    if (FLIP) {
+        lfs3_emubd_flipbit(CFG, badblock, 0) => 0;
+    } else {
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+    }
+    lfs3_mount(&lfs3, flags | LFS3_M_CKMETA | LFS3_M_CKDATA, CFG) => 0;
+    lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+    lfs3_file_size(&lfs3, &file) => SIZE;
+    uint8_t rbuf[2*SIZE];
+    lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+    assert(memcmp(rbuf, sim, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // and we should be able to keep writing
+    lfs3_file_open(&lfs3, &file, "hello", LFS3_O_WRONLY | LFS3_O_TRUNC) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
