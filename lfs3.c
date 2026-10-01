@@ -8593,6 +8593,9 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
     //
     // it's really tempting to deduplicate this via recursion! but we
     // can't do that here
+    //
+    // note this returns LFS3_ERR_RANGE if the mdir doesn't fit, mdirs
+    // that can't split are compacted without checking the estimate
 
     // assume we keep any gcksumdelta, this will get fixed the first time
     // we commit anything
@@ -8636,7 +8639,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             err = lfs3_shrub_compact(lfs3, &mdir_->r, &shrub,
                     &shrub);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8647,7 +8649,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR(2, tag, 0, LFS3_FROM_SHRUB),
                         LFS3_RATTR_ARG(&shrub)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8659,7 +8660,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR_WEIGHT(weight),
                         LFS3_RATTR_ARG(&data)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -8667,7 +8667,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
 
     int err = lfs3_rbyd_appendcompaction(lfs3, &mdir_->r, 0);
     if (err) {
-        LFS3_ASSERT(err != LFS3_ERR_RANGE);
         return err;
     }
 
@@ -8689,7 +8688,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                     &((lfs3_bshrub_t*)h)->b_,
                     &((lfs3_bshrub_t*)h)->b.r);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -9020,7 +9018,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     ((i^l) == 0) ?         0 : split_rid,
                     ((i^l) == 0) ? split_rid :        -1);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
+                // still too big? an entry can't be split
+                if (err == LFS3_ERR_RANGE) {
+                    err = LFS3_ERR_NOSPC;
+                    goto failed;
+                }
                 // bad prog? try another block
                 if (err == LFS3_ERR_CORRUPT) {
                     goto split_relocate;
