@@ -1122,3 +1122,118 @@ code = '''
     free(wbuf);
     free(rbuf);
 '''
+
+# test that a full disk with the gbmap can always remove files, and that
+# rmgbmap/mkgbmap on a full disk either work or change nothing
+[cases.test_alloc_nospc_gbmap]
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+if = 'GBMAP'
+ifdef = 'LFS3_GBMAP'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE);
+    // after a failed call, our in-RAM gcksum should match the disk
+    #define CKREMOUNT() do { \
+        uint32_t cksum_; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum_) == 0); \
+        assert(lfs3_unmount(&lfs3) == 0); \
+        assert(lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) == 0); \
+        uint32_t cksum__; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum__) == 0); \
+        assert(cksum__ == cksum_); \
+    } while (0)
+
+    // fill the disk, twice, first with the gbmap and then (if we can
+    // disable the gbmap) without it
+    lfs3_size_t n = 0;
+    lfs3_size_t removed = 0;
+    for (int pass = 0; pass < LFS3_IFYES_GBMAP(1, 2, 2); pass++) {
+        // create files until we run out of space
+        while (true) {
+            assert(n < BLOCK_COUNT);
+            char name[256];
+            sprintf(name, "file%04d", n);
+            memset(wbuf, 'a'+(n % 26), SIZE);
+
+            lfs3_file_t file;
+            int err = lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (!err) {
+                lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+                assert(d == SIZE || d == LFS3_ERR_NOSPC);
+                err = lfs3_file_close(&lfs3, &file);
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (d < 0) {
+                    assert(!err);
+                    err = d;
+                }
+            }
+            if (err) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                break;
+            }
+            n += 1;
+        }
+
+        // removing a file must work
+        char name[256];
+        sprintf(name, "file%04d", removed);
+        lfs3_remove(&lfs3, name) => 0;
+        removed += 1;
+
+        // try to toggle the gbmap, this may not fit
+        #ifndef LFS3_YES_GBMAP
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        bool gbmap = fsinfo.flags & LFS3_I_GBMAP;
+        int err = (gbmap) ? lfs3_fs_rmgbmap(&lfs3) : lfs3_fs_mkgbmap(&lfs3);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            CKREMOUNT();
+        }
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!!(fsinfo.flags & LFS3_I_GBMAP) == ((err) ? gbmap : !gbmap));
+        #endif
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "file%04d", i);
+            if (i < removed) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                continue;
+            }
+
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef CKREMOUNT
+    free(wbuf);
+    free(rbuf);
+'''
