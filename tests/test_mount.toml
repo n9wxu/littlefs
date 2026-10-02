@@ -3177,3 +3177,89 @@ code = '''
         assert(test_malloc_live == 0);
     }
 '''
+
+# test that a littlefs v2 image fails to mount, and is never written to,
+# see tests/test_mount_v2_image.h for how the image was made
+[cases.test_mount_v2_image]
+# M=0 => rdwr
+# M=1 => rdwr with mount-time work
+# M=2 => rdonly
+# M=3 => rdonly with checks
+defines.M = [0, 1, 2, 3]
+if = [
+    '!GBMAP',
+    'BLOCK_SIZE*BLOCK_COUNT >= 1024*1024',
+]
+code = '''
+    #include "tests/test_mount_v2_image.h"
+    const size_t run_count
+            = sizeof(test_mount_v2_image) / sizeof(test_mount_v2_image[0]);
+
+    // write the image to our disk, byte for byte
+    uint8_t *buffer = malloc(BLOCK_SIZE);
+    assert(buffer);
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        bool touched = false;
+        memset(buffer, 0xff, BLOCK_SIZE);
+        for (size_t i = 0; i < run_count; i++) {
+            uint32_t off = test_mount_v2_image[i].off;
+            uint32_t size = test_mount_v2_image[i].size;
+            for (uint32_t j = 0; j < size; j++) {
+                if ((off+j) / BLOCK_SIZE == b) {
+                    buffer[(off+j) % BLOCK_SIZE]
+                            = test_mount_v2_image[i].data[j];
+                    touched = true;
+                }
+            }
+        }
+
+        if (touched) {
+            CFG->erase(CFG, b) => 0;
+            CFG->prog(CFG, b, 0, buffer, BLOCK_SIZE) => 0;
+        }
+    }
+
+    uint32_t flags
+            = (M == 0) ? LFS3_M_RDWR
+            : (M == 1) ? LFS3_M_RDWR
+                | LFS3_M_MKCONSISTENT
+                | LFS3_M_LOOKAHEAD
+                | LFS3_IFDEF_PREERASE(
+                    LFS3_IFDEF_REVPERTURB(
+                        LFS3_M_PREERASE | LFS3_M_REVPERTURB,
+                        0),
+                    0)
+                | LFS3_M_COMPACT
+                | LFS3_M_CKMETA
+                | LFS3_M_CKDATA
+            : (M == 2) ? LFS3_M_RDONLY
+            : LFS3_M_RDONLY | LFS3_M_CKMETA | LFS3_M_CKDATA;
+
+    // mount, twice, in case the first failure leaves something behind
+    lfs3_t lfs3;
+    for (int i = 0; i < 2; i++) {
+        lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+        lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+        memset(&lfs3, 0xab, sizeof(lfs3));
+        int err = lfs3_mount(&lfs3, flags, CFG);
+        assert(err == LFS3_ERR_CORRUPT || err == LFS3_ERR_NOTSUP);
+        lfs3_emubd_progs(CFG) => progs;
+        lfs3_emubd_erases(CFG) => erases;
+        assert(test_malloc_live == 0);
+    }
+
+    // the image is unchanged
+    for (size_t i = 0; i < run_count; i++) {
+        uint32_t off = test_mount_v2_image[i].off;
+        uint32_t size = test_mount_v2_image[i].size;
+        for (uint32_t j = 0; j < size; j++) {
+            if (j == 0 || (off+j) % BLOCK_SIZE == 0) {
+                CFG->read(CFG, (off+j) / BLOCK_SIZE, 0,
+                        buffer, BLOCK_SIZE) => 0;
+            }
+            assert(buffer[(off+j) % BLOCK_SIZE]
+                    == (uint8_t)test_mount_v2_image[i].data[j]);
+        }
+    }
+    free(buffer);
+'''
