@@ -8510,6 +8510,182 @@ code = '''
 
 
 
+# test cleaning up orphans that are the only entries of several
+# consecutive mdirs, removing them drops those mdirs during the scan
+[cases.test_stickynotes_cleanup_drop]
+defines.BLOCK_SIZE = [512, 4096]
+# orphans per bookend file
+defines.N = [8, 32]
+# number of files before and after the orphans
+defines.BOOKENDS = [1, 8]
+# METHOD=0 => lfs3_fs_mkconsistent
+# METHOD=1 => mount with LFS3_M_MKCONSISTENT
+# METHOD=2 => lfs3_fs_gc with LFS3_GC_MKCONSISTENT
+defines.METHOD = [0, 1, 2]
+defines.GC_FLAGS = 'LFS3_GC_MKCONSISTENT'
+defines.GC_STEPS = -1
+defines.REMOUNT = [false, true]
+if = [
+    'METHOD != 2 || LFS3_IFDEF_GC(true, false)',
+    'METHOD != 1 || REMOUNT',
+]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // long names fill mdirs quickly
+    #define TEST_CLEANUP_DROP_NAME(name, c, i) \
+        sprintf(name, "%c%03x%s", c, i, \
+                "______________________________________")
+
+    // bookend files sort before and after our orphans
+    for (lfs3_size_t i = 0; i < BOOKENDS; i++) {
+        for (int k = 0; k < 2; k++) {
+            char name[256];
+            TEST_CLEANUP_DROP_NAME(name, (k == 0) ? 'a' : 'z', i);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            lfs3_file_write(&lfs3, &file, name, 4) => 4;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+    }
+
+    // create orphans between them, closing a not-yet-created desync file
+    // leaves an orphan, but only after all opens
+    lfs3_size_t count = N*BOOKENDS;
+    lfs3_file_t *files = malloc(count*sizeof(lfs3_file_t));
+    assert(files);
+    for (lfs3_size_t i = 0; i < count; i++) {
+        char name[256];
+        TEST_CLEANUP_DROP_NAME(name, 'm', i);
+        lfs3_file_open(&lfs3, &files[i], name,
+                LFS3_O_WRONLY
+                    | LFS3_O_CREAT
+                    | LFS3_O_EXCL
+                    | LFS3_O_DESYNC) => 0;
+    }
+    for (lfs3_size_t i = 0; i < count; i++) {
+        lfs3_file_close(&lfs3, &files[i]) => 0;
+    }
+    free(files);
+
+    // count mdirs with only orphans, and the longest run of them
+    #define TEST_CLEANUP_DROP_SCAN(orphans_, run_) do { \
+        orphans_ = 0; \
+        run_ = 0; \
+        lfs3_size_t r_ = 0; \
+        for (lfs3_mid_t mid_ = 0; \
+                mid_ < lfs3_mtree_weight(&lfs3); \
+                mid_ += 1 << lfs3.mbits) { \
+            lfs3_mdir_t mdir_; \
+            int err_ = lfs3_mtree_lookup(&lfs3, mid_, &mdir_); \
+            assert(!err_); \
+            lfs3_size_t notes_ = 0; \
+            for (lfs3_srid_t rid_ = 0; \
+                    rid_ < (lfs3_srid_t)mdir_.r.weight; \
+                    rid_++) { \
+                lfs3_stag_t tag_ = lfs3_rbyd_lookup(&lfs3, &mdir_.r, \
+                        rid_, LFS3_TAG_STICKYNOTE, NULL); \
+                assert(tag_ >= 0 || tag_ == LFS3_ERR_NOENT); \
+                if (tag_ >= 0) { \
+                    notes_ += 1; \
+                } \
+            } \
+            orphans_ += notes_; \
+            if (notes_ > 0 && notes_ == mdir_.r.weight) { \
+                r_ += 1; \
+                run_ = lfs3_max(run_, r_); \
+            } else { \
+                r_ = 0; \
+            } \
+        } \
+    } while (0)
+
+    lfs3_size_t orphans;
+    lfs3_size_t run;
+    TEST_CLEANUP_DROP_SCAN(orphans, run);
+    // closing only queues grms in RAM, the stickynotes stay on disk
+    assert(orphans == count);
+    assert(lfs3.flags & LFS3_I_MKCONSISTENT);
+    // with enough orphans, several consecutive mdirs hold nothing else
+    if (count >= 64 || BLOCK_SIZE == 512) {
+        assert(run >= 2);
+    }
+
+    // remount? the grm queue is lost, those orphans are found with the
+    // others
+    if (REMOUNT) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3,
+                LFS3_M_RDWR
+                    | ((METHOD == 1) ? LFS3_M_MKCONSISTENT : 0),
+                CFG) => 0;
+    }
+
+    // clean things up
+    if (METHOD == 0) {
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+    } else if (METHOD == 2) {
+        #ifdef LFS3_GC
+        lfs3_fs_gc(&lfs3) => 0;
+        #endif
+    }
+
+    // no orphans left
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_MKCONSISTENT));
+    assert(lfs3_grm_count(&lfs3) == 0);
+    TEST_CLEANUP_DROP_SCAN(orphans, run);
+    assert(orphans == 0);
+
+    // and every other entry is present
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            TEST_CLEANUP_DROP_SCAN(orphans, run);
+            assert(orphans == 0);
+        }
+
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        struct lfs3_info info;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        for (int k = 0; k < 2; k++) {
+            for (lfs3_size_t i = 0; i < BOOKENDS; i++) {
+                char name[256];
+                TEST_CLEANUP_DROP_NAME(name, (k == 0) ? 'a' : 'z', i);
+                lfs3_dir_read(&lfs3, &dir, &info) => 0;
+                assert(strcmp(info.name, name) == 0);
+                assert(info.type == LFS3_TYPE_REG);
+                assert(info.size == 4);
+
+                uint8_t rbuf[4];
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_read(&lfs3, &file, rbuf, 4) => 4;
+                assert(memcmp(rbuf, name, 4) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        }
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    #undef TEST_CLEANUP_DROP_NAME
+    #undef TEST_CLEANUP_DROP_SCAN
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that file handles follow mvs correctly
 #
 # these doesn't really involve stickynotes, but it's the same internal
