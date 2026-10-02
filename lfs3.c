@@ -12030,6 +12030,12 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
             continue;
         }
 
+        // known to be bad?
+        if (lfs3_alloc_isbad(lfs3, block)) {
+            lfs3->gbmap.preeraser.known += 1;
+            continue;
+        }
+
         // erase!
         int err = lfs3_bd_erase(lfs3, block);
         if (err && err != LFS3_ERR_CORRUPT) {
@@ -12045,10 +12051,14 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
             }
         }
 
-        // bad erase/read? skip this block, lfs3_alloc_ will notice if
-        // it ever tries to use it
+        // bad erase/read? remember and skip this block
         if (err == LFS3_ERR_CORRUPT) {
+            lfs3_alloc_pushbad(lfs3, block);
             lfs3->gbmap.preeraser.known += 1;
+            // let gc mark these before we forget any
+            if (lfs3->gbmap.badq.count == LFS3_BADQ_SIZE) {
+                return 0;
+            }
             continue;
         }
 
@@ -17606,7 +17616,25 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
                 lfs3_handle_close(lfs3, &mgc->t.h);
             }
 
-        // if we have no pending gc work, can we preerase blocks?
+        // if we have no pending gc work, any bad blocks to mark? we
+        // don't back off here, bad blocks in use may have been
+        // released by any commit
+        } else if (LFS3_IFDEF_RDONLY(
+                false,
+                LFS3_IFDEF_GBMAP(
+                    lfs3_alloc_canflushbad(lfs3, 1),
+                    false))) {
+            #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+            // lfs3_alloc_flushbad may allocate, so checkpoint the
+            // lookahead buffer
+            lfs3_alloc_ckpoint_(lfs3);
+            int err = lfs3_alloc_flushbad(lfs3);
+            if (err) {
+                return err;
+            }
+            #endif
+
+        // can we preerase blocks?
         } else if (LFS3_IFDEF_RDONLY(
                 false,
                 LFS3_IFDEF_PREERASE(
@@ -17975,8 +18003,11 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
         return err;
     }
 
-    // on success mark gbmap as not-in-use internally
-    lfs3->flags &= ~LFS3_F_GBMAP;
+    // on success mark gbmap as not-in-use internally, this forgets
+    // any bad blocks
+    lfs3->flags &= ~(LFS3_F_GBMAP | LFS3_I_BADBLOCKS);
+    lfs3->gbmap.badq.count = 0;
+    lfs3->gbmap.badq.checked = 0;
     return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif

@@ -1946,6 +1946,8 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 
 // Disable the global on-disk block-map
 //
+// Note this forgets any bad blocks, see lfs3_fs_mkbad.
+//
 // Returns LFS3_ERR_NOENT if no gbmap is found, or a negative error code
 // on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
