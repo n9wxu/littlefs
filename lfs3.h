@@ -1826,6 +1826,9 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
 // Note: Result is best effort. If files share COW structures, the returned
 // usage may be larger than the filesystem actually is.
 //
+// With the gbmap, blocks marked bad are included, since they can't be
+// used either.
+//
 // Returns the number of allocated blocks, or a negative error code on failure.
 lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
 

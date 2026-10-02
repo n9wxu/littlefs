@@ -10758,9 +10758,12 @@ static int lfs3_gbmap_commit(lfs3_t *lfs3, lfs3_btree_t *gbmap,
 //
 // the purpose of weight is really just to provide a shortcut for bulk
 // clearing ranges in lfs3_alloc_lookgbmap
+//
+// keepbad leaves bad blocks bad, in-use blocks can also be bad
 static int lfs3_gbmap_set__(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_block_t block, lfs3_block_t weight,
-        lfs3_tag_t tag, const lfs3_ecksum_t *ecksum) {
+        lfs3_tag_t tag, const lfs3_ecksum_t *ecksum,
+        bool keepbad) {
     // lookup gbmap range
     lfs3_bid_t bid__;
     lfs3_bid_t weight__;
@@ -10773,7 +10776,8 @@ static int lfs3_gbmap_set__(lfs3_t *lfs3, lfs3_btree_t *gbmap,
     }
 
     // wait, already set to expected type? guess we're done
-    if (tag__ == tag && lfs3_ecksum_cmp(&ecksum__, ecksum) == 0) {
+    if ((tag__ == tag && lfs3_ecksum_cmp(&ecksum__, ecksum) == 0)
+            || (keepbad && tag__ == LFS3_TAG_BMBAD)) {
         return 0;
     }
 
@@ -10898,7 +10902,8 @@ static int lfs3_gbmap_set_(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_tag_t tag, const lfs3_ecksum_t *ecksum) {
     return lfs3_gbmap_set__(lfs3, gbmap, block, weight, tag,
             // default to not-ecksum if NULL
-            (ecksum) ? ecksum : &lfs3_gbmap_defaultecksum);
+            (ecksum) ? ecksum : &lfs3_gbmap_defaultecksum,
+            false);
 }
 #endif
 
@@ -10934,7 +10939,10 @@ static int lfs3_gbmap_setbptr(lfs3_t *lfs3, lfs3_btree_t *gbmap,
     }
 
     for (lfs3_size_t i = 0; i < block_count; i++) {
-        int err = lfs3_gbmap_set(lfs3, gbmap, blocks[i], tag_, NULL);
+        // bad blocks may still be in-use, don't lose the bad mark
+        int err = lfs3_gbmap_set__(lfs3, gbmap, blocks[i], 1, tag_,
+                &lfs3_gbmap_defaultecksum,
+                true);
         if (err) {
             return err;
         }
@@ -10977,6 +10985,29 @@ static int lfs3_gbmap_zerounknown(lfs3_t *lfs3, lfs3_btree_t *gbmap,
     }
 
     return 0;
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+// find the next block marked bad in the gbmap, if there is one
+static lfs3_sblock_t lfs3_gbmap_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
+    while (block < lfs3->block_count) {
+        lfs3_block_t block__;
+        lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
+                &block__, NULL, NULL);
+        if (tag__ < 0) {
+            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
+            return tag__;
+        }
+
+        if (tag__ == LFS3_TAG_BMBAD) {
+            return block;
+        }
+
+        block = block__+1;
+    }
+
+    return LFS3_ERR_NOENT;
 }
 #endif
 
@@ -11169,6 +11200,42 @@ static void lfs3_alloc_setinusebptr(lfs3_t *lfs3,
     } else {
         LFS3_UNREACHABLE();
     }
+}
+#endif
+
+// mark any bad blocks in the gbmap as in-use
+//
+// the lookahead buffer doesn't know about bad blocks otherwise
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_setinusebad(lfs3_t *lfs3) {
+    lfs3_block_t size = lfs3_min(
+            8*lfs3->cfg->lookahead_size,
+            lfs3->block_count);
+    lfs3_block_t i = 0;
+    while (i < size) {
+        lfs3_block_t block = (lfs3->lookahead.window + i)
+                % lfs3->block_count;
+        lfs3_bid_t block__;
+        lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
+                &block__, NULL, NULL);
+        // mid-grow the gbmap may not cover new blocks yet
+        if (tag__ == LFS3_ERR_NOENT) {
+            block__ = lfs3->block_count-1;
+        } else if (tag__ < 0) {
+            return tag__;
+        }
+        lfs3_block_t d = lfs3_min(block__+1 - block, size - i);
+
+        if (tag__ == LFS3_TAG_BMBAD) {
+            for (lfs3_block_t j = 0; j < d; j++) {
+                lfs3_alloc_setinuse(lfs3, block+j);
+            }
+        }
+
+        i += d;
+    }
+
+    return 0;
 }
 #endif
 
@@ -11426,6 +11493,16 @@ static lfs3_sblock_t lfs3_alloc__(lfs3_t *lfs3, uint32_t flags,
                 i++) {
             lfs3_alloc_setinuse(lfs3, lfs3->graft[i].u.disk.block);
         }
+
+        // mask out any bad blocks
+        #ifdef LFS3_GBMAP
+        if (lfs3_f_isgbmap(lfs3->flags)) {
+            int err = lfs3_alloc_setinusebad(lfs3);
+            if (err) {
+                return err;
+            }
+        }
+        #endif
 
         // mark anything not seen as free
         lfs3_alloc_adopt(lfs3, lfs3->lookahead.ckpoint);
@@ -16932,6 +17009,24 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
             LFS3_UNREACHABLE();
         }
     }
+
+    // count bad blocks, these can't be used either
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    if (lfs3_f_isgbmap(lfs3->flags)) {
+        for (lfs3_block_t block = 0;; block++) {
+            lfs3_sblock_t block_ = lfs3_gbmap_nextbad(lfs3, block);
+            if (block_ < 0) {
+                if (block_ == LFS3_ERR_NOENT) {
+                    break;
+                }
+                return block_;
+            }
+
+            count += 1;
+            block = block_;
+        }
+    }
+    #endif
 
     return count;
 }
