@@ -11942,8 +11942,11 @@ empty:;
 #ifndef LFS3_RDONLY
 static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
+    //
+    // removing may free the space any pending cleanup needs, so a full
+    // disk shouldn't stop us, we try again below
     int err = lfs3_fs_mkconsistent(lfs3);
-    if (err) {
+    if (err && err != LFS3_ERR_NOSPC) {
         return err;
     }
 
@@ -11969,6 +11972,11 @@ static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // bookmark entry
     lfs3_did_t did_ = 0;
     if (tag == LFS3_TAG_DIR) {
+        // no room in our grm? only possible if cleanup failed above
+        if (lfs3_grm_count(lfs3) > 1) {
+            return LFS3_ERR_NOSPC;
+        }
+
         // first lets figure out the did
         lfs3_data_t data_;
         lfs3_stag_t tag_ = lfs3_mdir_lookup(lfs3, &mdir, LFS3_TAG_DID,
@@ -12665,8 +12673,11 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
 #ifndef LFS3_RDONLY
 int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
     // prepare our filesystem for writing
+    //
+    // removing may free the space any pending cleanup needs, so a full
+    // disk shouldn't stop us, the next write tries again
     int err = lfs3_fs_mkconsistent(lfs3);
-    if (err) {
+    if (err && err != LFS3_ERR_NOSPC) {
         return err;
     }
 
