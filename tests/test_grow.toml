@@ -368,30 +368,45 @@ code = '''
     char name[256];
     sprintf(name, "file%08d", n);
 
-    // fail to grow
-    lfs3_emubd_mkbadsync(CFG) => 0;
-    lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => LFS3_ERR_IO;
-    lfs3_emubd_mkgoodsync(CFG) => 0;
-
-    // our allocator should still be in-bounds
+    // fail to grow at progs spread over the grow, a gbmap makes this a
+    // lot of progs
+    //
+    // note a failed sync doesn't fail the grow, the commit stands
     struct lfs3_fsinfo fsinfo;
-    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
-    assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
-    assert(lfs3.lookahead.window < SMALLER_BLOCK_COUNT);
-    #ifdef LFS3_GBMAP
-    assert(!GBMAP || lfs3.gbmap.window < SMALLER_BLOCK_COUNT);
-    #endif
+    lfs3_size_t fails = 0;
+    for (uint32_t i = 1;; i += 1 + i/4) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < 64*BLOCK_COUNT);
 
-    // and we should still be able to write
-    for (lfs3_size_t i = 0; i < 2; i++) {
-        lfs3_file_t file;
-        lfs3_file_open(&lfs3, &file, name,
-                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
-        uint8_t wbuf[SIZE];
-        memset(wbuf, 'a'+i, SIZE);
-        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
-        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, i, 0) => 0;
+        int err = lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT);
+        assert(!err || err == LFS3_ERR_IO);
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, 0, 0) => 0;
+        if (!err) {
+            break;
+        }
+        fails += 1;
+
+        // our allocator should still be in-bounds
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
+        assert(lfs3.lookahead.window < SMALLER_BLOCK_COUNT);
+        #ifdef LFS3_GBMAP
+        assert(!GBMAP || lfs3.gbmap.window < SMALLER_BLOCK_COUNT);
+        #endif
+
+        // and we should still be able to write
+        for (lfs3_size_t j = 0; j < 2; j++) {
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+            uint8_t wbuf[SIZE];
+            memset(wbuf, 'a'+j, SIZE);
+            lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
     }
+    assert(fails > 0);
 
     // and grow
     lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => 0;
