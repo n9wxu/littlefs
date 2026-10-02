@@ -487,6 +487,18 @@ struct lfs3_cfg {
     // Program a region in a block. The block must have previously
     // been erased. Negative error codes are propagated to the user.
     // May return LFS3_ERR_CORRUPT if the block should be considered bad.
+    //
+    // Note littlefs assumes a prog interrupted by power-loss changes no
+    // bytes outside of that prog, and that the bytes it does change read
+    // the same on every read until the block is erased. Bits left
+    // metastable, reading 0 on one read and 1 on the next, can make the
+    // commit being written at the power-loss appear on one mount and not
+    // on the next. With LFS3_M_CKMETAPARITY and LFS3_M_CKDATACKSUMS reads
+    // return LFS3_ERR_CORRUPT instead of most flipped bits, but syncs
+    // that completed after such a commit was seen can still be rolled
+    // back without an error, and so can earlier syncs if a power-loss
+    // disturbs bytes outside of the interrupted prog.
+    //
     #ifndef LFS3_RDONLY
     int (*prog)(const struct lfs3_cfg *c, lfs3_block_t block,
             lfs3_off_t off, const void *buffer, lfs3_size_t size);
