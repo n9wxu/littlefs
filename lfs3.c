@@ -2497,17 +2497,41 @@ static inline bool lfs3_ecksum_isecksum(const lfs3_ecksum_t *ecksum) {
 }
 #endif
 
+// the most a single prog can write at off in an erased region: a pcache
+// flush, or a tag progged directly when the pcache is smaller
+//
+// an interrupted prog may leave its first prog_size bytes erased and
+// its tail programmed, so erased-state checksums need to cover all of
+// it
+#ifndef LFS3_RDONLY
+static inline lfs3_size_t lfs3_ecksum_cksize(const lfs3_t *lfs3,
+        lfs3_off_t off) {
+    return lfs3_min(
+            lfs3_alignup(
+                lfs3_max(lfs3->cfg->pcache_size, LFS3_TAG_DSIZE),
+                lfs3->cfg->prog_size),
+            lfs3->cfg->block_size - off);
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_ecksum_read(lfs3_t *lfs3, lfs3_ecksum_t *ecksum,
         lfs3_block_t block, lfs3_off_t off) {
-    // keep track of prog size
-    ecksum->cksize = lfs3->cfg->prog_size;
+    ecksum->cksize = lfs3_ecksum_cksize(lfs3, off);
     // checksum erased state
     ecksum->cksum = 0;
     return lfs3_bd_cksum(lfs3,
             block, off, 0,
-            lfs3->cfg->prog_size,
+            ecksum->cksize,
             &ecksum->cksum);
+}
+#endif
+
+// is an ecksum wide enough to trust before we prog at off?
+#ifndef LFS3_RDONLY
+static inline bool lfs3_ecksum_iswide(const lfs3_t *lfs3,
+        const lfs3_ecksum_t *ecksum, lfs3_off_t off) {
+    return (lfs3_size_t)ecksum->cksize >= lfs3_ecksum_cksize(lfs3, off);
 }
 #endif
 
@@ -2664,9 +2688,13 @@ static int lfs3_rbyd_alloc(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
 #ifndef LFS3_RDONLY
 static int lfs3_rbyd_ckecksum(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
         const lfs3_ecksum_t *ecksum) {
-    // check that the ecksum looks right
-    if (lfs3_rbyd_eoff(rbyd) + ecksum->cksize >= lfs3->cfg->block_size
-            || lfs3_rbyd_eoff(rbyd) % lfs3->cfg->prog_size != 0) {
+    // check that the ecksum looks right and covers our next prog, older
+    // images and smaller pcaches can leave narrower ecksums
+    if (lfs3_rbyd_eoff(rbyd) >= lfs3->cfg->block_size
+            || lfs3_rbyd_eoff(rbyd) % lfs3->cfg->prog_size != 0
+            || (lfs3_size_t)ecksum->cksize
+                > lfs3->cfg->block_size - lfs3_rbyd_eoff(rbyd)
+            || !lfs3_ecksum_iswide(lfs3, ecksum, lfs3_rbyd_eoff(rbyd))) {
         return LFS3_ERR_CORRUPT;
     }
 
@@ -4432,7 +4460,7 @@ static int lfs3_rbyd_appendcksum_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         // this should hopefully stay in our cache
         uint8_t e = 0;
         int err = lfs3_bd_read(lfs3,
-                rbyd->blocks[0], off_, lfs3->cfg->prog_size,
+                rbyd->blocks[0], off_, lfs3_ecksum_cksize(lfs3, off_),
                 &e, 1);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
@@ -11424,14 +11452,16 @@ static lfs3_sblock_t lfs3_alloc_(lfs3_t *lfs3, uint32_t flags,
 
         // erase requested?
         if (lfs3_alloc_iserase(flags)) {
-            // pre-erased? we can only trust this with revperturb
+            // pre-erased? we can only trust this with revperturb, and
+            // narrow ecksums get a fresh erase
             //
             // note we keep the ecksum either way, so lfs3_allocclaim
             // still takes the block out of the on-disk gbmap before
             // data is progged into it
             if (LFS3_IFDEF_PREERASE(
                     lfs3_ecksum_isecksum(ecksum_)
-                        && lfs3_m_isrevperturb(lfs3->flags),
+                        && lfs3_m_isrevperturb(lfs3->flags)
+                        && lfs3_ecksum_iswide(lfs3, ecksum_, 0),
                     false)) {
                 #ifdef LFS3_PREERASE
                 // check ecksum
