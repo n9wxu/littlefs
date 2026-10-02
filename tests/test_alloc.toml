@@ -329,7 +329,7 @@ code = '''
         char name[256];
         sprintf(name, "file%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -354,13 +354,13 @@ code = '''
         assert(info.size == SIZE);
 
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
         lfs3_file_t file;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
         lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -461,13 +461,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -508,7 +508,7 @@ code = '''
         char name[256];
         sprintf(name, "file%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -522,12 +522,12 @@ code = '''
     prng = 42;
     for (lfs3_size_t i = 0; i < N; i++) {
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_rewind(&lfs3, &files[i]) => 0;
         lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -608,12 +608,12 @@ code = '''
     prng = 42;
     for (lfs3_size_t i = 0; i < N; i++) {
         // try reading the file, note we reset prng above
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_rewind(&lfs3, &files[i]) => 0;
         lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -643,13 +643,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -874,7 +874,7 @@ code = '''
         char name[256];
         sprintf(name, "file%08d", n);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -921,13 +921,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -938,3 +938,302 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# test that we can recover from a full disk, failed calls on a full disk
+# should change nothing, and removing files should free enough space to
+# write their size again
+[cases.test_alloc_nospc_recover]
+# size of each file, 1 and 4 blocks
+defines.SIZE = ['BLOCK_SIZE', '4*BLOCK_SIZE']
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // file i holds bytes [off, off+size) of a stream seeded by i
+    lfs3_size_t *sim_off = malloc(BLOCK_COUNT*sizeof(lfs3_size_t));
+    lfs3_size_t *sim_size = malloc(BLOCK_COUNT*sizeof(lfs3_size_t));
+    uint8_t *wbuf = malloc(BLOCK_COUNT*BLOCK_SIZE);
+    uint8_t *rbuf = malloc(BLOCK_COUNT*BLOCK_SIZE);
+    #define GEN(_buf, _i, _off, _size) do { \
+        uint32_t prng_ = (_i) + 1; \
+        for (lfs3_size_t j_ = 0; j_ < (_off)+(_size); j_++) { \
+            uint8_t c_ = 'a' + (TEST_PRNG(&prng_) % 26); \
+            if (j_ >= (_off)) { \
+                (_buf)[j_-(_off)] = c_; \
+            } \
+        } \
+    } while (0)
+    // after a failed call, our in-RAM gcksum should match the disk
+    #define CKREMOUNT() do { \
+        uint32_t cksum_; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum_) == 0); \
+        assert(lfs3_unmount(&lfs3) == 0); \
+        assert(lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) == 0); \
+        uint32_t cksum__; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum__) == 0); \
+        assert(cksum__ == cksum_); \
+    } while (0)
+
+    // create files until we run out of space
+    lfs3_size_t n = 0;
+    while (true) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "file%04d", n);
+        GEN(wbuf, n, 0, SIZE);
+
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+            assert(d == SIZE || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d < 0) {
+                // a failed write desyncs the file, so close does nothing
+                assert(!err);
+                err = d;
+            }
+        }
+        if (err) {
+            // the file never made it
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+            CKREMOUNT();
+            lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+            break;
+        }
+
+        sim_off[n] = 0;
+        sim_size[n] = SIZE;
+        n += 1;
+    }
+    assert(n >= 4);
+
+    // truncate one file to half, and fruncate another to half, these
+    // may or may not fit
+    for (lfs3_size_t i = 0; i < 2; i++) {
+        char name[256];
+        sprintf(name, "file%04d", i);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name, LFS3_O_WRONLY);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            continue;
+        }
+
+        int err_ = (i == 0)
+                ? lfs3_file_truncate(&lfs3, &file, SIZE/2)
+                : lfs3_file_fruncate(&lfs3, &file, SIZE/2);
+        assert(!err_ || err_ == LFS3_ERR_NOSPC);
+        err = lfs3_file_close(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err_) {
+            // a failed truncate desyncs the file, so close does nothing
+            assert(!err);
+        }
+
+        if (!err && !err_) {
+            sim_off[i] = (i == 0) ? 0 : SIZE/2;
+            sim_size[i] = SIZE/2;
+        } else {
+            CKREMOUNT();
+        }
+
+        // the file is either truncated or unchanged
+        GEN(wbuf, i, sim_off[i], sim_size[i]);
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => sim_size[i];
+        assert(memcmp(rbuf, wbuf, sim_size[i]) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // mount again with mount-time work, which may not fit either
+    lfs3_unmount(&lfs3) => 0;
+    int err = lfs3_mount(&lfs3,
+            LFS3_M_RDWR | LFS3_M_MKCONSISTENT | LFS3_M_COMPACT,
+            CFG);
+    assert(!err || err == LFS3_ERR_NOSPC);
+    if (err) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // remove half the files, this must always work
+    lfs3_size_t freed = 0;
+    for (lfs3_size_t i = n/2; i < n; i++) {
+        char name[256];
+        sprintf(name, "file%04d", i);
+        lfs3_remove(&lfs3, name) => 0;
+        freed += sim_size[i];
+    }
+
+    // and we should be able to write that much again
+    GEN(wbuf, n, 0, freed);
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "big",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, freed) => freed;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "file%04d", i);
+            if (i >= n/2) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                continue;
+            }
+
+            GEN(wbuf, i, sim_off[i], sim_size[i]);
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => sim_size[i];
+            assert(memcmp(rbuf, wbuf, sim_size[i]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        GEN(wbuf, n, 0, freed);
+        lfs3_file_open(&lfs3, &file, "big", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, BLOCK_COUNT*BLOCK_SIZE)
+                => freed;
+        assert(memcmp(rbuf, wbuf, freed) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef GEN
+    #undef CKREMOUNT
+    free(sim_off);
+    free(sim_size);
+    free(wbuf);
+    free(rbuf);
+'''
+
+# test that a full disk with the gbmap can always remove files, and that
+# rmgbmap/mkgbmap on a full disk either work or change nothing
+[cases.test_alloc_nospc_gbmap]
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+if = 'GBMAP'
+ifdef = 'LFS3_GBMAP'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE);
+    // after a failed call, our in-RAM gcksum should match the disk
+    #define CKREMOUNT() do { \
+        uint32_t cksum_; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum_) == 0); \
+        assert(lfs3_unmount(&lfs3) == 0); \
+        assert(lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) == 0); \
+        uint32_t cksum__; \
+        assert(lfs3_fs_cksum(&lfs3, &cksum__) == 0); \
+        assert(cksum__ == cksum_); \
+    } while (0)
+
+    // fill the disk, twice, first with the gbmap and then (if we can
+    // disable the gbmap) without it
+    lfs3_size_t n = 0;
+    lfs3_size_t removed = 0;
+    for (int pass = 0; pass < LFS3_IFYES_GBMAP(1, 2, 2); pass++) {
+        // create files until we run out of space
+        while (true) {
+            assert(n < BLOCK_COUNT);
+            char name[256];
+            sprintf(name, "file%04d", n);
+            memset(wbuf, 'a'+(n % 26), SIZE);
+
+            lfs3_file_t file;
+            int err = lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (!err) {
+                lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+                assert(d == SIZE || d == LFS3_ERR_NOSPC);
+                err = lfs3_file_close(&lfs3, &file);
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (d < 0) {
+                    assert(!err);
+                    err = d;
+                }
+            }
+            if (err) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                break;
+            }
+            n += 1;
+        }
+
+        // removing a file must work
+        char name[256];
+        sprintf(name, "file%04d", removed);
+        lfs3_remove(&lfs3, name) => 0;
+        removed += 1;
+
+        // try to toggle the gbmap, this may not fit
+        #ifndef LFS3_YES_GBMAP
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        bool gbmap = fsinfo.flags & LFS3_I_GBMAP;
+        int err = (gbmap) ? lfs3_fs_rmgbmap(&lfs3) : lfs3_fs_mkgbmap(&lfs3);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (err) {
+            CKREMOUNT();
+        }
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!!(fsinfo.flags & LFS3_I_GBMAP) == ((err) ? gbmap : !gbmap));
+        #endif
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "file%04d", i);
+            if (i < removed) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                continue;
+            }
+
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef CKREMOUNT
+    free(wbuf);
+    free(rbuf);
+'''

@@ -8604,6 +8604,9 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
     //
     // it's really tempting to deduplicate this via recursion! but we
     // can't do that here
+    //
+    // note this returns LFS3_ERR_RANGE if the mdir doesn't fit, mdirs
+    // that can't split are compacted without checking the estimate
 
     // assume we keep any gcksumdelta, this will get fixed the first time
     // we commit anything
@@ -8647,7 +8650,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             err = lfs3_shrub_compact(lfs3, &mdir_->r, &shrub,
                     &shrub);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8658,7 +8660,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR(2, tag, 0, LFS3_FROM_SHRUB),
                         LFS3_RATTR_ARG(&shrub)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8670,7 +8671,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR_WEIGHT(weight),
                         LFS3_RATTR_ARG(&data)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -8678,7 +8678,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
 
     int err = lfs3_rbyd_appendcompaction(lfs3, &mdir_->r, 0);
     if (err) {
-        LFS3_ASSERT(err != LFS3_ERR_RANGE);
         return err;
     }
 
@@ -8700,7 +8699,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                     &((lfs3_bshrub_t*)h)->b_,
                     &((lfs3_bshrub_t*)h)->b.r);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -8972,8 +8970,10 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // attempt to commit/compact the mdir normally
     lfs3_mdir_t mdir_[2];
     lfs3_srid_t split_rid;
+    bool splittable = true;
+commit:;
     int err = lfs3_mdir_commit__(lfs3, &mdir_[0], mdir, -2, -2,
-            &split_rid,
+            (splittable) ? &split_rid : NULL,
             mdir->mid, rattrs);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_NOENT) {
@@ -8992,9 +8992,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // need to split?
     if (err == LFS3_ERR_RANGE) {
         // an mroot with an mtree has nothing to split, its mdir-level
-        // attrs just don't fit
-        if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
-                && lfs3->mtree.r.weight != 0) {
+        // attrs just don't fit, and if we couldn't split, we don't fit
+        // either
+        if (!splittable
+                || (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                    && lfs3->mtree.r.weight != 0)) {
             err = LFS3_ERR_NOSPC;
             goto failed;
         }
@@ -9023,6 +9025,30 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             err = lfs3_mdir_alloc___(lfs3, &mdir_[i^l],
                     lfs3_smax(mdir->mid, 0), relocated);
             if (err) {
+                // no blocks to split into? compact in place instead,
+                // this works as long as we fit in one block, and lets a
+                // full disk still remove things
+                if (err == LFS3_ERR_NOSPC && i == 0 && !relocated) {
+                    // unconsume our gstate, compacting keeps it, note
+                    // this is just an xor
+                    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0) {
+                        err = lfs3_fs_consumegdelta(lfs3, mdir);
+                        if (err) {
+                            goto failed;
+                        }
+                    }
+
+                    // restage any bshrubs
+                    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
+                        if (lfs3_o_type(h->flags) == LFS3_TYPE_REG) {
+                            ((lfs3_bshrub_t*)h)->b_
+                                    = ((lfs3_bshrub_t*)h)->b.r;
+                        }
+                    }
+
+                    splittable = false;
+                    goto commit;
+                }
                 goto failed;
             }
             relocated = true;
@@ -9032,7 +9058,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     ((i^l) == 0) ?         0 : split_rid,
                     ((i^l) == 0) ? split_rid :        -1);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
+                // still too big? an entry can't be split
+                if (err == LFS3_ERR_RANGE) {
+                    err = LFS3_ERR_NOSPC;
+                    goto failed;
+                }
                 // bad prog? try another block
                 if (err == LFS3_ERR_CORRUPT) {
                     goto split_relocate;
@@ -15402,8 +15432,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_RDONLY(0, LFS3_GC_COMPACT)
                 | LFS3_GC_CKMETA
                 | LFS3_GC_CKDATA)) == 0);
+    #endif
 
-    // check that gc_compact_thresh makes sense
+    // check that gc_compact_thresh makes sense, note this is also used
+    // by LFS3_M_COMPACT and lfs3_fs_ck without LFS3_GC
     //
     // metadata can't be compacted below block_size/2, and metadata can't
     // exceed a block
@@ -15412,7 +15444,6 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
             || lfs3->cfg->gc_compact_thresh >= lfs3->cfg->block_size/2);
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == (lfs3_size_t)-1
             || lfs3->cfg->gc_compact_thresh <= lfs3->cfg->block_size);
-    #endif
     #endif
 
     #ifndef LFS3_RDONLY
@@ -16650,6 +16681,9 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(lfs3_m_isrevperturb(flags) || !lfs3_t_ispreerase(flags));
     #endif
+    // the mroot anchor needs blocks 0 and 1, and the gbmap needs one more
+    LFS3_ASSERT(LFS3_IFDEF_GBMAP((lfs3_f_isgbmap(flags)) ? 3 : 2, 2)
+            <= cfg->block_count);
 
     int err = lfs3_init(lfs3,
             flags & (

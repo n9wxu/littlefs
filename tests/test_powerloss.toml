@@ -159,7 +159,7 @@ code = '''
         char name[256];
         sprintf(name, "amethyst%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -194,13 +194,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -314,7 +314,7 @@ code = '''
             // create a file here
             char name[256];
             sprintf(name, "test/amethyst%03x", x);
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint8_t ck = 0;
             for (lfs3_size_t j = 0; j < SIZE-1; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
@@ -422,7 +422,7 @@ code = '''
             lfs3_file_t file;
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             // all data should be lowercase ascii
             for (lfs3_size_t j = 0; j < SIZE; j++) {
@@ -647,7 +647,7 @@ code = '''
                 // create a file here
                 char name[256];
                 sprintf(name, "%s/amethyst%03x", dir_path, x);
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint8_t ck = 0;
                 for (lfs3_size_t j = 0; j < SIZE-1; j++) {
                     wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
@@ -796,7 +796,7 @@ code = '''
                 lfs3_file_t file;
                 lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
-                uint8_t rbuf[SIZE];
+                uint8_t rbuf[lfs3_max(SIZE, 1)];
                 lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
                 // all data should be lowercase ascii
                 for (lfs3_size_t j = 0; j < SIZE; j++) {

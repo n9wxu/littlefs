@@ -6340,3 +6340,359 @@ code = '''
     CFG->read(CFG, 1, 0, magic, LFS3_MAX(16, READ_SIZE)) => 0;
     assert(memcmp(&magic[8], "littlefs", 8) == 0);
 '''
+
+
+## Commit size and fetch tests
+
+# test that operations whose metadata can't fit in a metadata block
+# error instead of asserting
+#
+# names longer than the name limit error with LFS3_ERR_NAMETOOLONG,
+# anything else that doesn't fit errors with LFS3_ERR_NOSPC and changes
+# nothing, note big root attrs fill the mroot, which also holds the
+# mtree, so these can block unrelated operations
+[cases.test_mtree_commit_too_big]
+defines.ERASE_SIZE = [512, 1024, 4096]
+defines.COUNT = 32
+defines.STEPS = 200
+defines.SEED = 'range(8)'
+fuzz = 'SEED'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+
+    // names must fit in a btree split, which limits them on small blocks
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    lfs3_size_t name_limit = fsinfo.name_limit;
+    assert(name_limit <= LFS3_NAME_MAX);
+
+    // simulate our entries, all in the root, the last one is the root
+    // itself, and each entry has up to 4 attrs filled with one byte
+    typedef struct sim {
+        char name[LFS3_NAME_MAX+1];
+        uint8_t type;
+        lfs3_size_t size;
+        uint8_t fill;
+        lfs3_ssize_t attr_sizes[4];
+        uint8_t attr_fills[4];
+    } sim_t;
+    sim_t *sim = malloc((COUNT+1)*sizeof(sim_t));
+    for (lfs3_size_t j = 0; j < COUNT+1; j++) {
+        sim[j].type = 0;
+        for (lfs3_size_t k = 0; k < 4; k++) {
+            sim[j].attr_sizes[k] = -1;
+        }
+    }
+    strcpy(sim[COUNT].name, "/");
+    sim[COUNT].type = LFS3_TYPE_DIR;
+    uint8_t *buf = malloc(BLOCK_SIZE);
+
+    uint32_t prng = SEED;
+    for (lfs3_size_t step = 0; step < STEPS; step++) {
+        uint32_t op = TEST_PRNG(&prng) % 7;
+        lfs3_size_t j = TEST_PRNG(&prng) % COUNT;
+        lfs3_size_t k = TEST_PRNG(&prng) % 4;
+        lfs3_size_t attr_size = TEST_PRNG(&prng) % (BLOCK_SIZE+1);
+        uint8_t fill = 'a' + (TEST_PRNG(&prng) % 26);
+        lfs3_size_t size = TEST_PRNG(&prng) % 64;
+
+        // a new name of 1 to LFS3_NAME_MAX bytes, unique unless truncated
+        char name[LFS3_NAME_MAX+1];
+        lfs3_size_t name_len = 1 + (TEST_PRNG(&prng) % LFS3_NAME_MAX);
+        int d = sprintf(name, "%x", (unsigned)step);
+        memset(&name[d], 'a' + (step % 26), LFS3_NAME_MAX-d);
+        name[name_len] = '\0';
+        bool unique = true;
+        for (lfs3_size_t i = 0; i < COUNT; i++) {
+            if (sim[i].type && strcmp(sim[i].name, name) == 0) {
+                unique = false;
+            }
+        }
+        bool fits = (name_len <= name_limit);
+
+        // mkdir or create a file
+        if (op <= 1) {
+            if (sim[j].type || !unique) {
+                continue;
+            }
+
+            int err;
+            if (op == 0) {
+                err = lfs3_mkdir(&lfs3, name);
+            } else {
+                lfs3_file_t file;
+                err = lfs3_file_open(&lfs3, &file, name,
+                        LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+                if (!err) {
+                    memset(buf, fill, size);
+                    lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                            buf, size);
+                    assert(d == (lfs3_ssize_t)size || d == LFS3_ERR_NOSPC);
+                    err = lfs3_file_close(&lfs3, &file);
+                    assert(!err || err == LFS3_ERR_NOSPC);
+                    if (d < 0) {
+                        err = d;
+                    }
+                }
+            }
+            assert((fits) ? (!err || err == LFS3_ERR_NOSPC)
+                    : (err == LFS3_ERR_NAMETOOLONG || err == LFS3_ERR_NOSPC));
+
+            if (!err) {
+                strcpy(sim[j].name, name);
+                sim[j].type = (op == 0) ? LFS3_TYPE_DIR : LFS3_TYPE_REG;
+                sim[j].size = (op == 0) ? 0 : size;
+                sim[j].fill = fill;
+            }
+
+        // rename
+        } else if (op == 2) {
+            if (!sim[j].type || !unique) {
+                continue;
+            }
+
+            int err = lfs3_rename(&lfs3, sim[j].name, name);
+            assert((fits) ? (!err || err == LFS3_ERR_NOSPC)
+                    : (err == LFS3_ERR_NAMETOOLONG || err == LFS3_ERR_NOSPC));
+            if (!err) {
+                strcpy(sim[j].name, name);
+            }
+
+        // setattr, on an entry or the root
+        } else if (op == 3) {
+            j = (TEST_PRNG(&prng) % 4 == 0) ? COUNT : j;
+            if (!sim[j].type) {
+                continue;
+            }
+
+            memset(buf, fill, attr_size);
+            int err = lfs3_setattr(&lfs3, sim[j].name, 'a'+k,
+                    buf, attr_size);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (!err) {
+                sim[j].attr_sizes[k] = attr_size;
+                sim[j].attr_fills[k] = fill;
+            }
+
+        // rewrite a file with a file attr
+        } else if (op == 4) {
+            if (sim[j].type != LFS3_TYPE_REG) {
+                continue;
+            }
+
+            memset(buf, fill, attr_size);
+            struct lfs3_attr attrs[] = {
+                {
+                    .type = 'a'+k,
+                    .flags = LFS3_A_WRONLY,
+                    .buffer = buf,
+                    .buffer_size = attr_size,
+                },
+            };
+            struct lfs3_file_cfg filecfg = {
+                .attrs = attrs,
+                .attr_count = 1,
+            };
+            uint8_t data[64];
+            memset(data, fill, size);
+            lfs3_file_t file;
+            int err = lfs3_file_opencfg(&lfs3, &file, sim[j].name,
+                    LFS3_O_WRONLY | LFS3_O_TRUNC, &filecfg);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (err) {
+                continue;
+            }
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, data, size);
+            assert(d == (lfs3_ssize_t)size || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d >= 0 && !err) {
+                sim[j].size = size;
+                sim[j].fill = fill;
+                sim[j].attr_sizes[k] = attr_size;
+                sim[j].attr_fills[k] = fill;
+            }
+
+        // removeattr, on an entry or the root
+        } else if (op == 5) {
+            j = (TEST_PRNG(&prng) % 4 == 0) ? COUNT : j;
+            if (!sim[j].type) {
+                continue;
+            }
+
+            int err = lfs3_removeattr(&lfs3, sim[j].name, 'a'+k);
+            if (sim[j].attr_sizes[k] < 0) {
+                assert(err == LFS3_ERR_NOATTR || err == LFS3_ERR_NOSPC);
+            } else {
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (!err) {
+                    sim[j].attr_sizes[k] = -1;
+                }
+            }
+
+        // remove
+        } else {
+            if (!sim[j].type) {
+                continue;
+            }
+
+            int err = lfs3_remove(&lfs3, sim[j].name);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (!err) {
+                sim[j].type = 0;
+                for (lfs3_size_t k = 0; k < 4; k++) {
+                    sim[j].attr_sizes[k] = -1;
+                }
+            }
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount? note we check read-only, lfs3_fs_ck may also sync
+        // the gbmap, which may not fit in an mroot full of root attrs
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDONLY | M_FLAGS, CFG) => 0;
+        }
+
+        // check our entries and their attrs
+        lfs3_size_t count = 0;
+        for (lfs3_size_t j = 0; j < COUNT+1; j++) {
+            if (!sim[j].type) {
+                continue;
+            }
+
+            if (j < COUNT) {
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, sim[j].name, &info) => 0;
+                assert(strcmp(info.name, sim[j].name) == 0);
+                assert(info.type == sim[j].type);
+                count += 1;
+            }
+
+            if (sim[j].type == LFS3_TYPE_REG) {
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, sim[j].name,
+                        LFS3_O_RDONLY) => 0;
+                uint8_t data[64];
+                lfs3_file_read(&lfs3, &file, data, sizeof(data))
+                        => sim[j].size;
+                for (lfs3_size_t i = 0; i < sim[j].size; i++) {
+                    assert(data[i] == sim[j].fill);
+                }
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            for (lfs3_size_t k = 0; k < 4; k++) {
+                if (sim[j].attr_sizes[k] >= 0) {
+                    lfs3_sizeattr(&lfs3, sim[j].name, 'a'+k)
+                            => sim[j].attr_sizes[k];
+                    lfs3_getattr(&lfs3, sim[j].name, 'a'+k,
+                            buf, BLOCK_SIZE)
+                            => sim[j].attr_sizes[k];
+                    for (lfs3_ssize_t i = 0; i < sim[j].attr_sizes[k]; i++) {
+                        assert(buf[i] == sim[j].attr_fills[k]);
+                    }
+                } else {
+                    lfs3_sizeattr(&lfs3, sim[j].name, 'a'+k)
+                            => LFS3_ERR_NOATTR;
+                }
+            }
+        }
+
+        // and nothing else
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        lfs3_size_t count_ = 0;
+        while (true) {
+            struct lfs3_info info;
+            int err = lfs3_dir_read(&lfs3, &dir, &info);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            count_ += 1;
+        }
+        lfs3_dir_close(&lfs3, &dir) => 0;
+        // note . and ..
+        assert(count_ == count + 2);
+
+        if (remount) {
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+    }
+
+    free(buf);
+    free(sim);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that fetch picks the block with the newer revision count, revision
+# counts are compared as sequence numbers, so this includes overflow
+#
+# note revision counts are little-endian on disk, so this also needs to
+# hold on big-endian hosts
+[cases.test_mtree_fetch_revorder]
+# we write the revision counts ourselves
+defines.REVPERTURB = false
+defines.REVNOISE = false
+# REVS=0 => 0x0f80006d then 0x1000006d
+# REVS=1 => 0xfff0006d then 0x0010006d, across 32-bit overflow
+# REVS=2 => 0x7ff0006d then 0x8010006d, across the sign bit
+defines.REVS = [0, 1, 2]
+# which block has the newer revision count
+defines.NEWER = [0, 1]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_init(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    const uint32_t revs[3][2] = {
+        {0x0f80006d, 0x1000006d},
+        {0xfff0006d, 0x0010006d},
+        {0x7ff0006d, 0x8010006d},
+    };
+
+    // write an older and a newer rbyd
+    for (int i = 0; i < 2; i++) {
+        lfs3_rbyd_t rbyd = {
+            .blocks[0] = (i == 1) ? NEWER : 1-NEWER,
+            .eoff = 0,
+            .cksum = 0,
+            .trunk = 0,
+            .weight = 0,
+        };
+        lfs3_bd_erase(&lfs3, rbyd.blocks[0]) => 0;
+        lfs3_rbyd_appendrev(&lfs3, &rbyd, revs[REVS][i]) => 0;
+        lfs3_rbyd_commit(&lfs3, &rbyd, -1, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_ATTR(1), 0, LFS3_FROM_BUF, 5),
+                LFS3_RATTR_ARG((i == 1) ? "newer" : "older"),
+                LFS3_RATTR_NULL)) => 0;
+    }
+
+    // fetch should pick the newer one, in either order
+    for (int i = 0; i < 2; i++) {
+        lfs3_mdir_t mdir;
+        lfs3_mdir_fetch(&lfs3, &mdir, -1,
+                (i == 0)
+                    ? (lfs3_block_t[2]){0, 1}
+                    : (lfs3_block_t[2]){1, 0}) => 0;
+        assert(mdir.r.blocks[0] == (lfs3_block_t)NEWER);
+        assert(mdir.r.blocks[1] == (lfs3_block_t)(1-NEWER));
+
+        uint8_t rev_buf[4];
+        lfs3_bd_read(&lfs3, mdir.r.blocks[0], 0, 4, rev_buf, 4) => 0;
+        assert(lfs3_fromle32(rev_buf) == revs[REVS][1]);
+
+        lfs3_data_t data;
+        lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_ATTR(1), &data)
+                => LFS3_TAG_ATTR(1);
+        uint8_t buffer[5];
+        lfs3_data_read(&lfs3, &data, buffer, 5) => 5;
+        assert(memcmp(buffer, "newer", 5) == 0);
+    }
+
+    lfs3_deinit(&lfs3) => 0;
+'''
