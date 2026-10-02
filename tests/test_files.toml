@@ -787,6 +787,109 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that a failed file cache allocation fails the open, registers no
+# handle, writes nothing, and leaks nothing
+[cases.test_files_open_nomem]
+defines.MODE = [
+    'LFS3_O_RDONLY',
+    'LFS3_O_WRONLY',
+    'LFS3_O_RDWR',
+    'LFS3_O_WRONLY | LFS3_O_CREAT',
+    'LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL',
+    'LFS3_O_WRONLY | LFS3_O_TRUNC',
+]
+defines.EXISTS = [false, true]
+if = '(EXISTS) ? !(MODE & LFS3_O_EXCL) : (MODE & LFS3_O_CREAT)'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    lfs3_file_t file;
+    if (EXISTS) {
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "hello!", 6) => 6;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // keep some other handles open
+    lfs3_file_t other;
+    lfs3_file_open(&lfs3, &other, "other",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "/") => 0;
+    lfs3_handle_t *handles = lfs3.handles;
+
+    size_t live = test_malloc_live;
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+
+    // fail the file cache allocation
+    memset(&file, 0xab, sizeof(file));
+    test_malloc_fail = 1;
+    lfs3_file_open(&lfs3, &file, "hello", MODE) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+    assert(test_malloc_live == live);
+
+    // the handle is not registered, and the others are untouched
+    assert(lfs3.handles == handles);
+    assert(!lfs3_handle_isopen(&lfs3, &file.b.h));
+    assert(lfs3_handle_isopen(&lfs3, &other.b.h));
+    assert(lfs3_handle_isopen(&lfs3, &dir.h));
+
+    // and nothing was written
+    lfs3_emubd_progs(CFG) => progs;
+    lfs3_emubd_erases(CFG) => erases;
+    uint32_t cksum_;
+    lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+    assert(cksum_ == cksum);
+
+    // the other handles still work
+    struct lfs3_info info;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    assert(strcmp(info.name, ".") == 0);
+    lfs3_dir_close(&lfs3, &dir) => 0;
+    lfs3_file_write(&lfs3, &other, "other!", 6) => 6;
+    lfs3_file_close(&lfs3, &other) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            assert(test_malloc_live == 0);
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // the file is as before
+        if (EXISTS) {
+            lfs3_stat(&lfs3, "hello", &info) => 0;
+            assert(info.size == 6);
+            uint8_t rbuf[16];
+            lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, 16) => 6;
+            assert(memcmp(rbuf, "hello!", 6) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        } else {
+            lfs3_stat(&lfs3, "hello", &info) => LFS3_ERR_NOENT;
+        }
+        lfs3_stat(&lfs3, "other", &info) => 0;
+        assert(info.size == 6);
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    // and the open works once memory is available
+    lfs3_file_open(&lfs3, &file, "hello", MODE) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    lfs3_unmount(&lfs3) => 0;
+    assert(test_malloc_live == 0);
+'''
+
 # test creating multiple files
 [cases.test_files_many]
 defines.N = [1, 2, 4, 8, 16, 32, 64]
