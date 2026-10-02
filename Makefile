@@ -42,6 +42,8 @@ RDONLY_RUNNER ?= $(BUILDDIR)/runners/rdonly_runner
 RDONLY_DIR ?= $(BUILDDIR)/rdonly
 RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
+COMPAT_DIR ?= $(BUILDDIR)/compat
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -574,6 +576,38 @@ test-rdonly:
 	$(RDONLY_DIR)/ro/runners/rdonly_runner $(RDONLY_DIR)/*.disk
 	$(RDONLY_DIR)/yro/runners/rdonly_runner $(RDONLY_DIR)/*.disk
 
+## Check that builds with and without LFS3_GBMAP exchange images
+#
+# The default, LFS3_GBMAP, and LFS3_YES_GBMAP builds write images with
+# test_compat_gbmap_exchange, with and without a gbmap, and with blocks
+# marked bad in the gbmap, named <build>-<GBMAP>-<BMBAD>.disk, then every
+# build checks every image. Everything goes in COMPAT_DIR.
+.PHONY: test-compat-gbmap
+test-compat-gbmap:
+	$(MAKE) BUILDDIR=$(COMPAT_DIR)/def test-runner
+	$(MAKE) BUILDDIR=$(COMPAT_DIR)/gb LFS3_GBMAP=1 test-runner
+	$(MAKE) BUILDDIR=$(COMPAT_DIR)/ygb LFS3_YES_GBMAP=1 test-runner
+	rm -f $(COMPAT_DIR)/*.disk
+	for i in def-0-0 gb-0-0 gb-1-0 gb-1-1 ygb-1-0 ygb-1-1 ; do \
+		IFS=- read b g x <<< "$$i" ; \
+		./scripts/test.py -R$(COMPAT_DIR)/$$b/runners/test_runner \
+				-Pnone -d $(COMPAT_DIR)/$$i.disk \
+				test_compat_gbmap_exchange \
+				-DROLE=1 -DGBMAP=$$g -DBMBAD=$$x \
+			|| exit 1 ; \
+	done
+	for b in def gb ygb ; do \
+		for d in $(COMPAT_DIR)/*.disk ; do \
+			n=$${d##*/} ; \
+			IFS=- read _ g x <<< "$${n%.disk}" ; \
+			TEST_COMPAT_GBMAP_IMAGE=$$d \
+				./scripts/test.py -R$(COMPAT_DIR)/$$b/runners/test_runner \
+					-Pnone test_compat_gbmap_exchange \
+					-DROLE=2 -DGBMAP=$$g -DBMBAD=$$x \
+				|| exit 1 ; \
+		done ; \
+	done
+
 ## List the tests
 .PHONY: test-list list-tests
 test-list list-tests: test-runner
@@ -915,6 +949,7 @@ clean:
 	rm -f $(RDONLY_RUNNER)
 	rm -f $(BUILDDIR)/runners/rdonly_runner.o
 	rm -rf $(RDONLY_DIR)
+	rm -rf $(COMPAT_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)
