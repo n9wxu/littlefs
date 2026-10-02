@@ -5430,6 +5430,134 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test a file_limit below LFS3_FILE_MAX, writes, seeks, truncates, and
+# fruncates can reach the limit but not pass it
+[cases.test_fwrite_file_limit]
+defines.LIMIT = [1, 1000, 65536]
+defines.SIZE = [
+    '1',
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+# OP=0 => write
+# OP=1 => truncate
+# OP=2 => fruncate
+defines.OP = [0, 1, 2]
+defines.MODE = ['LFS3_O_WRONLY', 'LFS3_O_RDWR']
+if = 'SIZE <= LIMIT'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.file_limit = LIMIT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.file_limit == LIMIT);
+
+    // simulate our file in ram
+    uint8_t *sim = malloc(LIMIT);
+    assert(sim);
+    memset(sim, 0, LIMIT);
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_off_t size = SIZE;
+    uint8_t wbuf[SIZE];
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "hello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int step = 0; step < 2; step++) {
+        lfs3_file_open(&lfs3, &file, "hello", MODE) => 0;
+        // seeks can reach the limit, but not pass it
+        lfs3_file_seek(&lfs3, &file, LIMIT, LFS3_SEEK_SET) => LIMIT;
+        lfs3_file_seek(&lfs3, &file, LIMIT+1, LFS3_SEEK_SET)
+                => LFS3_ERR_INVAL;
+        lfs3_file_tell(&lfs3, &file) => LIMIT;
+
+        if (step == 0) {
+            // try to pass the limit, this should fail and change nothing
+            if (OP == 0) {
+                lfs3_file_seek(&lfs3, &file, LIMIT-(SIZE/2), LFS3_SEEK_SET)
+                        => LIMIT-(SIZE/2);
+                lfs3_file_write(&lfs3, &file, wbuf, SIZE) => LFS3_ERR_FBIG;
+            } else if (OP == 1) {
+                lfs3_file_truncate(&lfs3, &file, LIMIT+1) => LFS3_ERR_FBIG;
+                lfs3_file_truncate(&lfs3, &file, LIMIT+SIZE)
+                        => LFS3_ERR_FBIG;
+            } else {
+                lfs3_file_fruncate(&lfs3, &file, LIMIT+1) => LFS3_ERR_FBIG;
+                lfs3_file_fruncate(&lfs3, &file, LIMIT+SIZE)
+                        => LFS3_ERR_FBIG;
+            }
+
+        } else {
+            // reach the limit exactly, this should succeed
+            if (OP == 0) {
+                lfs3_file_seek(&lfs3, &file, LIMIT-SIZE, LFS3_SEEK_SET)
+                        => LIMIT-SIZE;
+                lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+                memcpy(&sim[LIMIT-SIZE], wbuf, SIZE);
+            } else if (OP == 1) {
+                lfs3_file_truncate(&lfs3, &file, LIMIT) => 0;
+            } else {
+                lfs3_file_fruncate(&lfs3, &file, LIMIT) => 0;
+                memmove(&sim[LIMIT-size], sim, size);
+                memset(sim, 0, LIMIT-size);
+            }
+            size = LIMIT;
+            lfs3_file_size(&lfs3, &file) => LIMIT;
+            lfs3_file_sync(&lfs3, &file) => 0;
+
+            // but one more byte fails
+            lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => LIMIT;
+            lfs3_file_write(&lfs3, &file, wbuf, 1) => LFS3_ERR_FBIG;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        for (int remount = 0; remount < 2; remount++) {
+            // remount?
+            if (remount) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+            }
+
+            // check our file with stat
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, "hello", &info) => 0;
+            assert(info.type == LFS3_TYPE_REG);
+            assert(info.size == size);
+
+            // try reading our file
+            lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => size;
+            uint8_t *rbuf = malloc(LIMIT+1);
+            assert(rbuf);
+            memset(rbuf, 0xaa, LIMIT+1);
+            lfs3_file_read(&lfs3, &file, rbuf, LIMIT+1) => size;
+            assert(memcmp(rbuf, sim, size) == 0);
+            free(rbuf);
+            lfs3_file_close(&lfs3, &file) => 0;
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+    }
+
+    free(sim);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 # heavy fuzz test with rw seeks, truncate, and fruncate
 [cases.test_fwrite_rwtf_fuzz]
