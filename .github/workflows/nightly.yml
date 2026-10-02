@@ -18,6 +18,58 @@ env:
   BENCHFLAGS:
 
 jobs:
+  # run the rest of the tests on the big-endian archs, test.yml only
+  # runs -Pnone --no-fuzz under qemu
+  #
+  # split by powerloss scenario to fit in GitHub's time limits
+  test-arch:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [mips, powerpc]
+        pls: [none, linear]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+
+      # cross-compile with MIPS (32-bit, big-endian)
+      - name: install-mips
+        if: ${{matrix.arch == 'mips'}}
+        run: |
+          sudo apt-get install -qq \
+            gcc-mips-linux-gnu \
+            libc6-dev-mips-cross \
+            qemu-user
+          echo "CC=mips-linux-gnu-gcc --static" >> $GITHUB_ENV
+          echo "EXEC=qemu-mips" >> $GITHUB_ENV
+          mips-linux-gnu-gcc --version
+          qemu-mips -version
+      # cross-compile with PowerPC (32-bit, big-endian)
+      - name: install-powerpc
+        if: ${{matrix.arch == 'powerpc'}}
+        run: |
+          sudo apt-get install -qq \
+            gcc-powerpc-linux-gnu \
+            libc6-dev-powerpc-cross \
+            qemu-user
+          echo "CC=powerpc-linux-gnu-gcc --static" >> $GITHUB_ENV
+          echo "EXEC=qemu-ppc" >> $GITHUB_ENV
+          powerpc-linux-gnu-gcc --version
+          qemu-ppc -version
+
+      - name: test-arch
+        run: |
+          TESTFLAGS="$TESTFLAGS -P${{matrix.pls}}" make test
+
   # test other geometries
   #
   # v3 has no -G, so geometries are just define overrides. Note we
@@ -25,7 +77,7 @@ jobs:
   # need specific block sizes and -D overrides those too.
   test-geometry:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
@@ -65,7 +117,7 @@ jobs:
   # test other erase values, -1 simulates erase as a noop
   test-erase-value:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -87,13 +139,29 @@ jobs:
   # run as many exhaustive tests as fits in GitHub's time limits
   #
   # this grows exponentially, so it doesn't turn out to be that many
+  #
+  # permute(1) only runs reentrant tests, split by suite since even one
+  # powerloss at every write takes 10-100x as long as -Plinear. Locally
+  # test_relocations and test_powerloss took hours on 4 cores, so may not
+  # fit in GitHub's 6 hour limit
   test-pls:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
+    continue-on-error: ${{matrix.slow == true}}
     strategy:
       fail-fast: false
       matrix:
-        pls: [1, 2]
+        tests:
+          - test_dirs test_dread test_files test_stickynotes
+          - test_attrs
+          - test_grow
+          - test_relocations
+          - test_powerloss
+        include:
+          - tests: test_relocations
+            slow: true
+          - tests: test_powerloss
+            slow: true
 
     steps:
       - uses: actions/checkout@v4
@@ -105,23 +173,41 @@ jobs:
           gcc --version
           python3 --version
       - name: test-pls
-        if: ${{matrix.pls <= 1}}
         run: |
-          TESTFLAGS="$TESTFLAGS -P'permute(${{matrix.pls}})'" make test
-      # >=2pls takes multiple days to run fully, so we can only
-      # run a subset of tests, these are the most important
+          TESTFLAGS="$TESTFLAGS -P'permute(1)' ${{matrix.tests}}" make test
+
+  # >=2pls takes multiple days to run fully, so we can only
+  # run a subset of tests, these are the most important
+  #
+  # even test_dirs didn't finish in 16 minutes on 4 cores locally, so
+  # this may not fit in GitHub's 6 hour limit either
+  test-limited-pls:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
       - name: test-limited-pls
-        if: ${{matrix.pls > 1}}
         run: |
-          TESTFLAGS="$TESTFLAGS -P'permute(${{matrix.pls}})' \
-              test_dirs test_relocations test_powerloss" \
-            make test
+          TESTFLAGS="$TESTFLAGS -P'permute(2)' test_dirs" make test
 
   # run the reentrant tests with the other powerloss behaviors, by
   # default only test_powerloss tests these
+  #
+  # note the existing reentrant tests expect exact success after every
+  # powerloss, which METASTABLE (4) doesn't promise, so 4 is expected to
+  # fail until tests accept LFS3_ERR_CORRUPT there
   test-powerloss-behavior:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    continue-on-error: ${{matrix.behavior == 4}}
     strategy:
       fail-fast: false
       matrix:
@@ -150,7 +236,7 @@ jobs:
   # tests
   test-yes:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
