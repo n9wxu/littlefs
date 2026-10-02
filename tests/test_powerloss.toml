@@ -27,6 +27,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 defines.N = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
@@ -125,6 +126,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -225,6 +227,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -456,6 +459,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -831,6 +835,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
 defines.N = 8
@@ -910,8 +915,11 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.PROG_SIZE = [1, 16, 256]
+# a pcache wider than prog_size tears more than prog_size bytes
+defines.PCACHE_SIZE = ['LFS3_MAX(16, PROG_SIZE)', '4*PROG_SIZE']
 defines.CHUNK = [16, 64]
 defines.FILES = [1, 2]
 defines.SIZE = '2*BLOCK_SIZE + BLOCK_SIZE/2'
@@ -1052,12 +1060,15 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.N = [1, 4]
 defines.SIZE = ['BLOCK_SIZE/2', '4*BLOCK_SIZE']
 defines.CHUNK = 'SIZE/4'
 defines.LIMIT = 'SIZE/2'
 defines.PROG_SIZE = [1, 16]
+# a pcache wider than prog_size tears more than prog_size bytes
+defines.PCACHE_SIZE = ['LFS3_MAX(16, PROG_SIZE)', '4*PROG_SIZE']
 defines.OPS = 32
 defines.SEED = 'range(10)'
 fuzz = 'SEED'
@@ -1267,6 +1278,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 # inlining has a tendency to hide sync issues, so try without
 defines.SHRUB_SIZE = ['BLOCK_SIZE/4', '0']
@@ -1403,6 +1415,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
 # pre-erasing needs the gbmap, and revperturb on every mount to use the
@@ -1695,6 +1708,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 # repopulate the gbmap rarely or often
 defines.LOOKGBMAP_THRESH = ['BLOCK_COUNT/4', '7*BLOCK_COUNT/8']
@@ -1925,6 +1939,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GC_FLAGS = 'LFS3_GC_PREERASE'
 defines.GC_STEPS = 1
@@ -1932,14 +1947,7 @@ defines.GC_PREERASE_COUNT = ['4', '-1']
 # test with a number of different erase values
 defines.ERASE_VALUE = [0xff, 0x00, -1]
 # no byte may be programmed twice without an erase
-#
-# except that without an erase value, a torn prog can leave its first
-# prog_size bytes equal to the old erased state, which the prog_size-byte
-# erased-state checksums can't tell apart, see gc_preerase_count in lfs3.h
-defines.CKPROGONCE = '''
-    ERASE_VALUE != -1
-        || POWERLOSS_BEHAVIOR != LFS3_EMUBD_POWERLOSS_MOSTBITS
-'''
+defines.CKPROGONCE = true
 defines.N = 2
 defines.SIZE = '2*BLOCK_SIZE'
 defines.CHUNK = 64
@@ -2104,6 +2112,297 @@ code = '''
         }
 
         // check our files
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step;
+            if (counts[x] == 0) {
+                lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                        => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(step == counts[x]);
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+            uint8_t rbuf[SIZE+1];
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+            assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# Janitorial work under powerloss, mounting with LFS3_M_REVPERTURB only
+# when pre-erasing
+#
+# Mounts without LFS3_M_REVPERTURB can't trust blocks pre-erased by
+# another mount, but must still use them, erasing them again, instead of
+# failing writes with LFS3_ERR_NOSPC on a nearly empty disk
+#
+# Interleave writes with gc, mkconsistent, checks with work flags,
+# read-write traversals, and remounts with work flags, while holding an
+# uncreated file open so there are stickynotes to keep or clean up.
+# Each file's step is committed with its data as a file-attached
+# attribute, and the janitorial work between steps is redone after a
+# powerloss
+#
+[cases.test_powerloss_gc_crossmode_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+defines.GBMAP = [false, true]
+# pre-erasing needs the gbmap, and revperturb on every mount to use the
+# pre-erased blocks
+defines.PREERASE = 'LFS3_IFDEF_PREERASE(GBMAP, false)'
+defines.F_FLAGS = '''
+    ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0)
+        | ((PREERASE) ? LFS3_IFDEF_PREERASE(LFS3_F_REVPERTURB, -1) : 0)
+'''
+defines.M_FLAGS = 0
+defines.GC_FLAGS = 'LFS3_GC_GC & ~LFS3_IFDEF_PREERASE(LFS3_GC_PREERASE, 0)'
+defines.GC_PREERASE_COUNT = -1
+defines.GC_STEPS = [1, -1]
+defines.GC_COMPACT_THRESH = ['0', 'BLOCK_SIZE/2']
+defines.N = 4
+defines.SIZE = ['BLOCK_SIZE/8', '2*BLOCK_SIZE']
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+if = [
+    'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
+    'LFS3_IFDEF_GC(true, GC_STEPS == 1)',
+]
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    }
+
+    // stickynotes should never be visible
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "sticky", &info) => LFS3_ERR_NOENT;
+
+    // how far did we get?
+    uint32_t steps[N];
+    lfs3_size_t k_ = 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                &steps[x], sizeof(uint32_t));
+        assert(d == sizeof(uint32_t) || d == LFS3_ERR_NOENT);
+        if (d == LFS3_ERR_NOENT) {
+            steps[x] = 0;
+        }
+        k_ += steps[x];
+    }
+    assert(k_ <= OPS);
+
+    // mount-time work we can choose from
+    const uint32_t mflags[] = {
+        LFS3_M_MKCONSISTENT,
+        LFS3_M_LOOKAHEAD,
+        LFS3_M_COMPACT,
+        LFS3_M_CKMETA,
+        LFS3_M_CKDATA,
+        LFS3_M_MKCONSISTENT | LFS3_M_LOOKAHEAD | LFS3_M_COMPACT
+            | LFS3_M_CKMETA | LFS3_M_CKDATA,
+        (PREERASE)
+            ? LFS3_IFDEF_PREERASE(LFS3_M_REVPERTURB | LFS3_M_PREERASE, 0)
+            : 0,
+    };
+    const lfs3_size_t mflag_count = sizeof(mflags)/sizeof(uint32_t);
+
+    // replay our ops in our sim, then continue on disk
+    uint8_t sims[N][SIZE];
+    lfs3_off_t sim_sizes[N];
+    uint32_t counts[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        sim_sizes[x] = 0;
+        counts[x] = 0;
+    }
+    uint32_t prng = SEED;
+    for (lfs3_size_t k = 0;; k++) {
+        // caught up with disk? check that every file matches our sim
+        if (k == k_) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(counts[x] == steps[x]);
+                if (counts[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_size(&lfs3, &file) => sim_sizes[x];
+                uint8_t rbuf[SIZE+1];
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+                assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        if (k == OPS) {
+            break;
+        }
+
+        // choose a file and an op
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 3;
+        uint8_t *sim = sims[x];
+        lfs3_off_t size = sim_sizes[x];
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        // rewrite?
+        if (op == 0) {
+            off = 0;
+            chunk = 1 + (TEST_PRNG(&prng) % SIZE);
+            size = 0;
+        // append?
+        } else if (op == 1) {
+            off = size;
+            chunk = lfs3_min(1 + (TEST_PRNG(&prng) % SIZE), SIZE - size);
+        // overwrite?
+        } else {
+            off = TEST_PRNG(&prng) % (size+1);
+            chunk = lfs3_min(1 + (TEST_PRNG(&prng) % SIZE), SIZE - off);
+        }
+        for (lfs3_size_t j = 0; j < chunk; j++) {
+            sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        size = lfs3_max(size, off+chunk);
+
+        // choose some janitorial work, and whether to hold a
+        // stickynote open while we do it
+        uint8_t work = TEST_PRNG(&prng) % 9;
+        bool sticky = TEST_PRNG(&prng) % 2;
+        uint32_t mflags_ = mflags[TEST_PRNG(&prng) % mflag_count];
+
+        if (k >= k_) {
+            lfs3_file_t u;
+            if (sticky) {
+                lfs3_file_open(&lfs3, &u, "sticky",
+                        LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+                lfs3_file_write(&lfs3, &u, "sticky", 6) => 6;
+            }
+
+            // gc?
+            if (work == 0) {
+                #ifdef LFS3_GC
+                lfs3_fs_gc(&lfs3) => 0;
+                #else
+                lfs3_fs_mkconsistent(&lfs3) => 0;
+                #endif
+
+            // mkconsistent?
+            } else if (work == 1) {
+                lfs3_fs_mkconsistent(&lfs3) => 0;
+
+            // ck with work flags?
+            } else if (work == 2) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_MKCONSISTENT) => 0;
+            } else if (work == 3) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_LOOKAHEAD) => 0;
+            } else if (work == 4) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_COMPACT) => 0;
+            } else if (work == 5) {
+                lfs3_fs_ck(&lfs3,
+                        LFS3_CK_MKCONSISTENT
+                            | LFS3_CK_LOOKAHEAD
+                            | LFS3_CK_COMPACT
+                            | LFS3_CK_CKMETA
+                            | LFS3_CK_CKDATA) => 0;
+
+            // read-write traversal?
+            } else if (work == 6) {
+                lfs3_trv_t trv;
+                lfs3_trv_open(&lfs3, &trv,
+                        LFS3_T_RDWR
+                            | LFS3_T_COMPACT
+                            | LFS3_T_MKCONSISTENT
+                            | LFS3_T_LOOKAHEAD) => 0;
+                while (true) {
+                    struct lfs3_tinfo tinfo;
+                    int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                    assert(!err || err == LFS3_ERR_NOENT);
+                    if (err == LFS3_ERR_NOENT) {
+                        break;
+                    }
+                }
+                lfs3_trv_close(&lfs3, &trv) => 0;
+
+            // remount with mount-time work?
+            } else if (work == 7) {
+                if (sticky) {
+                    lfs3_file_desync(&lfs3, &u) => 0;
+                    lfs3_file_close(&lfs3, &u) => 0;
+                    sticky = false;
+                }
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS | mflags_, CFG) => 0;
+            }
+
+            // write our file
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step = counts[x]+1;
+            struct lfs3_attr attr = {
+                .type = 1,
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(uint32_t),
+            };
+            struct lfs3_file_cfg filecfg = {
+                .attrs = &attr,
+                .attr_count = 1,
+            };
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT
+                        | ((op == 0) ? LFS3_O_TRUNC : 0),
+                    &filecfg) => 0;
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_close(&lfs3, &file) => 0;
+
+            // drop our stickynote
+            if (sticky) {
+                lfs3_file_desync(&lfs3, &u) => 0;
+                lfs3_file_close(&lfs3, &u) => 0;
+            }
+        }
+        sim_sizes[x] = size;
+        counts[x] += 1;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // check our files
+        lfs3_stat(&lfs3, "sticky", &info) => LFS3_ERR_NOENT;
         for (lfs3_size_t x = 0; x < N; x++) {
             char name[256];
             sprintf(name, "file%03x", x);

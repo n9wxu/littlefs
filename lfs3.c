@@ -2610,17 +2610,41 @@ static inline bool lfs3_ecksum_isecksum(const lfs3_ecksum_t *ecksum) {
 }
 #endif
 
+// the most a single prog can write at off in an erased region: a pcache
+// flush, or a tag progged directly when the pcache is smaller
+//
+// an interrupted prog may leave its first prog_size bytes erased and
+// its tail programmed, so erased-state checksums need to cover all of
+// it
+#ifndef LFS3_RDONLY
+static inline lfs3_size_t lfs3_ecksum_cksize(const lfs3_t *lfs3,
+        lfs3_off_t off) {
+    return lfs3_min(
+            lfs3_alignup(
+                lfs3_max(lfs3->cfg->pcache_size, LFS3_TAG_DSIZE),
+                lfs3->cfg->prog_size),
+            lfs3->cfg->block_size - off);
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_ecksum_read(lfs3_t *lfs3, lfs3_ecksum_t *ecksum,
         lfs3_block_t block, lfs3_off_t off) {
-    // keep track of prog size
-    ecksum->cksize = lfs3->cfg->prog_size;
+    ecksum->cksize = lfs3_ecksum_cksize(lfs3, off);
     // checksum erased state
     ecksum->cksum = 0;
     return lfs3_bd_cksum(lfs3,
             block, off, 0,
-            lfs3->cfg->prog_size,
+            ecksum->cksize,
             &ecksum->cksum);
+}
+#endif
+
+// is an ecksum wide enough to trust before we prog at off?
+#ifndef LFS3_RDONLY
+static inline bool lfs3_ecksum_iswide(const lfs3_t *lfs3,
+        const lfs3_ecksum_t *ecksum, lfs3_off_t off) {
+    return (lfs3_size_t)ecksum->cksize >= lfs3_ecksum_cksize(lfs3, off);
 }
 #endif
 
@@ -2777,9 +2801,13 @@ static int lfs3_rbyd_alloc(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
 #ifndef LFS3_RDONLY
 static int lfs3_rbyd_ckecksum(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
         const lfs3_ecksum_t *ecksum) {
-    // check that the ecksum looks right
-    if (lfs3_rbyd_eoff(rbyd) + ecksum->cksize >= lfs3->cfg->block_size
-            || lfs3_rbyd_eoff(rbyd) % lfs3->cfg->prog_size != 0) {
+    // check that the ecksum looks right and covers our next prog, older
+    // images and smaller pcaches can leave narrower ecksums
+    if (lfs3_rbyd_eoff(rbyd) >= lfs3->cfg->block_size
+            || lfs3_rbyd_eoff(rbyd) % lfs3->cfg->prog_size != 0
+            || (lfs3_size_t)ecksum->cksize
+                > lfs3->cfg->block_size - lfs3_rbyd_eoff(rbyd)
+            || !lfs3_ecksum_iswide(lfs3, ecksum, lfs3_rbyd_eoff(rbyd))) {
         return LFS3_ERR_CORRUPT;
     }
 
@@ -4563,7 +4591,7 @@ static int lfs3_rbyd_appendcksum_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         // this should hopefully stay in our cache
         uint8_t e = 0;
         int err = lfs3_bd_read(lfs3,
-                rbyd->blocks[0], off_, lfs3->cfg->prog_size,
+                rbyd->blocks[0], off_, lfs3_ecksum_cksize(lfs3, off_),
                 &e, 1);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
@@ -8356,6 +8384,20 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
             // treat end_rid=-1 as "unbounded" in such a way that rid=-1
             // is still included
             && (lfs3_size_t)(rid + 1) <= (lfs3_size_t)end_rid) {
+        // removing our last rid? we're about to be dropped, so don't
+        // append anything, an mdir too full to commit to may still need
+        // to be emptied
+        lfs3_srid_t weight = mdir_->r.weight;
+        for (const lfs3_rattr_t *r = rattrs;
+                *r;
+                r = lfs3_rattr_next(r, NULL)) {
+            weight += lfs3_rattr_weight(r);
+        }
+        if (weight == 0
+                && !(mdir_->mid <= -1
+                    || lfs3_mdir_cmp(mdir_, &lfs3->mroot) == 0)) {
+            return LFS3_ERR_NOENT;
+        }
 
         for (const lfs3_rattr_t *r = rattrs;
                 *r;
@@ -8730,10 +8772,37 @@ static lfs3_ssize_t lfs3_mdir_estimate___(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
 }
 #endif
 
+// does this commit only remove one rid or one tag? compaction can leave
+// these out, so removing never needs more room than it frees
+#ifndef LFS3_RDONLY
+static const lfs3_rattr_t *lfs3_mdir_rmrattr(const lfs3_rattr_t *rattrs) {
+    if (!*rattrs
+            || *lfs3_rattr_next(rattrs, NULL)
+            // only plain rms, no grows or masks
+            || (lfs3_rattr_tag(rattrs) & ~LFS3_tag_RM & ~0x0fff)
+            || !lfs3_rattr_isrm(rattrs)) {
+        return NULL;
+    }
+
+    // removing a rid?
+    if (lfs3_rattr_weight(rattrs) == -1
+            && lfs3_tag_key(lfs3_rattr_tag(rattrs)) == 0) {
+        return rattrs;
+    // removing a tag?
+    } else if (lfs3_rattr_weight(rattrs) == 0
+            && lfs3_tag_key(lfs3_rattr_tag(rattrs)) != 0) {
+        return rattrs;
+    } else {
+        return NULL;
+    }
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_compact___(lfs3_t *lfs3,
         lfs3_mdir_t *mdir_, const lfs3_mdir_t *mdir,
-        lfs3_srid_t start_rid, lfs3_srid_t end_rid) {
+        lfs3_srid_t start_rid, lfs3_srid_t end_rid,
+        lfs3_srid_t rm_rid, const lfs3_rattr_t *rm) {
     // this is basically the same as lfs3_rbyd_compact, but with special
     // handling for inlined trees.
     //
@@ -8742,6 +8811,9 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
     //
     // note this returns LFS3_ERR_RANGE if the mdir doesn't fit, mdirs
     // that can't split are compacted without checking the estimate
+    //
+    // if rm is provided, this also leaves out the rid or tag it removes
+    // at rm_rid, see lfs3_mdir_rmrattr
 
     // assume we keep any gcksumdelta, this will get fixed the first time
     // we commit anything
@@ -8769,6 +8841,13 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
         // included
         if ((lfs3_size_t)(rid + 1) > (lfs3_size_t)end_rid) {
             break;
+        }
+
+        // removed by our commit?
+        if (rm && rid == rm_rid
+                && (lfs3_rattr_weight(rm) < 0
+                    || tag == lfs3_tag_key(lfs3_rattr_tag(rm)))) {
+            continue;
         }
 
         // found an inlined shrub? we need to compact the shrub as well to
@@ -8880,6 +8959,14 @@ compact:;
     bool relocated = false;
     bool overrecyclable = true;
 
+    // only removing? we can leave what we remove out of the compaction
+    lfs3_srid_t rm_rid = lfs3_mrid(lfs3, mid);
+    const lfs3_rattr_t *rm = NULL;
+    if (rm_rid >= start_rid
+            && (lfs3_size_t)(rm_rid + 1) <= (lfs3_size_t)end_rid) {
+        rm = lfs3_mdir_rmrattr(rattrs);
+    }
+
     // check if we're within our compaction threshold
     lfs3_ssize_t estimate = lfs3_mdir_estimate___(lfs3, mdir,
             start_rid, end_rid,
@@ -8927,7 +9014,8 @@ compact:;
 
         // compact our mdir, this can only overflow if we skipped
         // splitting above
-        err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid);
+        err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid,
+                rm_rid, rm);
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
@@ -8943,7 +9031,7 @@ compact:;
         // larger than what compaction freed, in which case our caller
         // can try splitting
         err = lfs3_mdir_commit___(lfs3, mdir_, start_rid_, end_rid,
-                mid, rattrs);
+                mid, (rm) ? LFS3_RATTRS(LFS3_RATTR_NULL) : rattrs);
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
@@ -9191,7 +9279,8 @@ commit:;
             err = lfs3_mdir_compact___(lfs3, &mdir_[i^l],
                     mdir,
                     ((i^l) == 0) ?         0 : split_rid,
-                    ((i^l) == 0) ? split_rid :        -1);
+                    ((i^l) == 0) ? split_rid :        -1,
+                    -1, NULL);
             if (err) {
                 // still too big? an entry can't be split
                 if (err == LFS3_ERR_RANGE) {
@@ -11350,16 +11439,13 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
 
                 // free? erased?
                 //
-                // well, we can only use erased if pre-erase and
-                // revperturb is enabled
+                // erased blocks are free either way, but without
+                // revperturb lfs3_alloc_ must erase them again
                 if (tag == LFS3_TAG_BMFREE
-                        || LFS3_IFDEF_PREERASE(
-                            tag == LFS3_TAG_BMERASED
-                                && lfs3_m_isrevperturb(lfs3->flags),
-                            false)) {
+                        || tag == LFS3_TAG_BMERASED) {
                     lfs3->gbmap.next = +d;
 
-                // in-use? bad? erased? treat as in-use
+                // in-use? bad? treat as in-use
                 } else {
                     lfs3->gbmap.next = -d;
                 }
@@ -11501,9 +11587,16 @@ static lfs3_sblock_t lfs3_alloc_(lfs3_t *lfs3, uint32_t flags,
 
         // erase requested?
         if (lfs3_alloc_iserase(flags)) {
-            // pre-erased?
+            // pre-erased? we can only trust this with revperturb, and
+            // narrow ecksums get a fresh erase
+            //
+            // note we keep the ecksum either way, so lfs3_allocclaim
+            // still takes the block out of the on-disk gbmap before
+            // data is progged into it
             if (LFS3_IFDEF_PREERASE(
-                    lfs3_ecksum_isecksum(ecksum_),
+                    lfs3_ecksum_isecksum(ecksum_)
+                        && lfs3_m_isrevperturb(lfs3->flags)
+                        && lfs3_ecksum_iswide(lfs3, ecksum_, 0),
                     false)) {
                 #ifdef LFS3_PREERASE
                 // check ecksum
@@ -12014,8 +12107,11 @@ empty:;
 #ifndef LFS3_RDONLY
 static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
+    //
+    // removing may free the space any pending cleanup needs, so a full
+    // disk shouldn't stop us, we try again below
     int err = lfs3_fs_mkconsistent(lfs3);
-    if (err) {
+    if (err && err != LFS3_ERR_NOSPC) {
         return err;
     }
 
@@ -12041,6 +12137,11 @@ static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // bookmark entry
     lfs3_did_t did_ = 0;
     if (tag == LFS3_TAG_DIR) {
+        // no room in our grm? only possible if cleanup failed above
+        if (lfs3_grm_count(lfs3) > 1) {
+            return LFS3_ERR_NOSPC;
+        }
+
         // first lets figure out the did
         lfs3_data_t data_;
         lfs3_stag_t tag_ = lfs3_mdir_lookup(lfs3, &mdir, LFS3_TAG_DID,
@@ -12737,8 +12838,11 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
 #ifndef LFS3_RDONLY
 int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
     // prepare our filesystem for writing
+    //
+    // removing may free the space any pending cleanup needs, so a full
+    // disk shouldn't stop us, the next write tries again
     int err = lfs3_fs_mkconsistent(lfs3);
-    if (err) {
+    if (err && err != LFS3_ERR_NOSPC) {
         return err;
     }
 
@@ -16820,8 +16924,11 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
     LFS3_ASSERT(lfs3_m_isrevperturb(flags) || !lfs3_t_ispreerase(flags));
     #endif
     // the mroot anchor needs blocks 0 and 1, and the gbmap needs one more
-    LFS3_ASSERT(LFS3_IFDEF_GBMAP((lfs3_f_isgbmap(flags)) ? 3 : 2, 2)
-            <= cfg->block_count);
+    lfs3_size_t block_count_min = LFS3_IFDEF_GBMAP(
+            (lfs3_f_isgbmap(flags)) ? 3 : 2,
+            2);
+    LFS3_ASSERT(cfg->block_count >= block_count_min);
+    (void)block_count_min;
 
     int err = lfs3_init(lfs3,
             flags & (

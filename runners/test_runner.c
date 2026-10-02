@@ -1629,24 +1629,84 @@ static bool test_death_match(const char *assert_, const char *death) {
         return false;
     }
 
-    // find the source line
-    char *line = NULL;
-    size_t line_len = 0;
-    size_t line_cap = 0;
-    intmax_t l = 1;
+    // read the source
+    char *src = NULL;
+    size_t src_len = 0;
+    size_t src_cap = 0;
     int c;
-    while ((c = fgetc(f)) != EOF && l <= lineno) {
-        if (c == '\n') {
-            l += 1;
-        } else if (l == lineno) {
-            *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = c;
-        }
+    while ((c = fgetc(f)) != EOF) {
+        *(char*)mappend((void**)&src, 1, &src_len, &src_cap) = c;
     }
-    *(char*)mappend((void**)&line, 1, &line_len, &line_cap) = '\0';
+    *(char*)mappend((void**)&src, 1, &src_len, &src_cap) = '\0';
     fclose(f);
 
-    bool match = (strstr(line, death) != NULL);
-    free(line);
+    // find the reported line
+    const char *line = src;
+    for (intmax_t l = 1; l < lineno && line; l++) {
+        line = strchr(line, '\n');
+        line = (line) ? line+1 : NULL;
+    }
+    if (!line) {
+        free(src);
+        return false;
+    }
+
+    // compilers disagree on which line of a multi-line assert they
+    // report, so back up to the line that opens the assert, at most a
+    // few lines, and match the whole statement
+    const char *open = NULL;
+    const char *bol = line;
+    for (int i = 0; i < 8 && !open; i++) {
+        const char *eol = strchr(bol, '\n');
+        size_t len = (eol) ? (size_t)(eol - bol) : strlen(bol);
+        for (const char *p = bol; p + 7 <= bol + len; p++) {
+            if (memcmp(p, "ASSERT(", 7) == 0
+                    || memcmp(p, "assert(", 7) == 0) {
+                open = p;
+                break;
+            }
+        }
+        if (bol == src) {
+            break;
+        }
+        // previous line
+        const char *p = bol - 1;
+        while (p > src && p[-1] != '\n') {
+            p -= 1;
+        }
+        bol = p;
+    }
+    if (!open) {
+        open = line;
+    }
+
+    // read forward until its parentheses balance
+    const char *end = open;
+    int depth = 0;
+    for (; *end; end++) {
+        if (*end == '(') {
+            depth += 1;
+        } else if (*end == ')') {
+            depth -= 1;
+            if (depth == 0) {
+                end += 1;
+                break;
+            }
+        } else if (*end == '\n' && depth == 0) {
+            break;
+        }
+    }
+
+    // an earlier assert that ends before our line isn't ours
+    if (end < line) {
+        open = line;
+        end = strchr(line, '\n');
+        end = (end) ? end : line + strlen(line);
+    }
+
+    *(char*)end = '\0';
+    bool match = (strstr(open, death) != NULL);
+    free(src);
     return match;
 }
 

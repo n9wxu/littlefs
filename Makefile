@@ -73,7 +73,15 @@ GDB           ?= gdb
 PERF          ?= perf
 PRETTYASSERTS ?= ./scripts/prettyasserts.py
 
+# some flags are gcc-only, so find out if we're actually clang (cc may
+# be either)
+CLANG := $(findstring clang,$(shell $(CC) --version 2>/dev/null))
+
+# note stack analysis needs the .ci files from -fcallgraph-info, which
+# means gcc
+ifndef CLANG
 CFLAGS += -fcallgraph-info=su
+endif
 CFLAGS += -g3
 CFLAGS += -I.
 CFLAGS += -std=c99 -Wall -Wextra -pedantic
@@ -81,9 +89,11 @@ CFLAGS += -std=c99 -Wall -Wextra -pedantic
 CFLAGS += -Wno-unused-label
 # life's too short to not use this flag
 CFLAGS += -Wno-unused-function
+ifndef CLANG
 # compiler bug: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=101854
 CFLAGS += -Wno-stringop-overflow
 CFLAGS += -ftrack-macro-expansion=0
+endif
 ifdef DEBUG
 CFLAGS += -O0
 else
@@ -106,10 +116,14 @@ endif
 CFLAGS += $(foreach d,$(filter LFS3_%,$(.VARIABLES)),-D$d=$($d))
 
 TEST_CFLAGS += -Wno-unused-function
+ifndef CLANG
 TEST_CFLAGS += -Wno-format-overflow
+endif
 
 BENCH_CFLAGS += -Wno-unused-function
+ifndef CLANG
 BENCH_CFLAGS += -Wno-format-overflow
+endif
 ifndef NO_STACK
 BENCH_CFLAGS += -DBENCH_STACK
 BENCH_CFLAGS += -Wl,--wrap=printf
@@ -162,8 +176,8 @@ TESTFLAGS  += -p$(TEST_PERF)
 BENCHFLAGS += -p$(BENCH_PERF)
 endif
 ifdef PERFBDGEN
-TESTFLAGS  += -t$(TEST_TRACE) --trace-backtrace --trace-freq=100
-BENCHFLAGS += -t$(BENCH_TRACE) --trace-backtrace --trace-freq=100
+TESTFLAGS  += -t$(TEST_TRACE) --trace-backtrace --trace-runfreq=100
+BENCHFLAGS += -t$(BENCH_TRACE) --trace-backtrace --trace-runfreq=100
 endif
 ifdef TESTMARKS
 TESTFLAGS  += -o$(TEST_CSV)

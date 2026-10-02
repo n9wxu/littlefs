@@ -32,14 +32,14 @@ main runs. The program can be interrupted at any time without losing track
 of how many times it has been booted and without corrupting the filesystem:
 
 ``` c
-#include "lfs.h"
+#include "lfs3.h"
 
 // variables used by the filesystem
-lfs_t lfs;
-lfs_file_t file;
+lfs3_t lfs3;
+lfs3_file_t file;
 
 // configuration of the filesystem is provided by this struct
-const struct lfs_config cfg = {
+const struct lfs3_cfg cfg = {
     // block device operations
     .read  = user_provided_block_device_read,
     .prog  = user_provided_block_device_prog,
@@ -51,38 +51,43 @@ const struct lfs_config cfg = {
     .prog_size = 16,
     .block_size = 4096,
     .block_count = 128,
-    .cache_size = 16,
+    .block_recycles = 500,
+    .rcache_size = 16,
+    .pcache_size = 16,
+    .fcache_size = 16,
     .lookahead_size = 16,
-    .block_cycles = 500,
+    .shrub_size = 1024,
+    .fragment_size = 256,
+    .crystal_thresh = 256,
 };
 
 // entry point
 int main(void) {
     // mount the filesystem
-    int err = lfs_mount(&lfs, &cfg);
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg);
 
     // reformat if we can't mount the filesystem
     // this should only happen on the first boot
     if (err) {
-        lfs_format(&lfs, &cfg);
-        lfs_mount(&lfs, &cfg);
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg);
     }
 
     // read current count
     uint32_t boot_count = 0;
-    lfs_file_open(&lfs, &file, "boot_count", LFS_O_RDWR | LFS_O_CREAT);
-    lfs_file_read(&lfs, &file, &boot_count, sizeof(boot_count));
+    lfs3_file_open(&lfs3, &file, "boot_count", LFS3_O_RDWR | LFS3_O_CREAT);
+    lfs3_file_read(&lfs3, &file, &boot_count, sizeof(boot_count));
 
     // update boot count
     boot_count += 1;
-    lfs_file_rewind(&lfs, &file);
-    lfs_file_write(&lfs, &file, &boot_count, sizeof(boot_count));
+    lfs3_file_rewind(&lfs3, &file);
+    lfs3_file_write(&lfs3, &file, &boot_count, sizeof(boot_count));
 
     // remember the storage is not updated until the file is closed successfully
-    lfs_file_close(&lfs, &file);
+    lfs3_file_close(&lfs3, &file);
 
     // release any resources we were using
-    lfs_unmount(&lfs);
+    lfs3_unmount(&lfs3);
 
     // print the boot count
     printf("boot_count: %d\n", boot_count);

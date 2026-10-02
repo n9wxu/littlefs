@@ -559,6 +559,10 @@ struct lfs3_cfg {
     // Size of the program cache in bytes. Larger caches can improve
     // performance by storing more data and reducing the number of disk
     // accesses. Must be a multiple of the program size.
+    //
+    // Erased-state checksums cover the most littlefs progs at once, which
+    // is pcache_size bytes, so a larger pcache also reads more when
+    // fetching metadata and before each commit.
     #ifndef LFS3_RDONLY
     lfs3_size_t pcache_size;
     #endif
@@ -637,20 +641,19 @@ struct lfs3_cfg {
     //
     // Requires the gbmap to track pre-erased blocks, and requires
     // LFS3_M_REVPERTURB (or LFS3_F_REVPERTURB when formatting). Without
-    // revision perturbation pre-erased blocks can't be used, so asking
-    // for LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
+    // revision perturbation pre-erased blocks can't be trusted, a mount
+    // without it erases them again before use, so asking for
+    // LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
     // LFS3_CK_PREERASE without it asserts.
     //
     // 0 only erases blocks immediately before prog, while -1 or any
     // value >= block_count attempts to pre-erase all known free blocks
     // during gc.
     //
-    // Note pre-erased blocks are checked with a checksum of only their
-    // first prog_size bytes. This assumes an interrupted prog never
-    // leaves bytes after the first prog_size partially programmed while
-    // the first prog_size bytes still read as erased. If your storage
-    // can do this, littlefs may prog over a partially programmed block,
-    // unless progs are checked with LFS3_M_CKPROGS.
+    // Note pre-erased blocks are checked with a checksum of their first
+    // pcache_size bytes (at least 11, rounded up to prog_size), the most
+    // littlefs progs into an erased block at once. This assumes an
+    // interrupted prog changes no bytes outside of that prog.
     //
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     lfs3_block_t gc_preerase_count;
