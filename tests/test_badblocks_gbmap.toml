@@ -20,15 +20,46 @@ code = '''
 static uint32_t test_bbg_erases[TEST_BBG_MAX];
 static uint32_t test_bbg_progs[TEST_BBG_MAX];
 
+// also count erases after a block first fails
+static bool test_bbg_failed[TEST_BBG_MAX];
+static uint32_t test_bbg_afters[TEST_BBG_MAX];
+
+// with a filesystem to watch, also count erases and progs of blocks
+// littlefs already knows are bad, these should never happen
+static lfs3_t *test_bbg_lfs3 = NULL;
+static bool test_bbg_known[TEST_BBG_MAX];
+static uint32_t test_bbg_retries;
+
+static void test_bbg_learn(void) {
+    if (test_bbg_lfs3) {
+        for (lfs3_size_t i = 0; i < test_bbg_lfs3->gbmap.badq.count; i++) {
+            test_bbg_known[test_bbg_lfs3->gbmap.badq.blocks[i]] = true;
+        }
+    }
+}
+
 static int test_bbg_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
         lfs3_off_t off, const void *buffer, lfs3_size_t size) {
+    test_bbg_learn();
+    test_bbg_retries += test_bbg_known[block];
     test_bbg_progs[block] += 1;
-    return lfs3_emubd_prog(cfg, block, off, buffer, size);
+    int err = lfs3_emubd_prog(cfg, block, off, buffer, size);
+    if (err == LFS3_ERR_CORRUPT) {
+        test_bbg_failed[block] = true;
+    }
+    return err;
 }
 
 static int test_bbg_erase(const struct lfs3_cfg *cfg, lfs3_block_t block) {
+    test_bbg_learn();
+    test_bbg_retries += test_bbg_known[block];
     test_bbg_erases[block] += 1;
-    return lfs3_emubd_erase(cfg, block);
+    test_bbg_afters[block] += test_bbg_failed[block];
+    int err = lfs3_emubd_erase(cfg, block);
+    if (err == LFS3_ERR_CORRUPT) {
+        test_bbg_failed[block] = true;
+    }
+    return err;
 }
 
 // copy a config, counting erases and progs from now on
@@ -39,6 +70,11 @@ static void test_bbg_wrap(struct lfs3_cfg *cfg, const struct lfs3_cfg *cfg_) {
     cfg->erase = test_bbg_erase;
     memset(test_bbg_erases, 0, sizeof(test_bbg_erases));
     memset(test_bbg_progs, 0, sizeof(test_bbg_progs));
+    test_bbg_lfs3 = NULL;
+    memset(test_bbg_known, 0, sizeof(test_bbg_known));
+    test_bbg_retries = 0;
+    memset(test_bbg_failed, 0, sizeof(test_bbg_failed));
+    memset(test_bbg_afters, 0, sizeof(test_bbg_afters));
 }
 
 // is this block marked bad in the gbmap?
@@ -88,6 +124,37 @@ static lfs3_block_t test_bbg_trvcount(lfs3_t *lfs3) {
     return count;
 }
 
+// start watching a mounted filesystem, only marks on disk survive a
+// remount
+static void test_bbg_watch(lfs3_t *lfs3) {
+    for (lfs3_block_t b = 0; b < lfs3->block_count; b++) {
+        test_bbg_known[b] = test_bbg_isbad(lfs3, b);
+    }
+    test_bbg_lfs3 = lfs3;
+}
+
+static void test_bbg_unwatch(void) {
+    test_bbg_lfs3 = NULL;
+}
+
+// no block marked bad should be in use
+static void test_bbg_ckinuse(lfs3_t *lfs3) {
+    bool *inuse = malloc(lfs3->block_count);
+    test_bbg_inuse(lfs3, inuse);
+    for (lfs3_block_t b = 0; b < lfs3->block_count; b++) {
+        assert(!(inuse[b] && test_bbg_isbad(lfs3, b)));
+    }
+    free(inuse);
+}
+
+// mark any pending bad blocks and write the gbmap to disk
+static void test_bbg_sync(lfs3_t *lfs3) {
+    int err = lfs3_alloc_ckpoint(lfs3);
+    assert(!err);
+    err = lfs3_alloc_syncgbmap(lfs3);
+    assert(!err);
+}
+
 // mark a block bad the way a driver that records bad blocks would
 static void test_bbg_setbad(lfs3_t *lfs3, lfs3_block_t block) {
     int err = lfs3_alloc_ckpoint(lfs3);
@@ -116,6 +183,39 @@ static void test_bbg_write(lfs3_t *lfs3, const char *name,
     }
     err = lfs3_file_close(lfs3, &file);
     assert(!err);
+}
+
+// make a file's data block go bad while we append to it, this leaves
+// a bad block we can't mark until it's released
+static lfs3_block_t test_bbg_badappend(lfs3_t *lfs3,
+        const struct lfs3_cfg *cfg, const char *name,
+        const uint8_t *buf, lfs3_size_t size) {
+    lfs3_file_t file;
+    int err = lfs3_file_open(lfs3, &file, name,
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+    assert(!err);
+    lfs3_ssize_t d = lfs3_file_write(lfs3, &file, buf, size);
+    assert(d == (lfs3_ssize_t)size);
+    err = lfs3_file_sync(lfs3, &file);
+    assert(!err);
+
+    lfs3_bid_t bid;
+    lfs3_bid_t weight;
+    lfs3_bptr_t bptr;
+    err = lfs3_file_lookupnext(lfs3, &file, size-1,
+            &bid, &weight, &bptr);
+    assert(!err);
+    assert(lfs3_bptr_isbptr(&bptr));
+    lfs3_block_t block = lfs3_bptr_block(&bptr);
+    err = lfs3_emubd_mkbad(cfg, block);
+    assert(!err);
+
+    // this appends to our bad block
+    d = lfs3_file_write(lfs3, &file, buf, 64);
+    assert(d == 64);
+    err = lfs3_file_close(lfs3, &file);
+    assert(!err);
+    return block;
 }
 
 // a simple model, each file is a prefix of a pseudo-random stream
@@ -191,15 +291,16 @@ static test_bbg_op_t test_bbg_plan(uint32_t *prng, test_bbg_sim_t *sim,
         lfs3_size_t n, lfs3_size_t size) {
     assert(n <= TEST_BBG_FILES);
     test_bbg_op_t op;
-    op.kind = TEST_PRNG(prng) % 4;
+    uint32_t r = TEST_PRNG(prng) % 4;
     op.x = TEST_PRNG(prng) % n;
     op.seed = TEST_PRNG(prng);
     // append to existing files, but not forever
-    if (op.kind == 3) {
-        op.kind = (sim->exists[op.x] && sim->sizes[op.x] < 4*size)
+    op.kind = (r == 2) ? TEST_BBG_REMOVE
+            : (r == 3
+                    && sim->exists[op.x]
+                    && sim->sizes[op.x] < 4*size)
                 ? TEST_BBG_APPEND
                 : TEST_BBG_WRITE;
-    }
 
     if (op.kind == TEST_BBG_WRITE) {
         op.off = 0;
@@ -213,7 +314,6 @@ static test_bbg_op_t test_bbg_plan(uint32_t *prng, test_bbg_sim_t *sim,
         op.size = lfs3_max(size/4, 1);
         sim->sizes[op.x] += op.size;
     } else {
-        op.kind = TEST_BBG_REMOVE;
         sim->exists[op.x] = false;
     }
     return op;
@@ -232,6 +332,28 @@ static void test_bbg_apply(lfs3_t *lfs3, const test_bbg_op_t *op) {
     }
 }
 
+// does a file match a pseudo-random stream?
+static bool test_bbg_cmp(lfs3_t *lfs3, const char *name,
+        uint32_t seed, lfs3_size_t size) {
+    lfs3_file_t file;
+    int err = lfs3_file_open(lfs3, &file, name, LFS3_O_RDONLY);
+    assert(!err);
+    uint32_t prng = seed;
+    bool eq = true;
+    for (lfs3_size_t i = 0; i < size; i += 64) {
+        uint8_t buf[64];
+        lfs3_size_t d = lfs3_min(64, size - i);
+        lfs3_ssize_t d_ = lfs3_file_read(lfs3, &file, buf, d);
+        assert(d_ == (lfs3_ssize_t)d);
+        for (lfs3_size_t j = 0; j < d; j++) {
+            eq &= (buf[j] == 'a' + (TEST_PRNG(&prng) % 26));
+        }
+    }
+    err = lfs3_file_close(lfs3, &file);
+    assert(!err);
+    return eq;
+}
+
 // does the disk match our model? asserts on anything that isn't a
 // mismatch
 static bool test_bbg_ck(lfs3_t *lfs3, const test_bbg_sim_t *sim,
@@ -248,13 +370,11 @@ static bool test_bbg_ck(lfs3_t *lfs3, const test_bbg_sim_t *sim,
         if (err) {
             continue;
         }
-        if (info.size != sim->sizes[x]) {
+        if (info.size != sim->sizes[x]
+                || !test_bbg_cmp(lfs3, name,
+                    sim->seeds[x], sim->sizes[x])) {
             return false;
         }
-
-        // contents are a function of seed and size, so these must
-        // match if the size does
-        test_bbg_read(lfs3, name, sim->seeds[x], sim->sizes[x]);
     }
 
     return true;
@@ -515,3 +635,254 @@ code = '''
     assert(test_bbg_progs[block] == 0);
     lfs3_unmount(&lfs3) => 0;
 '''
+
+
+## Recording bad blocks
+
+# test that blocks that fail an erase or prog are marked bad, and are
+# never erased or programmed again, in this mount or after a remount
+[cases.test_badblocks_gbmap_recording]
+# MANUAL blocks never fail on their own, so nothing should be marked
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+    'LFS3_EMUBD_BADBLOCK_PROGFLIP',
+    'LFS3_EMUBD_BADBLOCK_MANUAL',
+]
+# we need prog checking to detect read errors and silent errors
+defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
+# INUSE=false => blocks go bad before we use them
+# INUSE=true  => blocks go bad while in use
+defines.INUSE = [false, true]
+defines.BADBLOCKS = [1, 3]
+defines.N = 16
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.STEPS = 512
+defines.SEED = 'range(2)'
+if = [
+    'LFS3_IFDEF_CKPROGS(true, !CKPROGS)',
+    # a live block that can't be read is a different test
+    '!INUSE || BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_READERROR',
+]
+code = '''
+    struct lfs3_cfg cfg;
+    test_bbg_wrap(&cfg, CFG);
+    uint32_t flags = (CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP | flags, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | flags, &cfg) => 0;
+    test_bbg_watch(&lfs3);
+
+    bool *bad = calloc(BLOCK_COUNT, 1);
+    bool *inuse = malloc(BLOCK_COUNT);
+    bool *marked = malloc(BLOCK_COUNT);
+    uint32_t *erases = calloc(BLOCK_COUNT, sizeof(uint32_t));
+    uint32_t *progs = calloc(BLOCK_COUNT, sizeof(uint32_t));
+
+    // pick some free blocks to go bad, spread over the disk
+    uint32_t prng = SEED;
+    if (!INUSE) {
+        test_bbg_inuse(&lfs3, inuse);
+        for (lfs3_size_t i = 0; i < BADBLOCKS; i++) {
+            lfs3_block_t b = FORMAT_BLOCK_COUNT
+                    + (TEST_PRNG(&prng) % (BLOCK_COUNT-FORMAT_BLOCK_COUNT));
+            if (!inuse[b] && !bad[b]) {
+                lfs3_emubd_mkbad(CFG, b) => 0;
+                bad[b] = true;
+            }
+        }
+    }
+
+    test_bbg_sim_t sim;
+    memset(&sim, 0, sizeof(sim));
+    lfs3_size_t nfailed = 0;
+    for (lfs3_size_t s = 0; s < STEPS; s++) {
+        // pick some in-use blocks to go bad
+        if (INUSE && s == STEPS/4) {
+            test_bbg_inuse(&lfs3, inuse);
+            for (lfs3_size_t i = 0; i < BADBLOCKS; i++) {
+                lfs3_block_t b = 2 + (TEST_PRNG(&prng) % (BLOCK_COUNT-2));
+                while (!inuse[b] || bad[b]) {
+                    b = 2 + ((b-2 + 1) % (BLOCK_COUNT-2));
+                }
+                lfs3_emubd_mkbad(CFG, b) => 0;
+                bad[b] = true;
+            }
+        }
+
+        test_bbg_op_t op = test_bbg_plan(&prng, &sim, N, SIZE);
+        test_bbg_apply(&lfs3, &op);
+        test_bbg_ckinuse(&lfs3);
+
+        // remount every now and then, only marks on disk should
+        // survive this
+        if (s % (STEPS/8) == STEPS/8-1) {
+            assert(test_bbg_ck(&lfs3, &sim, N));
+
+            // repopulate, so bad blocks no longer in use are marked,
+            // twice since a commit may release bad blocks
+            for (int i = 0; i < 2; i++) {
+                lfs3.gbmap.known = 0;
+                test_bbg_sync(&lfs3);
+            }
+            test_bbg_ckinuse(&lfs3);
+            test_bbg_inuse(&lfs3, inuse);
+            for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+                // only bad blocks should be marked bad
+                assert(!test_bbg_isbad(&lfs3, b) || bad[b]);
+
+                // any block that failed in this mount should be marked
+                // bad, unless still in use, but silent errors may go
+                // unnoticed
+                bool failed = bad[b]
+                        && ((BADBLOCK_BEHAVIOR
+                                == LFS3_EMUBD_BADBLOCK_ERASEERROR)
+                            ? test_bbg_erases[b] > erases[b]
+                            : test_bbg_progs[b] > progs[b]);
+                if (failed
+                        && BADBLOCK_BEHAVIOR
+                            <= LFS3_EMUBD_BADBLOCK_READERROR) {
+                    assert(test_bbg_isbad(&lfs3, b) || inuse[b]);
+                }
+                nfailed += failed;
+                marked[b] = test_bbg_isbad(&lfs3, b);
+            }
+
+            test_bbg_unwatch();
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | flags, &cfg) => 0;
+            test_bbg_watch(&lfs3);
+            for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+                assert(test_bbg_isbad(&lfs3, b) == marked[b]);
+            }
+            memcpy(erases, test_bbg_erases, BLOCK_COUNT*sizeof(uint32_t));
+            memcpy(progs, test_bbg_progs, BLOCK_COUNT*sizeof(uint32_t));
+        }
+    }
+
+    // we should never retry a block we know is bad
+    assert(test_bbg_retries == 0);
+    // and we should have found some bad blocks
+    assert(nfailed > 0
+            || BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_MANUAL);
+    if (BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_MANUAL) {
+        for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+            assert(!test_bbg_isbad(&lfs3, b));
+        }
+    }
+
+    assert(test_bbg_ck(&lfs3, &sim, N));
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    free(bad);
+    free(inuse);
+    free(marked);
+    free(erases);
+    free(progs);
+'''
+
+
+# test mdir blocks going bad while in use
+#
+# an mdir that can't append to its block compacts into its other block,
+# so the bad block stays in use until the mdir next compacts, which
+# should relocate instead of erasing the bad block again
+[cases.test_badblocks_gbmap_recording_mdir]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+]
+defines.N = 64
+defines.SIZE = 64
+defines.STEPS = 1024
+defines.BADBLOCKS = [1, 3]
+code = '''
+    struct lfs3_cfg cfg;
+    test_bbg_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // create enough small files to need more than one mdir
+    uint32_t seeds[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "a_rather_long_file_name_to_fill_mdirs_%03d", i);
+        seeds[i] = i;
+        test_bbg_write(&lfs3, name, seeds[i], SIZE);
+    }
+
+    // make the first block of some mdirs go bad, but not the mroot
+    // anchor
+    lfs3_trv_t trv;
+    lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+    lfs3_size_t count = 0;
+    bool prev = false;
+    while (count < BADBLOCKS) {
+        struct lfs3_tinfo tinfo;
+        int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+        assert(!err || err == LFS3_ERR_NOENT);
+        if (err == LFS3_ERR_NOENT) {
+            break;
+        }
+        if (tinfo.btype == LFS3_BTYPE_MDIR && tinfo.block >= 2 && !prev) {
+            lfs3_emubd_mkbad(CFG, tinfo.block) => 0;
+            count += 1;
+            prev = true;
+        } else {
+            prev = false;
+        }
+    }
+    lfs3_trv_close(&lfs3, &trv) => 0;
+    assert(count > 0);
+    test_bbg_watch(&lfs3);
+
+    // keep rewriting our files
+    uint32_t prng = 42;
+    for (lfs3_size_t s = 0; s < STEPS; s++) {
+        lfs3_size_t i = TEST_PRNG(&prng) % N;
+        char name[256];
+        sprintf(name, "a_rather_long_file_name_to_fill_mdirs_%03d", i);
+        seeds[i] = TEST_PRNG(&prng);
+        test_bbg_write(&lfs3, name, seeds[i], SIZE);
+        test_bbg_ckinuse(&lfs3);
+    }
+
+    // we should never retry a block we know is bad
+    assert(test_bbg_retries == 0);
+
+    // every block that failed should be marked, unless still in use
+    for (int i = 0; i < 2; i++) {
+        lfs3.gbmap.known = 0;
+        test_bbg_sync(&lfs3);
+    }
+    bool *inuse = malloc(BLOCK_COUNT);
+    test_bbg_inuse(&lfs3, inuse);
+    lfs3_block_t marked = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        if (test_bbg_failed[b]) {
+            assert(test_bbg_isbad(&lfs3, b) || inuse[b]);
+        }
+        marked += test_bbg_isbad(&lfs3, b);
+    }
+    assert(marked > 0);
+    free(inuse);
+
+    test_bbg_unwatch();
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "a_rather_long_file_name_to_fill_mdirs_%03d", i);
+        test_bbg_read(&lfs3, name, seeds[i], SIZE);
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+

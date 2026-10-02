@@ -73,6 +73,18 @@ typedef uint32_t lfs3_ocompat_t;
 #define LFS3_FILE_MAX 2147483647
 #endif
 
+// Maximum number of runs of bad blocks kept in RAM until they can be
+// recorded in the gbmap, each costs two block addresses in lfs3_t. Bad
+// blocks found one after another share a run. If more go bad at once,
+// the smallest runs are forgotten until littlefs tries them again. Only
+// used with LFS3_GBMAP. Limited to <= 32.
+#ifndef LFS3_BADQ_SIZE
+#define LFS3_BADQ_SIZE 4
+#endif
+#if LFS3_BADQ_SIZE < 1 || LFS3_BADQ_SIZE > 32
+#error "LFS3_BADQ_SIZE must be in 1..32"
+#endif
+
 
 // Possible error codes, these are negative to allow
 // valid positive return values
@@ -1428,6 +1440,19 @@ typedef struct lfs3 {
             lfs3_block_t known;
             lfs3_block_t count;
         } preeraser;
+        #endif
+        #if !defined(LFS3_RDONLY)
+        // runs of bad blocks not yet marked in the gbmap, the first
+        // checked were in use when we last looked, we look again after
+        // 2^backoff commits
+        struct lfs3_badq {
+            lfs3_block_t blocks[LFS3_BADQ_SIZE];
+            lfs3_block_t weights[LFS3_BADQ_SIZE];
+            uint8_t count;
+            uint8_t checked;
+            uint8_t commits;
+            uint8_t backoff;
+        } badq;
         #endif
         lfs3_btree_t b;
         lfs3_btree_t b_p;
