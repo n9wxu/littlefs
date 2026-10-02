@@ -1032,6 +1032,87 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# two handles of one file append and sync in turn, both may hold the
+# erased state of the same block, so the prog-once check catches a
+# handle programming bytes the other already programmed
+[cases.test_fsync_append_alternate]
+defines.PROG_SIZE = [1, 16]
+defines.CKPROGONCE = true
+defines.CHUNK = 16
+defines.N = ['2*BLOCK_SIZE/CHUNK', '8*BLOCK_SIZE/CHUNK']
+# APPEND=0 => seek to the end before each write
+# APPEND=1 => LFS3_O_APPEND
+defines.APPEND = [0, 1]
+defines.CRYSTAL_THRESH = ['BLOCK_SIZE/16', 1]
+if = 'CRYSTAL_THRESH == BLOCK_SIZE/16 || N == 2*BLOCK_SIZE/CHUNK'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // simulate our file in ram
+    uint8_t *sim = malloc(N*CHUNK);
+    assert(sim);
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < N*CHUNK; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    uint8_t *rbuf = malloc(N*CHUNK+1);
+    assert(rbuf);
+
+    uint32_t flags = LFS3_O_WRONLY | ((APPEND) ? LFS3_O_APPEND : 0);
+    lfs3_file_t files[2];
+    lfs3_file_open(&lfs3, &files[0], "jello",
+            flags | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_sync(&lfs3, &files[0]) => 0;
+    lfs3_file_open(&lfs3, &files[1], "jello", flags) => 0;
+
+    for (lfs3_size_t i = 0; i < N; i++) {
+        lfs3_file_t *file = &files[i % 2];
+        if (!APPEND) {
+            lfs3_file_seek(&lfs3, file, 0, LFS3_SEEK_END) => i*CHUNK;
+        }
+        lfs3_file_write(&lfs3, file, &sim[i*CHUNK], CHUNK) => CHUNK;
+        lfs3_file_sync(&lfs3, file) => 0;
+
+        // both handles and the disk see every sync
+        lfs3_file_size(&lfs3, &files[0]) => (i+1)*CHUNK;
+        lfs3_file_size(&lfs3, &files[1]) => (i+1)*CHUNK;
+        lfs3_file_t file_;
+        lfs3_file_open(&lfs3, &file_, "jello", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file_, rbuf, N*CHUNK+1) => (i+1)*CHUNK;
+        assert(memcmp(rbuf, sim, (i+1)*CHUNK) == 0);
+        lfs3_file_close(&lfs3, &file_) => 0;
+    }
+
+    lfs3_file_close(&lfs3, &files[0]) => 0;
+    lfs3_file_close(&lfs3, &files[1]) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "jello", &info) => 0;
+        assert(info.size == N*CHUNK);
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "jello", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, N*CHUNK+1) => N*CHUNK;
+        assert(memcmp(rbuf, sim, N*CHUNK) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    free(sim);
+    free(rbuf);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 
 # Test multiple readers, this shouldn't really have any issues
 [cases.test_fsync_rrrr]
