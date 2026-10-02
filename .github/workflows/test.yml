@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-24.04
     # qemu is 10-20x slower than native, thumb the slowest
     timeout-minutes: >-
-      ${{matrix.arch == 'x86_64' && 60 || matrix.arch == 'thumb' && 240 || 150}}
+      ${{matrix.arch == 'x86_64' && 60 || matrix.arch == 'thumb' && 360 || 240}}
     strategy:
       fail-fast: false
       matrix:
@@ -258,7 +258,7 @@ jobs:
   # number of tests
   test-biggest:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{matrix.arch == 'x86_64' && 120 || 300}}
+    timeout-minutes: ${{matrix.arch == 'x86_64' && 120 || 360}}
     strategy:
       fail-fast: false
       matrix:
