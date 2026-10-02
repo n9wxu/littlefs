@@ -637,8 +637,9 @@ struct lfs3_cfg {
     //
     // Requires the gbmap to track pre-erased blocks, and requires
     // LFS3_M_REVPERTURB (or LFS3_F_REVPERTURB when formatting). Without
-    // revision perturbation pre-erased blocks can't be used, so asking
-    // for LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
+    // revision perturbation pre-erased blocks can't be trusted, a mount
+    // without it erases them again before use, so asking for
+    // LFS3_GC_PREERASE, LFS3_M_PREERASE, LFS3_F_PREERASE, or
     // LFS3_CK_PREERASE without it asserts.
     //
     // 0 only erases blocks immediately before prog, while -1 or any
