@@ -2856,6 +2856,137 @@ code = '''
     }
 '''
 
+# test every single-bit error in the mroot's alt pointers
+#
+# without ckparity we can't detect these, but an alt that leaves our
+# rbyd must not assert
+#
+[cases.test_ck_metastable_alts]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READFLIP'
+defines.CKPARITY = [false, true]
+defines.N = 8
+defines.SIZE = 8
+if = 'LFS3_IFDEF_CKMETAPARITY(true, !CKPARITY)'
+in = 'lfs3.c'
+code = '''
+    uint32_t mflags = LFS3_M_RDWR
+            | ((CKPARITY) ? LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, -1)
+                : 0);
+
+    // first we need to figure out where our alts will actually end up,
+    // fortunately our block randomization is intentionally consistent
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, mflags, CFG) => 0;
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'a', SIZE);
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "file%03x", i);
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+    }
+
+    // find the alts in the mroot's last commit
+    lfs3_block_t badblock = lfs3.mroot.r.blocks[0];
+    lfs3_size_t alts[512];
+    lfs3_size_t alt_count = 0;
+    lfs3_size_t off = sizeof(uint32_t);
+    while (off < lfs3_rbyd_eoff(&lfs3.mroot.r)) {
+        lfs3_tag_t tag;
+        lfs3_rid_t weight;
+        lfs3_size_t size;
+        lfs3_ssize_t d = lfs3_bd_readtag(&lfs3,
+                badblock, off, -1,
+                &tag, &weight, &size,
+                NULL,
+                NULL);
+        assert(d > 0);
+        if (lfs3_tag_isalt(tag)) {
+            for (lfs3_ssize_t j = 0; j < d; j++) {
+                assert(alt_count < sizeof(alts)/sizeof(lfs3_size_t));
+                alts[alt_count++] = off + j;
+            }
+        }
+        off += d + ((lfs3_tag_isalt(tag)) ? 0 : size);
+
+        // not the last commit? start over
+        if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM
+                && off < lfs3_rbyd_eoff(&lfs3.mroot.r)) {
+            alt_count = 0;
+        }
+    }
+    assert(alt_count > 0);
+    lfs3_unmount(&lfs3) => 0;
+
+    // now test all bad bits in our alts
+    for (lfs3_size_t i = 0; i < 8*alt_count; i++) {
+        lfs3_size_t badbit = 8*alts[i/8] + i%8;
+
+        // reset the bd prng every run for reproducibility
+        lfs3_emubd_seed(CFG, 42+i);
+        printf("--- badblock: 0x%x.%x, badbit: 0x%x (0x%x+%x) ---\n",
+                (lfs3_size_t)badblock, badbit/8, badbit,
+                badbit/8, badbit%8);
+
+        // mark our badbit as bad
+        lfs3_emubd_mkbadbit(CFG, badblock, badbit) => 0;
+
+        // With metastability, basically any filesystem operation can
+        // return LFS3_ERR_CORRUPT, and without ckparity lookups may go
+        // wrong. What we're testing for is no asserts.
+        int err = lfs3_format(&lfs3, LFS3_F_RDWR, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err) {
+            goto corrupt;
+        }
+        // a misread config tag may fail mount in other ways
+        err = lfs3_mount(&lfs3, mflags, CFG);
+        assert(err <= 0);
+        if (err) {
+            goto corrupt;
+        }
+        for (lfs3_size_t j = 0; j < N; j++) {
+            char name[256];
+            sprintf(name, "file%03x", j);
+            err = lfs3_set(&lfs3, name, wbuf, SIZE);
+            assert(err <= 0);
+            if (err) {
+                goto corrupt_mounted;
+            }
+        }
+
+        for (int remount = 0; remount < 2; remount++) {
+            // remount?
+            if (remount) {
+                lfs3_unmount(&lfs3) => 0;
+                err = lfs3_mount(&lfs3, mflags, CFG);
+                assert(err <= 0);
+                if (err) {
+                    goto corrupt;
+                }
+            }
+
+            for (lfs3_size_t j = 0; j < N; j++) {
+                char name[256];
+                sprintf(name, "file%03x", j);
+                struct lfs3_info info;
+                err = lfs3_stat(&lfs3, name, &info);
+                assert(err <= 0);
+                uint8_t rbuf[SIZE];
+                lfs3_ssize_t d = lfs3_get(&lfs3, name, rbuf, SIZE);
+                assert(d <= SIZE);
+            }
+        }
+
+    corrupt_mounted:;
+        lfs3_unmount(&lfs3) => 0;
+
+    corrupt:;
+        // reset badbit
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+    }
+'''
+
 
 # Some simple ckdatacksums tests
 

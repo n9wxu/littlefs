@@ -1373,12 +1373,14 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
         lfs3_tag_t *tag_, lfs3_rid_t *weight_, lfs3_size_t *size_,
         lfs3_data_t *data_,
         uint32_t *cksum) {
+    // tag offsets come from disk, check before reading
+    if (off > lfs3->cfg->block_size - 4) {
+        return LFS3_ERR_CORRUPT;
+    }
+
     // read the largest possible tag size
     uint8_t tag_buf[LFS3_TAG_DSIZE];
     lfs3_size_t tag_dsize = lfs3_min(LFS3_TAG_DSIZE, lfs3->cfg->block_size-off);
-    if (tag_dsize < 4) {
-        return LFS3_ERR_CORRUPT;
-    }
 
     int err = lfs3_bd_read(lfs3, block, off, hint,
             tag_buf, tag_dsize);
@@ -3316,6 +3318,12 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
 
         // found an alt?
         if (lfs3_tag_isalt(alt)) {
+            // alts jump backwards and split our rid range, anything else
+            // is a corrupt alt
+            if (weight > (lfs3_rid_t)(upper_rid - lower_rid)
+                    || jump > branch) {
+                return LFS3_ERR_CORRUPT;
+            }
             lfs3_size_t branch_ = branch + d;
 
             // keep track of height for debugging
@@ -3349,7 +3357,10 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
                     alt, weight,
                     &lower_rid, &upper_rid,
                     NULL, NULL);
-            LFS3_ASSERT(branch_ != branch);
+            // unreachable alts use jump=0, following one would loop
+            if (branch_ == branch) {
+                return LFS3_ERR_CORRUPT;
+            }
             branch = branch_;
 
         // found end of tree?
@@ -4069,13 +4080,21 @@ trunk:;
 
         // found an alt?
         if (lfs3_tag_isalt(alt_)) {
+            // alts jump backwards and split our rid range, and yellow
+            // alts are parallel, anything else is a corrupt alt
+            if (weight_ > (lfs3_rid_t)(upper_rid - lower_rid)
+                    || jump_ > branch
+                    // bit 7 is reserved
+                    || (alt_ & 0x80)
+                    || (lfs3_tag_isred(alt_)
+                        && lfs3_tag_isred(p[0].alt)
+                        && !lfs3_tag_isparallel(alt_, p[0].alt))) {
+                return LFS3_ERR_CORRUPT;
+            }
+
             // make jump absolute
             jump_ = branch - jump_;
             lfs3_size_t branch_ = branch + d;
-
-            // yellow alts should be parallel
-            LFS3_ASSERT(!(lfs3_tag_isred(alt_) && lfs3_tag_isred(p[0].alt))
-                    || lfs3_tag_isparallel(alt_, p[0].alt));
 
             // take black alt? needs a flip
             //   <b           >b
@@ -4146,7 +4165,10 @@ trunk:;
                 // 1  2  3      1  2  3  x
                 if (diverging_b && diverging_r) {
                     LFS3_ASSERT(a_rid < b_rid || a_tag < b_tag);
-                    LFS3_ASSERT(lfs3_tag_isparallel(alt_, p[0].alt));
+                    // collapsing alts must be parallel
+                    if (!lfs3_tag_isparallel(alt_, p[0].alt)) {
+                        return LFS3_ERR_CORRUPT;
+                    }
 
                     weight_ += p[0].weight;
                     jump_ = p[0].jump;
@@ -4179,7 +4201,9 @@ trunk:;
                     // |     .-'|         |        .-----'
                     // 1  2  3  4  x      1  2  3  4  x  x
                     if (a_rid > b_rid || a_tag > b_tag) {
-                        LFS3_ASSERT(!diverging_r);
+                        if (diverging_r) {
+                            return LFS3_ERR_CORRUPT;
+                        }
 
                         alt_ = LFS3_TAG_ALT(
                             alt_ & LFS3_TAG_R,
@@ -4261,7 +4285,9 @@ trunk:;
                 // |    <b         |     |
                 // |  .-'|         |  .--'
                 // 1  2  3      1  2  3  x
-                LFS3_ASSERT(p[0].jump < branch);
+                if (p[0].jump >= branch) {
+                    return LFS3_ERR_CORRUPT;
+                }
                 lfs3_rbyd_p_pop(p);
             }
 
@@ -4289,7 +4315,9 @@ trunk:;
                 // |  .-'|      |  .-----'
                 // 1  2  3      1  2  3  x
                 } else if (lfs3_tag_isred(p[0].alt)) {
-                    LFS3_ASSERT(jump_ < branch);
+                    if (jump_ >= branch) {
+                        return LFS3_ERR_CORRUPT;
+                    }
                     alt_ = (p[0].alt & ~LFS3_TAG_R) | (alt_ & LFS3_TAG_R);
                     weight_ = p[0].weight;
                     jump_ = p[0].jump;
@@ -4309,7 +4337,9 @@ trunk:;
                             (diverged && (a_rid > b_rid || a_tag > b_tag))
                                 ? d_tag
                                 : lower_tag);
-                    LFS3_ASSERT(weight_ == 0);
+                    if (weight_ != 0) {
+                        return LFS3_ERR_CORRUPT;
+                    }
                     // jump_=0 also asserts the alt is unreachable (or
                     // else we loop indefinitely), and uses the minimum
                     // alt encoding
@@ -4357,7 +4387,9 @@ trunk:;
                 // |  |  .-'|      |  |  .----'|
                 // 1  2  3  4      1  2  3  4  4
                 } else {
-                    LFS3_ASSERT(y_branch != 0);
+                    if (y_branch == 0) {
+                        return LFS3_ERR_CORRUPT;
+                    }
                     p[0].alt = alt_;
                     p[0].weight += weight_;
                     p[0].jump = y_branch;
@@ -4401,8 +4433,11 @@ trunk:;
                 return err;
             }
 
-            // continue to next alt
-            LFS3_ASSERT(branch_ != branch);
+            // continue to next alt, unreachable alts use jump=0,
+            // following one would loop
+            if (branch_ == branch) {
+                return LFS3_ERR_CORRUPT;
+            }
             branch = branch_;
             continue;
 
@@ -4412,7 +4447,9 @@ trunk:;
             tag_ = lfs3_tag_key(alt_);
 
             // the last alt should always end up black
-            LFS3_ASSERT(lfs3_tag_isblack(p[0].alt));
+            if (!lfs3_tag_isblack(p[0].alt)) {
+                return LFS3_ERR_CORRUPT;
+            }
 
             if (diverged) {
                 // diverged lower trunk? move on to upper trunk
