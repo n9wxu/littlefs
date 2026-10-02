@@ -6351,14 +6351,36 @@ code = '''
 # anything else that doesn't fit errors with LFS3_ERR_NOSPC and changes
 # nothing, note big root attrs fill the mroot, which also holds the
 # mtree, so these can block unrelated operations
+#
+# removing must still work, so we then remove every root attr and
+# everything else, with powerloss, and a name at the name limit must fit
 [cases.test_mtree_commit_too_big]
 defines.ERASE_SIZE = [512, 1024, 4096]
 defines.COUNT = 32
 defines.STEPS = 200
 defines.SEED = 'range(8)'
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
 fuzz = 'SEED'
+reentrant = true
 code = '''
     lfs3_t lfs3;
+    // we only lose power while recovering, so after powerloss we must
+    // mount and continue recovering
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG);
+    assert(!err || !TEST_PLS);
+    if (!err) {
+        goto recover;
+    }
+
+    // fill our filesystem without powerloss
+    lfs3_emubd_spowercycles_t cycles = lfs3_emubd_powercycles(CFG);
+    lfs3_emubd_setpowercycles(CFG, 0) => 0;
+
     lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
 
@@ -6626,6 +6648,76 @@ code = '''
 
     free(buf);
     free(sim);
+    lfs3_unmount(&lfs3) => 0;
+
+    // now recover with powerloss
+    lfs3_emubd_setpowercycles(CFG, cycles) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+
+recover:;
+    // remove every root attr
+    for (lfs3_size_t k = 0; k < 4; k++) {
+        lfs3_ssize_t d = lfs3_sizeattr(&lfs3, "/", 'a'+k);
+        assert(d >= 0 || d == LFS3_ERR_NOATTR);
+        if (d >= 0) {
+            lfs3_removeattr(&lfs3, "/", 'a'+k) => 0;
+        }
+    }
+
+    // remove everything else
+    while (true) {
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        struct lfs3_info info;
+        // skip . and ..
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        int err = lfs3_dir_read(&lfs3, &dir, &info);
+        assert(!err || err == LFS3_ERR_NOENT);
+        lfs3_dir_close(&lfs3, &dir) => 0;
+        if (err == LFS3_ERR_NOENT) {
+            break;
+        }
+
+        lfs3_remove(&lfs3, info.name) => 0;
+    }
+
+    // a name at the name limit should fit now
+    struct lfs3_fsinfo fsinfo_;
+    lfs3_fs_stat(&lfs3, &fsinfo_) => 0;
+    char name_[LFS3_NAME_MAX+1];
+    memset(name_, 'z', fsinfo_.name_limit);
+    name_[fsinfo_.name_limit] = '\0';
+    lfs3_mkdir(&lfs3, name_) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        // only our new dir should be left
+        for (lfs3_size_t k = 0; k < 4; k++) {
+            lfs3_sizeattr(&lfs3, "/", 'a'+k) => LFS3_ERR_NOATTR;
+        }
+
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        struct lfs3_info info;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, name_) == 0);
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
     lfs3_unmount(&lfs3) => 0;
 '''
 
