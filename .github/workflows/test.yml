@@ -15,8 +15,9 @@ jobs:
   # run tests
   test:
     runs-on: ubuntu-24.04
-    # qemu is much slower than native
-    timeout-minutes: ${{matrix.arch == 'x86_64' && 30 || 180}}
+    # qemu is 10-20x slower than native, thumb the slowest
+    timeout-minutes: >-
+      ${{matrix.arch == 'x86_64' && 60 || matrix.arch == 'thumb' && 240 || 150}}
     strategy:
       fail-fast: false
       matrix:
@@ -93,9 +94,17 @@ jobs:
           rm test.c
 
       # run the tests!
+      #
+      # under qemu the full suite takes hours, so the cross archs only run
+      # the non-fuzz tests without powerloss here, the nightly runs the
+      # rest on the big-endian archs
       - name: test
         run: |
           make clean
+          if [[ ${{matrix.arch}} != x86_64 ]]
+          then
+            TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
+          fi
           make test
 
       # find compile-time measurements
@@ -249,7 +258,7 @@ jobs:
   # number of tests
   test-biggest:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{matrix.arch == 'x86_64' && 30 || 180}}
+    timeout-minutes: ${{matrix.arch == 'x86_64' && 120 || 300}}
     strategy:
       fail-fast: false
       matrix:
@@ -279,14 +288,19 @@ jobs:
           mips-linux-gnu-gcc --version
           qemu-mips -version
 
+      # see test, qemu is slow
       - name: test-biggest
         run: |
+          if [[ ${{matrix.arch}} != x86_64 ]]
+          then
+            TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
+          fi
           CFLAGS="$CFLAGS -DLFS3_BIGGEST" make test
 
   # run with LFS3_YES_GBMAP, some tests only run with the gbmap enabled
   test-yes-gbmap:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: install
@@ -303,7 +317,7 @@ jobs:
   # run with LFS3_NO_BUILTINS to make sure that works
   test-no-builtins:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: install
@@ -317,10 +331,56 @@ jobs:
         run: |
           CFLAGS="$CFLAGS -DLFS3_NO_BUILTINS" make test
 
+  # check that LFS3_RDONLY builds read what read-write builds write
+  #
+  # the test runner can't be built with LFS3_RDONLY, so rdonly_runner
+  # mounts images written with test.py -d instead, see
+  # runners/rdonly_runner.c
+  test-rdonly:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-rdonly
+        run: |
+          # write an image per case with a read-write build, and a
+          # manifest of what each image holds
+          mkdir -p images
+          write_images() {
+            b=$1 ; shift
+            make BUILDDIR=build/$b "$@" test-runner rdonly-runner
+            for t in \
+              test_files_many \
+              test_dirs_mkdir_many_2layers \
+              test_attrs_fuzz_fuzz \
+              test_attrs_many_many
+            do
+              rm -f images/$b-$t.disk
+              ./scripts/test.py -Rbuild/$b/runners/test_runner -Pnone \
+                -dimages/$b-$t.disk $t
+              build/$b/runners/rdonly_runner -m images/$b-$t.disk
+            done
+          }
+          write_images default
+          write_images yes-gbmap LFS3_YES_GBMAP=1
+
+          # read them back with LFS3_RDONLY builds
+          make BUILDDIR=build/rdonly LFS3_RDONLY=1 rdonly-runner
+          build/rdonly/runners/rdonly_runner images/*.disk
+          make BUILDDIR=build/yes-rdonly LFS3_YES_RDONLY=1 rdonly-runner
+          build/yes-rdonly/runners/rdonly_runner images/*.disk
+
   # run under Valgrind to check for memory errors
   test-valgrind:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: install
@@ -333,15 +393,21 @@ jobs:
           valgrind --version
       # Valgrind takes a while with diminishing value, so skip powerloss
       # testing, powerlosses also leak on purpose
+      #
+      # --valgrind runs each permutation in its own process, so we also
+      # only test the non-fuzz cases of the user-facing suites, every
+      # permutation would take days
       - name: test-valgrind
         run: |
-          TESTFLAGS="$TESTFLAGS --valgrind --context=1024 -Pnone" \
+          TESTFLAGS="$TESTFLAGS --valgrind --context=1024 -Pnone --no-fuzz \
+              test_dirs test_files test_paths test_alloc test_attrs test_kv \
+              test_compat test_grow test_relocations" \
             make test
 
   # compile/run with Clang, mostly to check for Clang-specific warnings
   test-clang:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: install
@@ -362,7 +428,7 @@ jobs:
   # from coverage results
   cov:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - name: install
@@ -404,7 +470,7 @@ jobs:
                 | 100*((.prev_a|tonumber) / (.prev_b|tonumber))' \
               || echo 0)"
             export DESCRIPTION="$(./scripts/cov.py -u $f -f$s -Y \
-              | awk -F '[ /%]+' -v s=$s '
+              | awk -F '[ /%()]+' -v s=$s '
                 NR==2 {$1=0; printf "%d/%d %s",$2,$3,s}
                 NR==2 && ENVIRON["PREV"]+0 != 0 {
                   printf " (%+.1f%%)",$4-ENVIRON["PREV"]
@@ -528,7 +594,7 @@ jobs:
                   | 100*((.prev_a|tonumber) / (.prev_b|tonumber))' \
                 prev-status.json || echo 0)"
               ./scripts/cov.py -u $f -f$s -Y \
-                | awk -F '[ /%]+' -v s=$s '
+                | awk -F '[ /%()]+' -v s=$s '
                   NR==2 {$1=0; printf "%d/%d %s",$2,$3,s}
                   NR==2 && ENVIRON["PREV"]+0 != 0 {
                     printf " (%+.1f%%)",$4-ENVIRON["PREV"]

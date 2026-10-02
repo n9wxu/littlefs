@@ -155,7 +155,7 @@ jobs:
                   | 100*((.prev_a|tonumber) / (.prev_b|tonumber))' \
                 prev-status.json || echo 0)"
               ./scripts/cov.py -u $f -f$s -Y \
-                | awk -F '[ /%]+' -v s=$s '
+                | awk -F '[ /%()]+' -v s=$s '
                   NR==2 {$1=0; printf "%d/%d %s",$2,$3,s}
                   NR==2 && ENVIRON["PREV"]+0 != 0 {
                     printf " (%+.1f%%)",$4-ENVIRON["PREV"]
