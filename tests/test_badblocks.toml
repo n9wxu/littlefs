@@ -6986,8 +6986,8 @@ code = '''
 
     // update our file, this needs to copy our source
     lfs3_emubd_sio_t erased = lfs3_emubd_erased(CFG);
-    uint8_t wbuf[BLOCK_SIZE];
-    for (lfs3_size_t i = 0; i < BLOCK_SIZE; i++) {
+    uint8_t wbuf[lfs3_max(SIZE, BLOCK_SIZE)];
+    for (lfs3_size_t i = 0; i < lfs3_max(SIZE, BLOCK_SIZE); i++) {
         wbuf[i] = 'A' + (TEST_PRNG(&prng) % 26);
     }
     int err;
