@@ -10411,6 +10411,7 @@ static inline void lfs3_alloc_ckpoint_(lfs3_t *lfs3);
 static inline bool lfs3_alloc_canlookahead(const lfs3_t *lfs3);
 static inline bool lfs3_alloc_canlookgbmap(const lfs3_t *lfs3);
 static void lfs3_alloc_adopt(lfs3_t *lfs3, lfs3_block_t known);
+static int lfs3_alloc_setinusebad(lfs3_t *lfs3);
 static int lfs3_gbmap_zerounknown(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_block_t window, lfs3_block_t size);
 static int lfs3_gbmap_setbptr(lfs3_t *lfs3, lfs3_btree_t *gbmap,
@@ -10612,6 +10613,11 @@ eot:;
 
         // was lookahead scan successful?
         } else {
+            int err = lfs3_alloc_setinusebad(lfs3);
+            if (err) {
+                return err;
+            }
+
             lfs3_alloc_adopt(lfs3, lfs3->lookahead.ckpoint);
         }
     }
@@ -11172,6 +11178,51 @@ static void lfs3_alloc_setinusebptr(lfs3_t *lfs3,
 }
 #endif
 
+// mark blocks the gbmap records as bad as in-use, the filesystem doesn't
+// reference them, so a lookahead scan would otherwise find them free
+#ifndef LFS3_RDONLY
+static int lfs3_alloc_setinusebad(lfs3_t *lfs3) {
+    #ifdef LFS3_GBMAP
+    if (!lfs3_f_isgbmap(lfs3->flags)) {
+        return 0;
+    }
+
+    lfs3_block_t size = lfs3_min(
+            8*lfs3->cfg->lookahead_size,
+            lfs3->block_count);
+    for (lfs3_block_t i = 0; i < size;) {
+        lfs3_block_t block = (lfs3->lookahead.window + i)
+                % lfs3->block_count;
+        lfs3_bid_t bid;
+        lfs3_stag_t tag = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b,
+                block,
+                &bid, NULL, NULL);
+        if (tag < 0 && tag != LFS3_ERR_NOENT) {
+            return tag;
+        }
+
+        // past the gbmap? lfs3_fs_grow allocates before resizing it, so
+        // the rest of the disk can't be bad
+        if (tag == LFS3_ERR_NOENT) {
+            i += lfs3->block_count - block;
+            continue;
+        }
+
+        lfs3_block_t d = lfs3_min((bid+1) - block, size - i);
+        if (tag == LFS3_TAG_BMBAD) {
+            for (lfs3_block_t j = 0; j < d; j++) {
+                lfs3_alloc_setinuse(lfs3, block + j);
+            }
+        }
+        i += d;
+    }
+    #else
+    (void)lfs3;
+    #endif
+    return 0;
+}
+#endif
+
 // needed in lfs3_alloc_adopt
 #ifndef LFS3_RDONLY
 static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
@@ -11431,6 +11482,12 @@ static lfs3_sblock_t lfs3_alloc__(lfs3_t *lfs3, uint32_t flags,
                 i < lfs3_graft_count(lfs3->graft_count);
                 i++) {
             lfs3_alloc_setinuse(lfs3, lfs3->graft[i].u.disk.block);
+        }
+
+        // mask out any bad blocks
+        int err = lfs3_alloc_setinusebad(lfs3);
+        if (err) {
+            return err;
         }
 
         // mark anything not seen as free
