@@ -11195,10 +11195,16 @@ static void lfs3_alloc_adopt(lfs3_t *lfs3, lfs3_block_t known) {
     }
 
     // signal that lookahead is full, unless we also want a gbmap
-    if (LFS3_IFDEF_GBMAP(
-            !(lfs3_f_isgbmap(lfs3->flags)
-                && lfs3_alloc_canlookgbmap(lfs3)),
-            true)) {
+    //
+    // a window with no free blocks leaves the lookahead buffer empty,
+    // which would keep gc choosing the lookahead buffer over the gbmap
+    // forever, so stop there, allocation repopulates the gbmap when
+    // needed
+    if (block == LFS3_ERR_NOSPC
+            || LFS3_IFDEF_GBMAP(
+                !(lfs3_f_isgbmap(lfs3->flags)
+                    && lfs3_alloc_canlookgbmap(lfs3)),
+                true)) {
         lfs3->flags &= ~LFS3_I_LOOKAHEAD;
     }
 }
