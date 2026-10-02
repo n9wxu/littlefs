@@ -960,10 +960,11 @@ code = '''
     uint8_t *rbuf = malloc(BLOCK_COUNT*BLOCK_SIZE);
     #define GEN(_buf, _i, _off, _size) do { \
         uint32_t prng_ = (_i) + 1; \
-        for (lfs3_size_t j_ = 0; j_ < (_off)+(_size); j_++) { \
+        lfs3_size_t off_ = (_off); \
+        for (lfs3_size_t j_ = 0; j_ < off_+(_size); j_++) { \
             uint8_t c_ = 'a' + (TEST_PRNG(&prng_) % 26); \
-            if (j_ >= (_off)) { \
-                (_buf)[j_-(_off)] = c_; \
+            if (j_ >= off_) { \
+                (_buf)[j_-off_] = c_; \
             } \
         } \
     } while (0)
