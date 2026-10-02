@@ -764,17 +764,28 @@ static inline lfs3_size_t lfs3_ptail_off(const lfs3_t *lfs3) {
 
 
 // checked read helpers
+//
+// these check either a block's checksum, cksum over [0, cksize), or with
+// parity=true, the parity of a tag's data, cksum>>31 over
+// [cksum & 0x7fffffff, cksize)
 
-#ifdef LFS3_CKDATACKSUMS
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+static inline lfs3_size_t lfs3_bd_ckoff(uint32_t cksum, bool parity) {
+    return (parity) ? (cksum & 0x7fffffff) : 0;
+}
+#endif
+
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static int lfs3_bd_ckprefix(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
-        lfs3_size_t cksize, uint32_t cksum,
+        lfs3_size_t cksize, uint32_t cksum, bool parity,
         lfs3_size_t *hint_,
         uint32_t *cksum__) {
-    (void)cksum;
+    lfs3_size_t ckoff = lfs3_bd_ckoff(cksum, parity);
     // must be in-bounds
     LFS3_ASSERT(block < lfs3->block_count);
     LFS3_ASSERT(cksize <= lfs3->cfg->block_size);
+    LFS3_ASSERT(ckoff <= off);
 
     // make sure hint includes our prefix/suffix
     lfs3_size_t hint__ = lfs3_max(
@@ -782,12 +793,12 @@ static int lfs3_bd_ckprefix(lfs3_t *lfs3,
             off + lfs3_min(
                 hint,
                 lfs3->cfg->block_size - off),
-            cksize);
+            cksize) - ckoff;
 
     // checksum any prefixed data
     int err = lfs3_bd_cksum(lfs3,
-            block, 0, hint__,
-            off,
+            block, ckoff, hint__,
+            off - ckoff,
             cksum__);
     if (err) {
         return err;
@@ -795,15 +806,15 @@ static int lfs3_bd_ckprefix(lfs3_t *lfs3,
 
     // return adjusted hint, note we clamped this to a positive range
     // earlier, otherwise we'd have real problems with hint=-1!
-    *hint_ = hint__ - off;
+    *hint_ = hint__ - (off - ckoff);
     return 0;
 }
 #endif
 
-#ifdef LFS3_CKDATACKSUMS
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static int lfs3_bd_cksuffix(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
-        lfs3_size_t cksize, uint32_t cksum,
+        lfs3_size_t cksize, uint32_t cksum, bool parity,
         uint32_t cksum__) {
     // must be in-bounds
     LFS3_ASSERT(block < lfs3->block_count);
@@ -818,8 +829,20 @@ static int lfs3_bd_cksuffix(lfs3_t *lfs3,
         return err;
     }
 
+    // does parity match? crc32cs are parity-preserving
+    if (parity) {
+        if (lfs3_parity(cksum__) != (cksum >> 31)) {
+            LFS3_ERROR("Found ckparity mismatch "
+                        "0x%"PRIx32".%"PRIx32" %"PRId32", "
+                        "parity %01"PRIx32" (!= %01"PRIx32")",
+                    block, lfs3_bd_ckoff(cksum, parity),
+                    cksize - lfs3_bd_ckoff(cksum, parity),
+                    lfs3_parity(cksum__), cksum >> 31);
+            return LFS3_ERR_CORRUPT;
+        }
+
     // do checksums match?
-    if (cksum__ != cksum) {
+    } else if (cksum__ != cksum) {
         LFS3_ERROR("Found ckdatacksums mismatch "
                     "0x%"PRIx32".%"PRIx32" %"PRId32", "
                     "cksum %08"PRIx32" (!= %08"PRIx32")",
@@ -841,11 +864,14 @@ static int lfs3_bd_cksuffix(lfs3_t *lfs3,
 // contributes to the relevant parity/checksum, this may be
 // significantly more than the data we actually end up using
 //
-#ifdef LFS3_CKDATACKSUMS
+// note we check the bytes we return, not a second read of them, a
+// metastable bit may read differently each time
+//
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static int lfs3_bd_readck(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
         void *buffer, lfs3_size_t size,
-        lfs3_size_t cksize, uint32_t cksum) {
+        lfs3_size_t cksize, uint32_t cksum, bool parity) {
     // must be in-bounds
     LFS3_ASSERT(block < lfs3->block_count);
     LFS3_ASSERT(cksize <= lfs3->cfg->block_size);
@@ -856,7 +882,7 @@ static int lfs3_bd_readck(lfs3_t *lfs3,
     uint32_t cksum__ = 0;
     lfs3_size_t hint_;
     int err = lfs3_bd_ckprefix(lfs3, block, off, hint,
-            cksize, cksum,
+            cksize, cksum, parity,
             &hint_,
             &cksum__);
     if (err) {
@@ -875,7 +901,7 @@ static int lfs3_bd_readck(lfs3_t *lfs3,
 
     // checksum any suffixed data and validate
     err = lfs3_bd_cksuffix(lfs3, block, off+size, hint_-size,
-            cksize, cksum,
+            cksize, cksum, parity,
             cksum__);
     if (err) {
         return err;
@@ -891,11 +917,11 @@ static int lfs3_bd_readck(lfs3_t *lfs3,
 //
 // we'd also need to worry about early termination in lfs3_bd_cmp/cmpck
 
-#ifdef LFS3_CKDATACKSUMS
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static lfs3_scmp_t lfs3_bd_cmpck(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
         const void *buffer, lfs3_size_t size,
-        lfs3_size_t cksize, uint32_t cksum) {
+        lfs3_size_t cksize, uint32_t cksum, bool parity) {
     // must be in-bounds
     LFS3_ASSERT(block < lfs3->block_count);
     LFS3_ASSERT(cksize <= lfs3->cfg->block_size);
@@ -906,7 +932,7 @@ static lfs3_scmp_t lfs3_bd_cmpck(lfs3_t *lfs3,
     uint32_t cksum__ = 0;
     lfs3_size_t hint_;
     int err = lfs3_bd_ckprefix(lfs3, block, off, hint,
-            cksize, cksum,
+            cksize, cksum, parity,
             &hint_,
             &cksum__);
     if (err) {
@@ -945,7 +971,7 @@ static lfs3_scmp_t lfs3_bd_cmpck(lfs3_t *lfs3,
 
     // checksum any suffixed data and validate
     err = lfs3_bd_cksuffix(lfs3, block, off+size, hint_-size,
-            cksize, cksum,
+            cksize, cksum, parity,
             cksum__);
     if (err) {
         return err;
@@ -955,12 +981,13 @@ static lfs3_scmp_t lfs3_bd_cmpck(lfs3_t *lfs3,
 }
 #endif
 
-#if !defined(LFS3_RDONLY) && defined(LFS3_CKDATACKSUMS)
+#if !defined(LFS3_RDONLY) \
+        && (defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY))
 static int lfs3_bd_cpyck(lfs3_t *lfs3,
         lfs3_block_t dst_block, lfs3_size_t dst_off,
         lfs3_block_t src_block, lfs3_size_t src_off, lfs3_size_t hint,
         lfs3_size_t size,
-        lfs3_size_t src_cksize, uint32_t src_cksum,
+        lfs3_size_t src_cksize, uint32_t src_cksum, bool src_parity,
         uint32_t *cksum) {
     // must be in-bounds
     LFS3_ASSERT(dst_block < lfs3->block_count);
@@ -974,7 +1001,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
     uint32_t cksum__ = 0;
     lfs3_size_t hint_;
     int err = lfs3_bd_ckprefix(lfs3, src_block, src_off, hint,
-            src_cksize, src_cksum,
+            src_cksize, src_cksum, src_parity,
             &hint_,
             &cksum__);
     if (err) {
@@ -1021,7 +1048,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
 
     // checksum any suffixed data and validate
     err = lfs3_bd_cksuffix(lfs3, src_block, src_off+size, hint_-size,
-            src_cksize, src_cksum,
+            src_cksize, src_cksum, src_parity,
             cksum__);
     if (err) {
         return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
@@ -1306,14 +1333,45 @@ static inline bool lfs3_tag_diverging2(
 
 // support for encoding/decoding tags on disk
 
+// lfs3_data_t encoding, needed in lfs3_bd_readtag
+#define LFS3_DATA_ONDISK 0x80000000
+#define LFS3_DATA_ISBPTR 0x40000000
+
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+#define LFS3_DATA_ISERASED 0x80000000
+#endif
+
+#ifdef LFS3_CKMETAPARITY
+#define LFS3_DATA_ISPARITY 0x40000000
+#endif
+
+#define LFS3_DATA_NULL() \
+    ((lfs3_data_t){ \
+        .size=0, \
+        .u.buffer=NULL})
+
+#define LFS3_DATA_BUF(_buffer, _size) \
+    ((lfs3_data_t){ \
+        .size=_size, \
+        .u.buffer=(const void*)(_buffer)})
+
+#define LFS3_DATA_DISK(_block, _off, _size) \
+    ((lfs3_data_t){ \
+        .size=LFS3_DATA_ONDISK | (_size), \
+        .u.disk.block=_block, \
+        .u.disk.off=_off})
+
 // needed in lfs3_bd_readtag
 #ifdef LFS3_CKMETAPARITY
 static inline bool lfs3_m_isckparity(uint32_t flags);
 #endif
 
+// data_, if provided, references the tag's data, carrying the data's
+// parity if we checked it
 static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
         lfs3_tag_t *tag_, lfs3_rid_t *weight_, lfs3_size_t *size_,
+        lfs3_data_t *data_,
         uint32_t *cksum) {
     // read the largest possible tag size
     uint8_t tag_buf[LFS3_TAG_DSIZE];
@@ -1372,6 +1430,10 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
         return LFS3_ERR_CORRUPT;
     }
 
+    if (data_) {
+        *data_ = LFS3_DATA_DISK(block, off+d, size);
+    }
+
     // check the parity if we're checking parity
     //
     // this requires reading all of the data as well, but with any luck
@@ -1386,6 +1448,7 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
             && lfs3_tag_suptype(tag & 0x7fff) != LFS3_TAG_CKSUM) {
         // checksum the tag, including our valid bit
         uint32_t cksum_ = lfs3_crc32c(0, tag_buf, d);
+        bool tparity = lfs3_parity(cksum_);
 
         // checksum the data, if we have any
         lfs3_size_t hint_ = hint - lfs3_min(d, hint);
@@ -1448,6 +1511,14 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
                     block, off, d_,
                     lfs3_parity(cksum_), parity);
             return LFS3_ERR_CORRUPT;
+        }
+
+        // keep the data's parity, so reads can check the bytes they
+        // use, the data on disk may not read the same twice
+        if (data_ && !lfs3_tag_isalt(tag)) {
+            data_->u.disk.cksize = LFS3_DATA_ISPARITY | (off+d + size);
+            data_->u.disk.cksum = ((uint32_t)(parity ^ tparity) << 31)
+                    | (off+d);
         }
     }
     #endif
@@ -1520,29 +1591,6 @@ static lfs3_ssize_t lfs3_bd_progtag(lfs3_t *lfs3,
 
 /// Data - lfs3_data_t stuff ///
 
-#define LFS3_DATA_ONDISK 0x80000000
-#define LFS3_DATA_ISBPTR 0x40000000
-
-#ifdef LFS3_CKDATACKSUMS
-#define LFS3_DATA_ISERASED 0x80000000
-#endif
-
-#define LFS3_DATA_NULL() \
-    ((lfs3_data_t){ \
-        .size=0, \
-        .u.buffer=NULL})
-
-#define LFS3_DATA_BUF(_buffer, _size) \
-    ((lfs3_data_t){ \
-        .size=_size, \
-        .u.buffer=(const void*)(_buffer)})
-
-#define LFS3_DATA_DISK(_block, _off, _size) \
-    ((lfs3_data_t){ \
-        .size=LFS3_DATA_ONDISK | (_size), \
-        .u.disk.block=_block, \
-        .u.disk.off=_off})
-
 // data helpers
 static inline bool lfs3_data_ondisk(const lfs3_data_t *data) {
     return data->size & LFS3_DATA_ONDISK;
@@ -1560,15 +1608,23 @@ static inline lfs3_size_t lfs3_data_size(const lfs3_data_t *data) {
     return data->size & ~(LFS3_DATA_ONDISK | LFS3_DATA_ISBPTR);
 }
 
-#ifdef LFS3_CKDATACKSUMS
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static inline lfs3_size_t lfs3_data_cksize(const lfs3_data_t *data) {
-    return data->u.disk.cksize & ~LFS3_DATA_ISERASED;
+    return data->u.disk.cksize & ~LFS3_DATA_ISERASED
+            & ~LFS3_IFDEF_CKMETAPARITY(LFS3_DATA_ISPARITY, 0);
 }
 #endif
 
-#ifdef LFS3_CKDATACKSUMS
+#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
 static inline uint32_t lfs3_data_cksum(const lfs3_data_t *data) {
     return data->u.disk.cksum;
+}
+#endif
+
+#ifdef LFS3_CKMETAPARITY
+static inline bool lfs3_data_isckparity(const lfs3_data_t *data) {
+    return !lfs3_data_isbptr(data)
+            && (data->u.disk.cksize & LFS3_DATA_ISPARITY);
 }
 #endif
 
@@ -1638,7 +1694,24 @@ static lfs3_ssize_t lfs3_data_read(lfs3_t *lfs3, lfs3_data_t *data,
                     // note our hint includes the full data range
                     lfs3_data_size(data),
                     buffer, d,
-                    lfs3_data_cksize(data), lfs3_data_cksum(data));
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), false);
+            if (err) {
+                return err;
+            }
+            #endif
+
+        // validating metadata parity?
+        } else if (LFS3_IFDEF_CKMETAPARITY(
+                lfs3_m_isckparity(lfs3->flags)
+                    && lfs3_data_isckparity(data),
+                false)) {
+            #ifdef LFS3_CKMETAPARITY
+            int err = lfs3_bd_readck(lfs3,
+                    data->u.disk.block, data->u.disk.off,
+                    // note our hint includes the full data range
+                    lfs3_data_size(data),
+                    buffer, d,
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), true);
             if (err) {
                 return err;
             }
@@ -1745,7 +1818,22 @@ static lfs3_scmp_t lfs3_data_cmp(lfs3_t *lfs3, const lfs3_data_t *data,
                     // following data
                     data->u.disk.block, data->u.disk.off, 0,
                     buffer, d,
-                    lfs3_data_cksize(data), lfs3_data_cksum(data));
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), false);
+            if (cmp != LFS3_CMP_EQ) {
+                return cmp;
+            }
+            #endif
+
+        // validating metadata parity?
+        } else if (LFS3_IFDEF_CKMETAPARITY(
+                lfs3_m_isckparity(lfs3->flags)
+                    && lfs3_data_isckparity(data),
+                false)) {
+            #ifdef LFS3_CKMETAPARITY
+            int cmp = lfs3_bd_cmpck(lfs3,
+                    data->u.disk.block, data->u.disk.off, 0,
+                    buffer, d,
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), true);
             if (cmp != LFS3_CMP_EQ) {
                 return cmp;
             }
@@ -1817,7 +1905,24 @@ static int lfs3_bd_progdata(lfs3_t *lfs3,
             int err = lfs3_bd_cpyck(lfs3, block, off,
                     data->u.disk.block, data->u.disk.off, lfs3_data_size(data),
                     lfs3_data_size(data),
-                    lfs3_data_cksize(data), lfs3_data_cksum(data),
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), false,
+                    cksum);
+            if (err) {
+                return err;
+            }
+            #endif
+
+        // validating metadata parity? otherwise we'd commit a flipped
+        // bit under a fresh checksum
+        } else if (LFS3_IFDEF_CKMETAPARITY(
+                lfs3_m_isckparity(lfs3->flags)
+                    && lfs3_data_isckparity(data),
+                false)) {
+            #ifdef LFS3_CKMETAPARITY
+            int err = lfs3_bd_cpyck(lfs3, block, off,
+                    data->u.disk.block, data->u.disk.off, lfs3_data_size(data),
+                    lfs3_data_size(data),
+                    lfs3_data_cksize(data), lfs3_data_cksum(data), true,
                     cksum);
             if (err) {
                 return err;
@@ -2234,6 +2339,10 @@ static void lfs3_bptr_init(lfs3_bptr_t *bptr,
     bptr->d.u.disk.cksize = cksize;
     bptr->d.u.disk.cksum = cksum;
     #else
+    #ifdef LFS3_CKMETAPARITY
+    // no tag parity
+    bptr->d.u.disk.cksize = 0;
+    #endif
     bptr->cksize = cksize;
     bptr->cksum = cksum;
     #endif
@@ -2396,6 +2505,10 @@ static int lfs3_data_readbptr(lfs3_t *lfs3, lfs3_data_t *data,
 
     // mark as on-disk + cksum
     bptr->d.size |= LFS3_DATA_ONDISK | LFS3_DATA_ISBPTR;
+    #if !defined(LFS3_CKDATACKSUMS) && defined(LFS3_CKMETAPARITY)
+    // no tag parity
+    bptr->d.u.disk.cksize = 0;
+    #endif
     return 0;
 }
 
@@ -2771,6 +2884,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
         lfs3_size_t size;
         lfs3_ssize_t d = lfs3_bd_readtag(lfs3, block, off_, -1,
                 &tag, &weight, &size,
+                NULL,
                 (lfs3_rbyd_isquickfetch(trunk))
                     ? NULL
                     : &cksum__);
@@ -3148,9 +3262,11 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
         lfs3_tag_t alt;
         lfs3_rid_t weight;
         lfs3_size_t jump;
+        lfs3_data_t data;
         lfs3_ssize_t d = lfs3_bd_readtag(lfs3,
                 rbyd->blocks[0], branch, 0,
                 &alt, &weight, &jump,
+                &data,
                 NULL);
         if (d < 0) {
             return d;
@@ -3216,7 +3332,7 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
                 *weight_ = upper_rid - lower_rid;
             }
             if (data_) {
-                *data_ = LFS3_DATA_DISK(rbyd->blocks[0], branch + d, jump);
+                *data_ = data;
             }
             return tag__;
         }
@@ -3468,7 +3584,7 @@ static int lfs3_rbyd_appendrattr_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         } else {
             ctx.u.data.u.disk.block = args[1];
             ctx.u.data.u.disk.off = args[2];
-            #ifdef LFS3_CKDATACKSUMS
+            #if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
             if (!(ctx.u.data.size & LFS3_DATA_ISBPTR)) {
                 ctx.u.data.u.disk.cksize = args[3];
                 ctx.u.data.u.disk.cksum = args[4];
@@ -3903,6 +4019,7 @@ trunk:;
         lfs3_ssize_t d = lfs3_bd_readtag(lfs3,
                 rbyd->blocks[0], branch, 0,
                 &alt_, &weight_, &jump_,
+                NULL,
                 NULL);
         if (d < 0) {
             return d;
@@ -4812,6 +4929,7 @@ static int lfs3_rbyd_appendcompaction(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
                     lfs3_ssize_t d = lfs3_bd_readtag(lfs3,
                             rbyd->blocks[0], off, layer_ - off,
                             &tag__, &weight__, &size__,
+                            NULL,
                             NULL);
                     if (d < 0) {
                         return d;
@@ -5545,7 +5663,8 @@ typedef struct lfs3_bcommit {
 
     // scratch space for lfs3_btree_commit_ state that needs to persist
     // until the root is committed
-    lfs3_rattr_t rscratch[LFS3_IFDEF_CKDATACKSUMS(18, 16)];
+    lfs3_rattr_t rscratch[LFS3_IFDEF_CKDATACKSUMS(18,
+            LFS3_IFDEF_CKMETAPARITY(18, 16))];
 } lfs3_bcommit_t;
 #endif
 
@@ -6052,12 +6171,14 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         *r++ = LFS3_RATTR_ARG(sibling.cksum);
         if (lfs3_tag_suptype(split_tag) == LFS3_TAG_NAME) {
             // on-disk data also carries its cksize/cksum
-            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+            *r++ = LFS3_RATTR(
+                    LFS3_IFDEF_CKDATACKSUMS(6,
+                        LFS3_IFDEF_CKMETAPARITY(6, 4)),
                     LFS3_TAG_BNAME, 0, LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(split_name.size);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.block);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.off);
-            #ifdef LFS3_CKDATACKSUMS
+            #if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksize);
             *r++ = LFS3_RATTR_ARG(split_name.u.disk.cksum);
             #endif
@@ -14549,7 +14670,8 @@ LFS3_NOINLINE
 static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         const lfs3_rattr_t *rname) {
     // build a commit of any pending file metadata
-    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(16, 14)];
+    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(16,
+            LFS3_IFDEF_CKMETAPARITY(16, 14))];
     lfs3_rattr_t shrub_rattrs[5];
 
     // uncreated files must be unsync
@@ -14584,13 +14706,15 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
             }
 
             // on-disk data also carries its cksize/cksum
-            *r++ = LFS3_RATTR(LFS3_IFDEF_CKDATACKSUMS(6, 4),
+            *r++ = LFS3_RATTR(
+                    LFS3_IFDEF_CKDATACKSUMS(6,
+                        LFS3_IFDEF_CKMETAPARITY(6, 4)),
                     LFS3_tag_MASK8 | LFS3_TAG_REG, 0,
                     LFS3_FROM_DATA);
             *r++ = LFS3_RATTR_ARG(name_data.size);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.block);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.off);
-            #ifdef LFS3_CKDATACKSUMS
+            #if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksize);
             *r++ = LFS3_RATTR_ARG(name_data.u.disk.cksum);
             #endif

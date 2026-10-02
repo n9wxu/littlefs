@@ -2638,6 +2638,136 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test every single-bit error in a file's inlined data
+#
+# ckparity checks a tag's data when it looks up the tag, but must also
+# check the bytes it actually returns, a metastable bit may read
+# differently the second time
+#
+[cases.test_ck_ckparity_data]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READFLIP'
+# this should stay inlined
+defines.SIZE = 'BLOCK_SIZE/64'
+defines.READS = 8
+ifdef = 'LFS3_CKMETAPARITY'
+code = '''
+    // first we need to figure out where our data will actually end up,
+    // fortunately our block randomization is intentionally consistent
+    uint32_t prng = 42;
+    uint8_t wbuf[SIZE];
+    for (lfs3_size_t j = 0; j < SIZE; j++) {
+         wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_CKMETAPARITY, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "tripedalia",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // find our data in the mroot
+    lfs3_block_t badblock = -1;
+    lfs3_size_t badoff = -1;
+    for (lfs3_block_t b = 0; b < 2 && badblock == (lfs3_block_t)-1; b++) {
+        uint8_t buf[BLOCK_SIZE];
+        CFG->read(CFG, b, 0, buf, BLOCK_SIZE) => 0;
+        for (lfs3_size_t off = 0; off+SIZE <= BLOCK_SIZE; off++) {
+            if (memcmp(&buf[off], wbuf, SIZE) == 0) {
+                badblock = b;
+                badoff = off;
+                break;
+            }
+        }
+    }
+    assert(badblock != (lfs3_block_t)-1);
+
+    // now test all bad bits in our data
+    for (lfs3_size_t i = 0; i < 8*SIZE; i++) {
+        lfs3_size_t badbit = 8*badoff + i;
+
+        // reset the bd prng every run for reproducibility
+        lfs3_emubd_seed(CFG, 42+i);
+        printf("--- badblock: 0x%x.%x, badbit: 0x%x (0x%x+%x) ---\n",
+                (lfs3_size_t)badblock, badbit/8, badbit, badbit/8, badbit%8);
+
+        // mark our badbit as bad
+        lfs3_emubd_mkbadbit(CFG, badblock, badbit) => 0;
+
+        // With metastability, basically any filesystem operation can
+        // return LFS3_ERR_CORRUPT, and our commit may roll back. But no
+        // read may return a flipped bit.
+
+        // format
+        int err = lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_CKMETAPARITY, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err == LFS3_ERR_CORRUPT) {
+            goto corrupt;
+        }
+        err = lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err == LFS3_ERR_CORRUPT) {
+            goto corrupt;
+        }
+
+        // create our file
+        err = lfs3_file_open(&lfs3, &file, "tripedalia",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err == LFS3_ERR_CORRUPT) {
+            goto corrupt_mounted;
+        }
+        lfs3_ssize_t res = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+        assert(res == SIZE || res == LFS3_ERR_CORRUPT);
+        err = lfs3_file_close(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (res == LFS3_ERR_CORRUPT || err == LFS3_ERR_CORRUPT) {
+            goto corrupt_mounted;
+        }
+
+        // read our file a couple times
+        for (lfs3_size_t r = 0; r < READS; r++) {
+            // remount?
+            if (r % 2 == 1) {
+                lfs3_unmount(&lfs3) => 0;
+                err = lfs3_mount(&lfs3,
+                        LFS3_M_RDWR | LFS3_M_CKMETAPARITY, CFG);
+                assert(!err || err == LFS3_ERR_CORRUPT);
+                if (err == LFS3_ERR_CORRUPT) {
+                    goto corrupt;
+                }
+            }
+
+            err = lfs3_file_open(&lfs3, &file, "tripedalia",
+                    LFS3_O_RDONLY);
+            assert(!err
+                    || err == LFS3_ERR_CORRUPT
+                    // our commit may roll back, ckparity can't help here
+                    || err == LFS3_ERR_NOENT);
+            if (err) {
+                continue;
+            }
+            uint8_t rbuf[SIZE];
+            res = lfs3_file_read(&lfs3, &file, rbuf, SIZE);
+            assert(res == SIZE || res == LFS3_ERR_CORRUPT);
+            if (res == SIZE) {
+                assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+    corrupt_mounted:;
+        lfs3_unmount(&lfs3) => 0;
+
+    corrupt:;
+        // reset badbit
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+    }
+'''
+
 
 # Some simple ckdatacksums tests
 

@@ -1147,9 +1147,14 @@ typedef struct lfs3_data {
             lfs3_block_t block;
             lfs3_size_t off;
             // optional context for validating data
-            #ifdef LFS3_CKDATACKSUMS
-            // sign(cksize)=0 => block not erased
-            // sign(cksize)=1 => block erased
+            #if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+            // block pointers are checksummed over [0, cksize):
+            //   sign(cksize)=0 => block not erased
+            //   sign(cksize)=1 => block erased
+            // other data may carry the parity of its tag's data, which
+            // spans [cksum & 0x7fffffff, cksize):
+            //   cksize=0       => no parity
+            //   sign(cksum)    => parity
             lfs3_size_t cksize;
             uint32_t cksum;
             #endif
