@@ -2768,6 +2768,94 @@ code = '''
     }
 '''
 
+# test every single-bit error in a commit's gcksumdelta
+#
+# fetch must decode the gcksumdelta from the bytes it checksums, if a
+# metastable bit reads differently the second time, mount sees a
+# gcksum mismatch for a commit it accepted
+#
+# a second read only goes to disk when our gcksumdelta straddles the
+# read cache, so use aligned reads and shift our commit around
+#
+[cases.test_ck_fetch_gcksumdelta]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READFLIP'
+defines.READ_SIZE = 16
+defines.PROG_SIZE = 16
+defines.LAYOUTS = 16
+defines.MOUNTS = 16
+in = 'lfs3.c'
+code = '''
+    for (lfs3_size_t l = 0; l < LAYOUTS; l++) {
+        // a name of l+1 bytes shifts our gcksumdelta around
+        char name[256];
+        memset(name, 'a', l+1);
+        name[l+1] = '\0';
+
+        // first we need to figure out where our gcksumdelta will
+        // actually end up, fortunately our block randomization is
+        // intentionally consistent
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mkdir(&lfs3, name) => 0;
+
+        // find the last gcksumdelta in the mroot
+        lfs3_block_t badblock = lfs3.mroot.r.blocks[0];
+        lfs3_size_t badoff = -1;
+        lfs3_size_t off = sizeof(uint32_t);
+        while (off < lfs3_rbyd_eoff(&lfs3.mroot.r)) {
+            lfs3_tag_t tag;
+            lfs3_rid_t weight;
+            lfs3_size_t size;
+            lfs3_ssize_t d = lfs3_bd_readtag(&lfs3,
+                    badblock, off, -1,
+                    &tag, &weight, &size,
+                    NULL,
+                    NULL);
+            assert(d > 0);
+            if (tag == LFS3_TAG_GCKSUMDELTA) {
+                badoff = off + d;
+            }
+            off += d + ((lfs3_tag_isalt(tag)) ? 0 : size);
+        }
+        assert(badoff != (lfs3_size_t)-1);
+        lfs3_unmount(&lfs3) => 0;
+
+        // now test all bad bits in our gcksumdelta
+        for (lfs3_size_t i = 0; i < 8*sizeof(uint32_t); i++) {
+            lfs3_size_t badbit = 8*badoff + i;
+
+            // reset the bd prng every run for reproducibility
+            lfs3_emubd_seed(CFG, 42+i);
+            printf("--- badblock: 0x%x.%x, badbit: 0x%x (0x%x+%x) ---\n",
+                    (lfs3_size_t)badblock, badbit/8, badbit,
+                    badbit/8, badbit%8);
+
+            // mark our badbit as bad
+            lfs3_emubd_mkbadbit(CFG, badblock, badbit) => 0;
+
+            // format and commit, nothing here reads our bit
+            lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            lfs3_mkdir(&lfs3, name) => 0;
+            lfs3_unmount(&lfs3) => 0;
+
+            // our commit may roll back, but with only one mdir that
+            // leaves a consistent gcksum, so every mount must succeed
+            for (lfs3_size_t j = 0; j < MOUNTS; j++) {
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+                struct lfs3_info info;
+                int err = lfs3_stat(&lfs3, name, &info);
+                assert(!err || err == LFS3_ERR_NOENT);
+                lfs3_unmount(&lfs3) => 0;
+            }
+
+            // reset badbit
+            lfs3_emubd_mkgood(CFG, badblock) => 0;
+        }
+    }
+'''
+
 
 # Some simple ckdatacksums tests
 

@@ -2904,9 +2904,29 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
         if (!lfs3_tag_isalt(tag)) {
             // not an end-of-commit cksum
             if (lfs3_tag_suptype(tag) != LFS3_TAG_CKSUM) {
+                // ecksums and gcksumdeltas are decoded from the same
+                // bytes we checksum, the data on disk may not read the
+                // same twice
+                uint8_t buf[LFS3_ECKSUM_DSIZE];
+                lfs3_size_t d_ = 0;
+                if (LFS3_IFDEF_RDONLY(false, tag == LFS3_TAG_ECKSUM)
+                        || tag == LFS3_TAG_GCKSUMDELTA) {
+                    d_ = lfs3_min(size, sizeof(buf));
+                    int err = lfs3_bd_read(lfs3, block, off__, -1,
+                            buf, d_);
+                    if (err) {
+                        if (err == LFS3_ERR_CORRUPT) {
+                            break;
+                        }
+                        return err;
+                    }
+                }
+
                 if (!lfs3_rbyd_isquickfetch(trunk)) {
                     // cksum the entry, hopefully leaving it in the cache
-                    int err = lfs3_bd_cksum(lfs3, block, off__, -1, size,
+                    cksum__ = lfs3_crc32c(cksum__, buf, d_);
+                    int err = lfs3_bd_cksum(lfs3, block, off__+d_, -1,
+                            size-d_,
                             &cksum__);
                     if (err) {
                         if (err == LFS3_ERR_CORRUPT) {
@@ -2922,10 +2942,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
                         tag == LFS3_TAG_ECKSUM)) {
                     #ifndef LFS3_RDONLY
                     int err = lfs3_data_readecksum(lfs3,
-                            &LFS3_DATA_DISK(block, off__,
-                                // note this size is to make the hint do
-                                // what we want
-                                lfs3->cfg->block_size - off__),
+                            &LFS3_DATA_BUF(buf, d_),
                             &ecksum_);
                     if (err) {
                         if (err == LFS3_ERR_CORRUPT) {
@@ -2938,10 +2955,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
                 // found gcksumdelta? save for later
                 } else if (tag == LFS3_TAG_GCKSUMDELTA) {
                     int err = lfs3_data_readle32(lfs3,
-                            &LFS3_DATA_DISK(block, off__,
-                                // note this size is to make the hint do
-                                // what we want
-                                lfs3->cfg->block_size - off__),
+                            &LFS3_DATA_BUF(buf, d_),
                             &gcksumdelta_);
                     if (err) {
                         if (err == LFS3_ERR_CORRUPT) {
