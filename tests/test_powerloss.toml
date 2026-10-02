@@ -27,6 +27,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 defines.N = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512]
@@ -125,6 +126,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -225,6 +227,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -456,6 +459,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.MKCONSISTENT = [false, true]
 # inlining has a tendency to hide sync issues, so try without
@@ -831,6 +835,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
 defines.N = 8
@@ -910,8 +915,11 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.PROG_SIZE = [1, 16, 256]
+# a pcache wider than prog_size tears more than prog_size bytes
+defines.PCACHE_SIZE = ['LFS3_MAX(16, PROG_SIZE)', '4*PROG_SIZE']
 defines.CHUNK = [16, 64]
 defines.FILES = [1, 2]
 defines.SIZE = '2*BLOCK_SIZE + BLOCK_SIZE/2'
@@ -1052,12 +1060,15 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.N = [1, 4]
 defines.SIZE = ['BLOCK_SIZE/2', '4*BLOCK_SIZE']
 defines.CHUNK = 'SIZE/4'
 defines.LIMIT = 'SIZE/2'
 defines.PROG_SIZE = [1, 16]
+# a pcache wider than prog_size tears more than prog_size bytes
+defines.PCACHE_SIZE = ['LFS3_MAX(16, PROG_SIZE)', '4*PROG_SIZE']
 defines.OPS = 32
 defines.SEED = 'range(10)'
 fuzz = 'SEED'
@@ -1267,6 +1278,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 # inlining has a tendency to hide sync issues, so try without
 defines.SHRUB_SIZE = ['BLOCK_SIZE/4', '0']
@@ -1403,6 +1415,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
 # pre-erasing needs the gbmap, and revperturb on every mount to use the
@@ -1695,6 +1708,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 # repopulate the gbmap rarely or often
 defines.LOOKGBMAP_THRESH = ['BLOCK_COUNT/4', '7*BLOCK_COUNT/8']
@@ -1925,6 +1939,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GC_FLAGS = 'LFS3_GC_PREERASE'
 defines.GC_STEPS = 1
@@ -1932,14 +1947,7 @@ defines.GC_PREERASE_COUNT = ['4', '-1']
 # test with a number of different erase values
 defines.ERASE_VALUE = [0xff, 0x00, -1]
 # no byte may be programmed twice without an erase
-#
-# except that without an erase value, a torn prog can leave its first
-# prog_size bytes equal to the old erased state, which the prog_size-byte
-# erased-state checksums can't tell apart, see gc_preerase_count in lfs3.h
-defines.CKPROGONCE = '''
-    ERASE_VALUE != -1
-        || POWERLOSS_BEHAVIOR != LFS3_EMUBD_POWERLOSS_MOSTBITS
-'''
+defines.CKPROGONCE = true
 defines.N = 2
 defines.SIZE = '2*BLOCK_SIZE'
 defines.CHUNK = 64
