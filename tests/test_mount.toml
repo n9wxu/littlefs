@@ -5,6 +5,10 @@ after = ['test_mtree', 'test_trvs']
 defines.GBMAP = [false, true]
 if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
 
+code = '''
+#include "bd/lfs3_sparsebd.h"
+'''
+
 
 # test we can mount
 [cases.test_mount_simple]
@@ -3262,4 +3266,130 @@ code = '''
         }
     }
     free(buffer);
+'''
+
+# test the largest block count, 2^31-1 blocks, on a sparse device
+#
+# without the gbmap each mount starts allocating at a pseudo-random
+# block, so remounting spreads the files across the disk
+[cases.test_mount_max_blocks]
+defines.BLOCK_SIZE = 512
+defines.MAX_BLOCK_COUNT = 0x7fffffff
+defines.N = 1000
+# more than CRYSTAL_THRESH, so each file gets a data block
+defines.SIZE = 64
+# files written per mount
+defines.REMOUNT = 10
+if = 'READ_SIZE <= BLOCK_SIZE && PROG_SIZE <= BLOCK_SIZE'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_sparsebd_t bd;
+    struct lfs3_sparsebd_cfg bdcfg = {.erase_value = ERASE_VALUE};
+    cfg.context = &bd;
+    cfg.read = lfs3_sparsebd_read;
+    cfg.prog = lfs3_sparsebd_prog;
+    cfg.erase = lfs3_sparsebd_erase;
+    cfg.sync = lfs3_sparsebd_sync;
+    cfg.block_count = MAX_BLOCK_COUNT;
+    #ifdef LFS3_GBMAP
+    cfg.lookgbmap_thresh = MAX_BLOCK_COUNT/4;
+    #endif
+    lfs3_sparsebd_createcfg(&cfg, &bdcfg) => 0;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_size == BLOCK_SIZE);
+    assert(fsinfo.block_count == MAX_BLOCK_COUNT);
+
+    // write our files, a few directories deep
+    for (lfs3_size_t d = 0; d < 10; d++) {
+        char name[256];
+        sprintf(name, "dir%d", d);
+        lfs3_mkdir(&lfs3, name) => 0;
+    }
+    uint8_t wbuf[SIZE];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        if (i > 0 && i % REMOUNT == 0) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        char name[256];
+        sprintf(name, "dir%d/file%04d", i % 10, i);
+        uint32_t prng = i;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, (remount) ? LFS3_M_RDONLY : LFS3_M_RDWR,
+                &cfg) => 0;
+
+        // read our files back
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "dir%d/file%04d", i % 10, i);
+            uint32_t prng = i;
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            lfs3_file_t file;
+            uint8_t rbuf[SIZE+1];
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        // every block is in range, and without the gbmap the data blocks
+        // span most of the disk
+        lfs3_block_t min = -1;
+        lfs3_block_t max = 0;
+        lfs3_size_t datas = 0;
+        lfs3_trv_t trv;
+        lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+        for (lfs3_block_t i = 0;; i++) {
+            // a bit hacky, but this catches infinite loops
+            LFS3_ASSERT(i < 100*N);
+
+            struct lfs3_tinfo tinfo;
+            int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            assert(tinfo.block < MAX_BLOCK_COUNT);
+            if (tinfo.btype == LFS3_BTYPE_DATA) {
+                min = lfs3_min(min, tinfo.block);
+                max = lfs3_max(max, tinfo.block);
+                datas += 1;
+            }
+        }
+        lfs3_trv_close(&lfs3, &trv) => 0;
+        assert(datas >= N);
+        if (!GBMAP) {
+            assert(max - min >= MAX_BLOCK_COUNT/2);
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // and we only needed a fraction of the disk's memory
+    printf("used %"PRIu32" blocks\n", lfs3_sparsebd_used(&cfg));
+    lfs3_sparsebd_destroy(&cfg) => 0;
 '''
