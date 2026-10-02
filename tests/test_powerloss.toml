@@ -15,6 +15,114 @@ after = [
     'test_compat',
 ]
 
+# helpers for test_powerloss_metastable
+code = '''
+// one op of test_powerloss_metastable's workload
+typedef struct test_metastable_op {
+    uint8_t op;
+    lfs3_off_t off;
+    lfs3_size_t chunk;
+    lfs3_off_t size;
+    uint8_t dop;
+    bool grow;
+} test_metastable_op_t;
+
+// draw the next op for a file, applying it to the file's sim if sim is
+// not NULL, the prng advances the same either way
+__attribute__((unused))
+static void test_metastable_op(uint32_t *prng,
+        lfs3_size_t size, lfs3_size_t chunk,
+        uint8_t *sim, lfs3_off_t *sim_size,
+        test_metastable_op_t *o) {
+    o->op = TEST_PRNG(prng) % 4;
+    // write?
+    if (o->op <= 1) {
+        o->off = TEST_PRNG(prng) % (size - chunk);
+        o->chunk = 1 + (TEST_PRNG(prng) % chunk);
+        for (lfs3_size_t j = 0; j < o->chunk; j++) {
+            uint8_t c = 'a' + (TEST_PRNG(prng) % 26);
+            if (sim) {
+                if (j == 0 && o->off > *sim_size) {
+                    memset(&sim[*sim_size], 0, o->off - *sim_size);
+                }
+                sim[o->off+j] = c;
+            }
+        }
+        if (sim) {
+            *sim_size = lfs3_max(*sim_size, o->off + o->chunk);
+        }
+    // truncate?
+    } else if (o->op == 2) {
+        o->size = TEST_PRNG(prng) % (size+1);
+        if (sim) {
+            if (o->size > *sim_size) {
+                memset(&sim[*sim_size], 0, o->size - *sim_size);
+            }
+            *sim_size = o->size;
+        }
+    // fruncate?
+    } else {
+        o->size = TEST_PRNG(prng) % (size+1);
+        if (sim) {
+            if (o->size > *sim_size) {
+                memmove(&sim[o->size - *sim_size], sim, *sim_size);
+                memset(sim, 0, o->size - *sim_size);
+            } else {
+                memmove(sim, &sim[*sim_size - o->size], o->size);
+            }
+            *sim_size = o->size;
+        }
+    }
+    // also move a directory around, and grow every so often
+    o->dop = TEST_PRNG(prng) % 4;
+    o->grow = (TEST_PRNG(prng) % 8 == 0);
+}
+
+// rebuild every file as of its step, returns the number of ops if the
+// steps are a prefix of our ops, -1 if not, and -2 if a step is not
+// one of our ops at all
+__attribute__((unused))
+static lfs3_ssize_t test_metastable_replay(uint32_t seed,
+        lfs3_size_t n, lfs3_size_t ops, lfs3_size_t size, lfs3_size_t chunk,
+        const uint32_t *steps,
+        uint8_t *sims, lfs3_off_t *sim_sizes, uint32_t *prng_) {
+    uint32_t prng = seed;
+    uint32_t counts[n];
+    lfs3_size_t total = 0;
+    for (lfs3_size_t x = 0; x < n; x++) {
+        counts[x] = 0;
+        sim_sizes[x] = 0;
+        total += steps[x];
+    }
+
+    lfs3_ssize_t k_ = -1;
+    bool prefix = true;
+    lfs3_size_t done = 0;
+    for (lfs3_size_t k = 0; k < ops && done < total; k++) {
+        lfs3_size_t x = TEST_PRNG(&prng) % n;
+        bool apply = counts[x] < steps[x];
+        test_metastable_op_t o;
+        test_metastable_op(&prng, size, chunk,
+                (apply) ? &sims[x*size] : NULL, &sim_sizes[x],
+                &o);
+        if (apply) {
+            counts[x] += 1;
+            done += 1;
+        } else {
+            prefix = false;
+        }
+    }
+    if (done < total) {
+        return -2;
+    }
+    if (prefix) {
+        k_ = total;
+        *prng_ = prng;
+    }
+    return k_;
+}
+'''
+
 
 # Create many dirs under powerloss
 #
@@ -2429,4 +2537,300 @@ code = '''
     }
 
     lfs3_unmount(&lfs3) => 0;
+'''
+
+# Metastable bits under powerloss
+#
+# With METASTABLE, the interrupted write lands, but one bit of the block
+# reads randomly until the block is next progged or erased. Mounted with
+# parity and data checksums, any operation may fail with
+# LFS3_ERR_CORRUPT, and no operation may assert or return another error
+#
+# littlefs can't promise more than this under METASTABLE (see the note
+# on prog in lfs3.h), so we only count, and print:
+# - files whose step rolls back past their last completed sync, or
+#   past a step we read
+# - files that read other than as of the step committed with them, or
+#   whose step is not one we wrote, ckparity misses some bit flips in
+#   tag sizes
+# and reformat when our steps no longer follow our ops, or a disk keeps
+# failing
+#
+[cases.test_powerloss_metastable]
+defines.POWERLOSS_BEHAVIOR = 'LFS3_EMUBD_POWERLOSS_METASTABLE'
+defines.BLOCK_RECYCLES = [-1, 1]
+defines.FORMAT_BLOCK_COUNT = 'BLOCK_COUNT/2'
+defines.N = 4
+defines.SIZE = '2*BLOCK_SIZE'
+defines.CHUNK = 'BLOCK_SIZE/4'
+defines.OPS = 32
+# consecutive failures before we give up on a disk
+defines.STUCK = 64
+defines.SEED = 'range(20)'
+fuzz = 'SEED'
+reentrant = true
+ifdef = ['LFS3_CKMETAPARITY', 'LFS3_CKDATACKSUMS']
+code = '''
+    const uint32_t mflags = LFS3_M_RDWR
+            | LFS3_M_CKMETAPARITY
+            | LFS3_M_CKDATACKSUMS;
+
+    // the step each file last read or synced, the step of its last
+    // sync that returned 0, and the newest step we tried to sync, these
+    // survive powerloss, but not a reformat
+    static uint32_t synced[16];
+    static uint32_t acked[16];
+    static uint32_t tried[16];
+    // set while formatting, after a powerloss here we can't know what
+    // the disk holds
+    static bool formatting = true;
+    assert(N <= 16);
+
+    lfs3_t lfs3;
+    uint32_t steps[N];
+    uint8_t sims[N][SIZE];
+    lfs3_off_t sim_sizes[N];
+    lfs3_size_t fails = 0;
+    lfs3_size_t verified = 0;
+    while (true) {
+        assert(fails < 16*STUCK);
+
+        // mount, or reformat if a metastable bit stops our mount
+        int err = lfs3_mount(&lfs3, mflags, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        lfs3_ssize_t k_ = -1;
+        uint32_t prng = SEED;
+        if (!err) {
+            // how far did we get? we can't trust a step we can't read
+            for (lfs3_size_t x = 0; x < N; x++) {
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                        &steps[x], sizeof(uint32_t));
+                assert(d == sizeof(uint32_t)
+                        || d == LFS3_ERR_NOENT
+                        || d == LFS3_ERR_NOATTR
+                        || d == LFS3_ERR_CORRUPT);
+                if (d == LFS3_ERR_NOENT) {
+                    steps[x] = 0;
+                } else if (d != sizeof(uint32_t)) {
+                    err = LFS3_ERR_CORRUPT;
+                    break;
+                }
+            }
+        }
+
+        // lost power while formatting? whatever we find is our baseline
+        if (!err && formatting) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                synced[x] = steps[x];
+                acked[x] = steps[x];
+                tried[x] = steps[x];
+            }
+            formatting = false;
+        }
+
+        // a step none of our ops wrote is data no sync wrote
+        if (!err) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                if (steps[x] > tried[x]) {
+                    printf("metastable: file%03x misread step %d (> %d)\n",
+                            x, steps[x], tried[x]);
+                    err = LFS3_ERR_CORRUPT;
+                }
+            }
+            if (err) {
+                lfs3_unmount(&lfs3) => 0;
+            }
+        }
+
+        if (!err) {
+            // rebuild each file as of its step
+            k_ = test_metastable_replay(SEED, N, OPS, SIZE, CHUNK,
+                    steps, (uint8_t*)sims, sim_sizes, &prng);
+            if (k_ == -2) {
+                printf("metastable: misread steps\n");
+            }
+
+            // every file should read as of its step, or fail
+            for (lfs3_size_t x = 0; x < N && k_ != -2; x++) {
+                if (steps[x] < acked[x]) {
+                    printf("metastable: file%03x lost a completed sync "
+                                "%d -> %d\n",
+                            x, acked[x], steps[x]);
+                } else if (steps[x] < synced[x]) {
+                    printf("metastable: file%03x lost a step it read "
+                                "%d -> %d\n",
+                            x, synced[x], steps[x]);
+                }
+                if (steps[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                int err_ = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+                assert(!err_
+                        || err_ == LFS3_ERR_NOENT
+                        || err_ == LFS3_ERR_CORRUPT);
+                if (err_ == LFS3_ERR_NOENT) {
+                    printf("metastable: file%03x misread as missing\n", x);
+                }
+                if (err_) {
+                    continue;
+                }
+                uint8_t rbuf[SIZE+1];
+                lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf, SIZE+1);
+                assert(d >= 0 || d == LFS3_ERR_CORRUPT);
+                if (d >= 0 && (d != (lfs3_ssize_t)sim_sizes[x]
+                        || memcmp(rbuf, sims[x], sim_sizes[x]) != 0)) {
+                    printf("metastable: file%03x misread data at step %d\n",
+                            x, steps[x]);
+                }
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            int err_ = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+            assert(!err_ || err_ == LFS3_ERR_CORRUPT);
+        }
+
+        // can't read our steps, our steps don't follow our ops, or stuck?
+        // start over
+        if (err || k_ < 0 || fails >= STUCK) {
+            if (!err) {
+                lfs3_unmount(&lfs3) => 0;
+            }
+            printf("metastable: reformatting\n");
+            formatting = true;
+            struct lfs3_cfg cfg = *CFG;
+            cfg.block_count = FORMAT_BLOCK_COUNT;
+            lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+            lfs3_mount(&lfs3, mflags, CFG) => 0;
+            for (lfs3_size_t x = 0; x < N; x++) {
+                steps[x] = 0;
+                sim_sizes[x] = 0;
+                acked[x] = 0;
+                tried[x] = 0;
+            }
+            formatting = false;
+            k_ = 0;
+            prng = SEED;
+            fails = 0;
+            verified = 0;
+        }
+        for (lfs3_size_t x = 0; x < N; x++) {
+            synced[x] = steps[x];
+            acked[x] = lfs3_min(acked[x], steps[x]);
+            tried[x] = lfs3_max(tried[x], steps[x]);
+        }
+
+        // done? check twice more after our last op
+        if ((lfs3_size_t)k_ >= OPS) {
+            lfs3_unmount(&lfs3) => 0;
+            verified += 1;
+            if (verified > 2) {
+                break;
+            }
+            continue;
+        }
+
+        // continue our ops on disk
+        for (lfs3_size_t k = k_; k < OPS; k++) {
+            lfs3_size_t x = TEST_PRNG(&prng) % N;
+            test_metastable_op_t o;
+            test_metastable_op(&prng, SIZE, CHUNK,
+                    sims[x], &sim_sizes[x],
+                    &o);
+
+            // namespace ops are idempotent, so they can be redone
+            char dname[256];
+            sprintf(dname, "dir%03x", (unsigned)(k % 4));
+            char dname_[256];
+            sprintf(dname_, "dir%03x", (unsigned)((k+1) % 4));
+            if (o.dop == 0) {
+                err = lfs3_mkdir(&lfs3, dname);
+                assert(!err
+                        || err == LFS3_ERR_EXIST
+                        || err == LFS3_ERR_CORRUPT);
+            } else if (o.dop == 1) {
+                err = lfs3_rename(&lfs3, dname, dname_);
+                assert(!err
+                        || err == LFS3_ERR_NOENT
+                        || err == LFS3_ERR_CORRUPT);
+            } else if (o.dop == 2) {
+                err = lfs3_remove(&lfs3, dname);
+                assert(!err
+                        || err == LFS3_ERR_NOENT
+                        || err == LFS3_ERR_CORRUPT);
+            }
+
+            if (o.grow) {
+                struct lfs3_fsinfo fsinfo;
+                err = lfs3_fs_stat(&lfs3, &fsinfo);
+                assert(!err || err == LFS3_ERR_CORRUPT);
+                if (!err && fsinfo.block_count < BLOCK_COUNT) {
+                    err = lfs3_fs_grow(&lfs3, fsinfo.block_count+1);
+                    assert(!err || err == LFS3_ERR_CORRUPT);
+                }
+            }
+
+            // write our file, the step is committed with our data
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step = steps[x]+1;
+            tried[x] = lfs3_max(tried[x], step);
+            struct lfs3_attr attr = {
+                .type = 1,
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(uint32_t),
+            };
+            struct lfs3_file_cfg filecfg = {
+                .attrs = &attr,
+                .attr_count = 1,
+            };
+            lfs3_file_t file;
+            err = lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_RDWR | LFS3_O_CREAT,
+                    &filecfg);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (!err) {
+                if (o.op <= 1) {
+                    lfs3_soff_t off_ = lfs3_file_seek(&lfs3, &file,
+                            o.off, LFS3_SEEK_SET);
+                    assert(off_ == (lfs3_soff_t)o.off);
+                    lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                            &sims[x][o.off], o.chunk);
+                    assert(d == (lfs3_ssize_t)o.chunk
+                            || d == LFS3_ERR_CORRUPT);
+                    err = (d < 0) ? d : 0;
+                } else if (o.op == 2) {
+                    err = lfs3_file_truncate(&lfs3, &file, o.size);
+                    assert(!err || err == LFS3_ERR_CORRUPT);
+                } else {
+                    err = lfs3_file_fruncate(&lfs3, &file, o.size);
+                    assert(!err || err == LFS3_ERR_CORRUPT);
+                }
+                if (!err) {
+                    err = lfs3_file_sync(&lfs3, &file);
+                    assert(!err || err == LFS3_ERR_CORRUPT);
+                }
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            // a metastable bit got in the way? the bit settles on the
+            // block's next prog or erase, so remount and try again
+            if (err) {
+                fails += 1;
+                break;
+            }
+            steps[x] = step;
+            synced[x] = step;
+            acked[x] = step;
+            fails = 0;
+        }
+
+        lfs3_unmount(&lfs3) => 0;
+    }
 '''
