@@ -368,30 +368,45 @@ code = '''
     char name[256];
     sprintf(name, "file%08d", n);
 
-    // fail to grow
-    lfs3_emubd_mkbadsync(CFG) => 0;
-    lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => LFS3_ERR_IO;
-    lfs3_emubd_mkgoodsync(CFG) => 0;
-
-    // our allocator should still be in-bounds
+    // fail to grow at progs spread over the grow, a gbmap makes this a
+    // lot of progs
+    //
+    // note a failed sync doesn't fail the grow, the commit stands
     struct lfs3_fsinfo fsinfo;
-    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
-    assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
-    assert(lfs3.lookahead.window < SMALLER_BLOCK_COUNT);
-    #ifdef LFS3_GBMAP
-    assert(!GBMAP || lfs3.gbmap.window < SMALLER_BLOCK_COUNT);
-    #endif
+    lfs3_size_t fails = 0;
+    for (uint32_t i = 1;; i += 1 + i/4) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < 64*BLOCK_COUNT);
 
-    // and we should still be able to write
-    for (lfs3_size_t i = 0; i < 2; i++) {
-        lfs3_file_t file;
-        lfs3_file_open(&lfs3, &file, name,
-                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
-        uint8_t wbuf[SIZE];
-        memset(wbuf, 'a'+i, SIZE);
-        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
-        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, i, 0) => 0;
+        int err = lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT);
+        assert(!err || err == LFS3_ERR_IO);
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, 0, 0) => 0;
+        if (!err) {
+            break;
+        }
+        fails += 1;
+
+        // our allocator should still be in-bounds
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.block_count == SMALLER_BLOCK_COUNT);
+        assert(lfs3.lookahead.window < SMALLER_BLOCK_COUNT);
+        #ifdef LFS3_GBMAP
+        assert(!GBMAP || lfs3.gbmap.window < SMALLER_BLOCK_COUNT);
+        #endif
+
+        // and we should still be able to write
+        for (lfs3_size_t j = 0; j < 2; j++) {
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+            uint8_t wbuf[SIZE];
+            memset(wbuf, 'a'+j, SIZE);
+            lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
     }
+    assert(fails > 0);
 
     // and grow
     lfs3_fs_grow(&lfs3, BIGGER_BLOCK_COUNT) => 0;
@@ -553,6 +568,8 @@ defines.SMALLER_BLOCK_COUNT = [
     'BLOCK_COUNT/2',
     'BLOCK_COUNT/4',
 ]
+# count erases without wearing out blocks
+defines.ERASE_CYCLES = 0xffffffff
 code = '''
     // create a smaller fs
     struct lfs3_cfg cfg = *CFG;
@@ -566,6 +583,7 @@ code = '''
 
     // try to grow past our block device
     lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT+1) => LFS3_ERR_INVAL;
+    lfs3_fs_grow(&lfs3, 2*SMALLER_BLOCK_COUNT) => LFS3_ERR_INVAL;
     lfs3_fs_grow(&lfs3, BLOCK_COUNT) => LFS3_ERR_INVAL;
     // try to shrink
     lfs3_fs_grow(&lfs3, SMALLER_BLOCK_COUNT-1) => LFS3_ERR_INVAL;
@@ -597,6 +615,13 @@ code = '''
     }
     lfs3_file_close(&lfs3, &file);
     lfs3_unmount(&lfs3) => 0;
+
+    // nothing past our block_count should have been touched, note the
+    // block device itself is larger
+    for (lfs3_block_t b = SMALLER_BLOCK_COUNT; b < BLOCK_COUNT; b++) {
+        assert(lfs3_emubd_wear(CFG, b) == 0);
+        assert(lfs3_emubd_blockprogs(CFG, b) == 0);
+    }
 
     // we should still mount with our original config
     lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
@@ -1021,7 +1046,7 @@ code = '''
         char name[256];
         sprintf(name, "amethyst%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng_) % 26);
         }
@@ -1111,13 +1136,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -1186,7 +1211,7 @@ code = '''
             // create a file here
             char name[256];
             sprintf(name, "amethyst%03x", x);
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint32_t wprng_ = wprng;
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -1407,12 +1432,12 @@ code = '''
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
             uint32_t wprng = sim_prngs[j];
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
             }
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
             lfs3_file_close(&lfs3, &file) => 0;
@@ -1530,7 +1555,7 @@ code = '''
 
             // write some initial data if we don't exist
             if (!exist || sticky) {
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint32_t wprng_ = wprng;
                 for (lfs3_size_t k = 0; k < SIZE; k++) {
                     wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -1589,7 +1614,7 @@ code = '''
 
             // write to the file
             lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint32_t wprng_ = wprng;
             for (lfs3_size_t k = 0; k < SIZE; k++) {
                 wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -1890,12 +1915,12 @@ code = '''
         lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
         uint32_t wprng = sim_prngs[j];
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         if (sim_isstickys[j]) {
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => 0;
         } else {
@@ -1908,13 +1933,13 @@ code = '''
     // check that our file handles match our simulation
     for (lfs3_size_t j = 0; j < sim_file_count; j++) {
         uint32_t wprng = sim_files[j]->prng;
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
         lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_read(&lfs3, &sim_files[j]->file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
     }
@@ -2040,7 +2065,7 @@ code = '''
 
             // write some initial data if we don't exist
             if (!exist || sticky) {
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint32_t wprng_ = wprng;
                 for (lfs3_size_t k = 0; k < SIZE; k++) {
                     wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -2102,7 +2127,7 @@ code = '''
 
             // write to the file
             lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint32_t wprng_ = wprng;
             for (lfs3_size_t k = 0; k < SIZE; k++) {
                 wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -2377,6 +2402,7 @@ code = '''
                     sim_size += 1;
                     sim[k] = x;
                     sim_prngs[k] = 0;
+                    sim_isstickys[k] = false;
                     sim_isdirs[k] = true;
                     break;
                 }
@@ -2494,12 +2520,12 @@ code = '''
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
             uint32_t wprng = sim_prngs[j];
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
             }
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             if (sim_isstickys[j]) {
                 lfs3_file_read(&lfs3, &file, rbuf, SIZE) => 0;
             } else {
@@ -2513,13 +2539,13 @@ code = '''
     // check that our file handles match our simulation
     for (lfs3_size_t j = 0; j < sim_file_count; j++) {
         uint32_t wprng = sim_files[j]->prng;
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
         lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_read(&lfs3, &sim_files[j]->file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
     }
@@ -2652,7 +2678,7 @@ code = '''
             // create a file here
             char name[256];
             sprintf(name, "test/amethyst%03x", x);
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint8_t ck = 0;
             for (lfs3_size_t j = 0; j < SIZE-1; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
@@ -2831,7 +2857,7 @@ code = '''
             lfs3_file_t file;
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             // all data should be lowercase ascii
             for (lfs3_size_t j = 0; j < SIZE; j++) {
@@ -3080,7 +3106,7 @@ code = '''
                 // create a file here
                 char name[256];
                 sprintf(name, "%s/amethyst%03x", dir_path, x);
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint8_t ck = 0;
                 for (lfs3_size_t j = 0; j < SIZE-1; j++) {
                     wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
@@ -3300,7 +3326,7 @@ code = '''
                 lfs3_file_t file;
                 lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
-                uint8_t rbuf[SIZE];
+                uint8_t rbuf[lfs3_max(SIZE, 1)];
                 lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
                 // all data should be lowercase ascii
                 for (lfs3_size_t j = 0; j < SIZE; j++) {

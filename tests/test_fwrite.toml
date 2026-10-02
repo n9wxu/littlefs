@@ -40,7 +40,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -91,7 +91,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -119,7 +119,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -170,7 +170,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -267,7 +267,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -318,7 +318,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -428,7 +428,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -490,7 +490,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -521,7 +521,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -584,7 +584,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -684,7 +684,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -747,7 +747,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -1732,7 +1732,7 @@ code = '''
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
     // simulate our file in ram
-    uint8_t sim[lfs3_max(FROM,TO)];
+    uint8_t sim[lfs3_max(lfs3_max(FROM,TO), 1)];
     memset(sim, 0, lfs3_max(FROM,TO));
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < FROM; i++) {
@@ -1799,7 +1799,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => TO;
         // try reading
-        uint8_t rbuf[2*TO];
+        uint8_t rbuf[lfs3_max(2*TO, 1)];
         memset(rbuf, 0xaa, 2*TO);
         lfs3_file_read(&lfs3, &file, rbuf, 2*TO) => TO;
         assert(memcmp(rbuf, sim, TO) == 0);
@@ -1857,7 +1857,7 @@ code = '''
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
     // simulate our file in ram
-    uint8_t sim[lfs3_max(FROM,lfs3_max(AND,TO))];
+    uint8_t sim[lfs3_max(lfs3_max(FROM,lfs3_max(AND,TO)), 1)];
     memset(sim, 0, lfs3_max(FROM,lfs3_max(AND,TO)));
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < FROM; i++) {
@@ -1943,7 +1943,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => TO;
         // try reading
-        uint8_t rbuf[2*TO];
+        uint8_t rbuf[lfs3_max(2*TO, 1)];
         memset(rbuf, 0xaa, 2*TO);
         lfs3_file_read(&lfs3, &file, rbuf, 2*TO) => TO;
         assert(memcmp(rbuf, sim, TO) == 0);
@@ -1990,7 +1990,7 @@ code = '''
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
     // simulate our file in ram
-    uint8_t sim[lfs3_max(FROM,TO)];
+    uint8_t sim[lfs3_max(lfs3_max(FROM,TO), 1)];
     memset(sim, 0, lfs3_max(FROM,TO));
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < FROM; i++) {
@@ -2061,7 +2061,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => TO;
         // try reading
-        uint8_t rbuf[2*TO];
+        uint8_t rbuf[lfs3_max(2*TO, 1)];
         memset(rbuf, 0xaa, 2*TO);
         lfs3_file_read(&lfs3, &file, rbuf, 2*TO) => TO;
         assert(memcmp(rbuf, sim, TO) == 0);
@@ -2119,7 +2119,7 @@ code = '''
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
     // simulate our file in ram
-    uint8_t sim[lfs3_max(FROM,lfs3_max(AND,TO))];
+    uint8_t sim[lfs3_max(lfs3_max(FROM,lfs3_max(AND,TO)), 1)];
     memset(sim, 0, lfs3_max(FROM,lfs3_max(AND,TO)));
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < FROM; i++) {
@@ -2213,7 +2213,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => TO;
         // try reading
-        uint8_t rbuf[2*TO];
+        uint8_t rbuf[lfs3_max(2*TO, 1)];
         memset(rbuf, 0xaa, 2*TO);
         lfs3_file_read(&lfs3, &file, rbuf, 2*TO) => TO;
         assert(memcmp(rbuf, sim, TO) == 0);
@@ -2960,7 +2960,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -3023,7 +3023,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -3127,7 +3127,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -3190,7 +3190,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -3416,7 +3416,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -3483,7 +3483,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -3587,7 +3587,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -3654,7 +3654,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -5696,7 +5696,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -5770,7 +5770,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE/2;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE/2;
         for (lfs3_size_t i = 0; i < SIZE/FRAGMENT_SIZE; i++) {
@@ -5807,7 +5807,7 @@ code = '''
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "hello",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    uint8_t wbuf[SIZE];
+    uint8_t wbuf[lfs3_max(SIZE, 1)];
     uint32_t prng = 42;
     for (lfs3_size_t i = 0; i < SIZE; i++) {
         wbuf[i] = 'a' + (TEST_PRNG(&prng) % 26);
@@ -5881,7 +5881,7 @@ code = '''
         // is size correct?
         lfs3_file_size(&lfs3, &file) => SIZE/2;
         // try reading
-        uint8_t rbuf[2*SIZE];
+        uint8_t rbuf[lfs3_max(2*SIZE, 1)];
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE/2;
         for (lfs3_size_t i = 0; i < SIZE/BLOCK_SIZE; i++) {

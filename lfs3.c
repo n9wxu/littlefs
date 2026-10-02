@@ -27,6 +27,13 @@ typedef int lfs3_scmp_t;
 // this is just a hint that the function returns a bool + err union
 typedef int lfs3_sbool_t;
 
+// internally used error codes, these must never leave lfs3.c
+enum lfs3_ierr {
+    // a copy could not read its source, unlike LFS3_ERR_CORRUPT this
+    // says nothing about the destination, so relocating can't help
+    LFS3_ERR_SRCCORRUPT = -0x1054,
+};
+
 
 /// Simple bd wrappers (asserts go here) ///
 
@@ -680,7 +687,7 @@ static int lfs3_bd_cpy(lfs3_t *lfs3,
         err = lfs3_bd_read(lfs3, src_block, src_off_, hint_,
                 buffer__, size__);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
         }
 
         // optional checksum
@@ -971,7 +978,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
             &hint_,
             &cksum__);
     if (err) {
-        return err;
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
     }
 
     // copy the data while simultaneously updating our checksum
@@ -995,7 +1002,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
         err = lfs3_bd_read(lfs3, src_block, src_off_, hint__,
                 buffer__, size__);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
         }
 
         // validating checksum
@@ -1017,7 +1024,7 @@ static int lfs3_bd_cpyck(lfs3_t *lfs3,
             src_cksize, src_cksum,
             cksum__);
     if (err) {
-        return err;
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
     }
 
     return 0;
@@ -4732,7 +4739,7 @@ static int lfs3_rbyd_appendcompactrbyd(lfs3_t *lfs3, lfs3_rbyd_t *rbyd_,
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
-            return tag;
+            return (tag == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : tag;
         }
         // end of range? note the use of rid+1 and unsigned comparison here to
         // treat end_rid=-1 as "unbounded" in such a way that rid=-1 is still
@@ -6207,7 +6214,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE) {
         LFS3_ASSERT(err != LFS3_ERR_EXIST);
-        return err;
+        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
     }
 
     // needs a new root?
@@ -6215,7 +6222,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
         err = lfs3_btree_commitroot_(lfs3, &btree_, btree,
                 &bcommit);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
         }
     }
 
@@ -6935,7 +6942,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_EXIST) {
-        return err;
+        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
     }
 
     // when btree is shrubbed or split, lfs3_btree_commit_ stops at the
@@ -6962,7 +6969,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             err = lfs3_btree_commitroot_(lfs3, &bshrub->b_, &bshrub->b,
                     &bcommit);
             if (err) {
-                return err;
+                return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
             }
         }
     }
@@ -8279,7 +8286,9 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
                         if (tag == LFS3_ERR_NOENT) {
                             break;
                         }
-                        return tag;
+                        return (tag == LFS3_ERR_CORRUPT)
+                                ? LFS3_ERR_SRCCORRUPT
+                                : tag;
                     }
 
                     // found an inlined shrub? we need to compact the shrub
@@ -8289,7 +8298,9 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
                         int err = lfs3_data_readshrub(lfs3, mdir__, &data,
                                 &shrub);
                         if (err) {
-                            return err;
+                            return (err == LFS3_ERR_CORRUPT)
+                                    ? LFS3_ERR_SRCCORRUPT
+                                    : err;
                         }
 
                         // compact our shrub
@@ -8593,6 +8604,9 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
     //
     // it's really tempting to deduplicate this via recursion! but we
     // can't do that here
+    //
+    // note this returns LFS3_ERR_RANGE if the mdir doesn't fit, mdirs
+    // that can't split are compacted without checking the estimate
 
     // assume we keep any gcksumdelta, this will get fixed the first time
     // we commit anything
@@ -8613,7 +8627,7 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
-            return tag;
+            return (tag == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : tag;
         }
         // end of range? note the use of rid+1 and unsigned comparison here to
         // treat end_rid=-1 as "unbounded" in such a way that rid=-1 is still
@@ -8629,14 +8643,13 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
             int err = lfs3_data_readshrub(lfs3, mdir, &data,
                     &shrub);
             if (err) {
-                return err;
+                return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
             }
 
             // compact our shrub
             err = lfs3_shrub_compact(lfs3, &mdir_->r, &shrub,
                     &shrub);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8647,7 +8660,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR(2, tag, 0, LFS3_FROM_SHRUB),
                         LFS3_RATTR_ARG(&shrub)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
 
@@ -8659,7 +8671,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                         LFS3_RATTR_WEIGHT(weight),
                         LFS3_RATTR_ARG(&data)));
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -8667,7 +8678,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
 
     int err = lfs3_rbyd_appendcompaction(lfs3, &mdir_->r, 0);
     if (err) {
-        LFS3_ASSERT(err != LFS3_ERR_RANGE);
         return err;
     }
 
@@ -8689,7 +8699,6 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                     &((lfs3_bshrub_t*)h)->b_,
                     &((lfs3_bshrub_t*)h)->b.r);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
                 return err;
             }
         }
@@ -8898,7 +8907,8 @@ static inline void lfs3_file_discardleaf(lfs3_file_t *file);
 // this is atomic and updates any opened mdirs, lfs3_t, etc
 //
 // note that if an error occurs, any gstate is reverted to the on-disk
-// state
+// state, except if only our final sync fails, then the commit stands and
+// the error is left in lfs3->syncerr
 //
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
@@ -8960,8 +8970,10 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // attempt to commit/compact the mdir normally
     lfs3_mdir_t mdir_[2];
     lfs3_srid_t split_rid;
+    bool splittable = true;
+commit:;
     int err = lfs3_mdir_commit__(lfs3, &mdir_[0], mdir, -2, -2,
-            &split_rid,
+            (splittable) ? &split_rid : NULL,
             mdir->mid, rattrs);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_NOENT) {
@@ -8980,9 +8992,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // need to split?
     if (err == LFS3_ERR_RANGE) {
         // an mroot with an mtree has nothing to split, its mdir-level
-        // attrs just don't fit
-        if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
-                && lfs3->mtree.r.weight != 0) {
+        // attrs just don't fit, and if we couldn't split, we don't fit
+        // either
+        if (!splittable
+                || (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
+                    && lfs3->mtree.r.weight != 0)) {
             err = LFS3_ERR_NOSPC;
             goto failed;
         }
@@ -9011,6 +9025,30 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             err = lfs3_mdir_alloc___(lfs3, &mdir_[i^l],
                     lfs3_smax(mdir->mid, 0), relocated);
             if (err) {
+                // no blocks to split into? compact in place instead,
+                // this works as long as we fit in one block, and lets a
+                // full disk still remove things
+                if (err == LFS3_ERR_NOSPC && i == 0 && !relocated) {
+                    // unconsume our gstate, compacting keeps it, note
+                    // this is just an xor
+                    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0) {
+                        err = lfs3_fs_consumegdelta(lfs3, mdir);
+                        if (err) {
+                            goto failed;
+                        }
+                    }
+
+                    // restage any bshrubs
+                    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
+                        if (lfs3_o_type(h->flags) == LFS3_TYPE_REG) {
+                            ((lfs3_bshrub_t*)h)->b_
+                                    = ((lfs3_bshrub_t*)h)->b.r;
+                        }
+                    }
+
+                    splittable = false;
+                    goto commit;
+                }
                 goto failed;
             }
             relocated = true;
@@ -9020,7 +9058,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                     ((i^l) == 0) ?         0 : split_rid,
                     ((i^l) == 0) ? split_rid :        -1);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_RANGE);
+                // still too big? an entry can't be split
+                if (err == LFS3_ERR_RANGE) {
+                    err = LFS3_ERR_NOSPC;
+                    goto failed;
+                }
                 // bad prog? try another block
                 if (err == LFS3_ERR_CORRUPT) {
                     goto split_relocate;
@@ -9378,9 +9420,13 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     }
 
     // sync on-disk state
+    //
+    // if only this sync fails, our commit is already readable, durable or
+    // not, so we keep it, finish as on success, and leave the error for
+    // the current operation to report, see lfs3_fs_syncerr
     err = lfs3_bd_sync(lfs3);
-    if (err) {
-        goto failed;
+    if (err && !lfs3->syncerr) {
+        lfs3->syncerr = err;
     }
 
     ///////////////////////////////////////////////////////////////////////
@@ -9501,7 +9547,7 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
 failed:;
     // revert gstate to on-disk state
     lfs3_fs_revertgdelta(lfs3);
-    return err;
+    return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
 }
 #endif
 
@@ -9544,6 +9590,18 @@ static int lfs3_mdir_compact(lfs3_t *lfs3, lfs3_mdir_t *mdir) {
     // and call lfs3_mdir_commit
     lfs3_mdir_claim(mdir);
     return lfs3_mdir_commit(lfs3, mdir, LFS3_RATTRS(LFS3_RATTR_NULL));
+}
+#endif
+
+// a failed sync after a commit doesn't undo the commit, internally the
+// commit succeeded, but the operation must still report the error
+//
+// every public function that can commit returns its result through this
+#ifndef LFS3_RDONLY
+static lfs3_ssize_t lfs3_fs_syncerr(lfs3_t *lfs3, lfs3_ssize_t err) {
+    int err_ = lfs3->syncerr;
+    lfs3->syncerr = 0;
+    return (err_) ? err_ : err;
 }
 #endif
 
@@ -10885,6 +10943,11 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
         if (err && err != LFS3_ERR_NOSPC) {
             return err;
         }
+        // the failed repopulation may leave a partial commit in the
+        // pcache, which must never reach disk
+        if (err) {
+            lfs3_bd_droppcache(lfs3);
+        }
 
         // checkpoint the allocator again
         lfs3_alloc_ckpoint_(lfs3);
@@ -11573,7 +11636,7 @@ static int lfs3_alloc_syncgbmap(lfs3_t *lfs3) {
 /// Directory operations ///
 
 #ifndef LFS3_RDONLY
-int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
+static int lfs3_mkdir_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -11753,6 +11816,13 @@ int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
 }
 #endif
 
+#ifndef LFS3_RDONLY
+int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_mkdir_(lfs3, path);
+    return lfs3_fs_syncerr(lfs3, err);
+}
+#endif
+
 // push a did to grm, but only if the directory is empty
 #ifndef LFS3_RDONLY
 static int lfs3_grm_pushdid(lfs3_t *lfs3, lfs3_did_t did) {
@@ -11807,7 +11877,7 @@ empty:;
 #endif
 
 #ifndef LFS3_RDONLY
-int lfs3_remove(lfs3_t *lfs3, const char *path) {
+static int lfs3_remove_(lfs3_t *lfs3, const char *path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -11929,7 +11999,15 @@ int lfs3_remove(lfs3_t *lfs3, const char *path) {
 #endif
 
 #ifndef LFS3_RDONLY
-int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
+int lfs3_remove(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_remove_(lfs3, path);
+    return lfs3_fs_syncerr(lfs3, err);
+}
+#endif
+
+#ifndef LFS3_RDONLY
+static int lfs3_rename_(lfs3_t *lfs3,
+        const char *old_path, const char *new_path) {
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -12108,6 +12186,13 @@ int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
     }
 
     return 0;
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
+    int err = lfs3_rename_(lfs3, old_path, new_path);
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -12510,7 +12595,7 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         }
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -12559,7 +12644,7 @@ int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
         }
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -12918,8 +13003,20 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
     }
     #endif
 
-    return lfs3_file_opencfg_(lfs3, file, path, flags,
+    int err = lfs3_file_opencfg_(lfs3, file, path, flags,
             cfg);
+    #ifndef LFS3_RDONLY
+    // did a sync fail after a commit we kept? we're reporting an error,
+    // so our file can't stay open
+    int err_ = lfs3_fs_syncerr(lfs3, 0);
+    if (err_) {
+        if (!err) {
+            lfs3_file_close_(lfs3, file);
+        }
+        return err_;
+    }
+    #endif
+    return err;
 }
 
 // default file config
@@ -13598,7 +13695,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                         if (err == LFS3_ERR_CORRUPT) {
                             goto relocate;
                         }
-                        return err;
+                        return (err == LFS3_ERR_SRCCORRUPT)
+                                ? LFS3_ERR_CORRUPT
+                                : err;
                     }
 
                     pos_ += d_;
@@ -13664,7 +13763,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                         if (err == LFS3_ERR_CORRUPT) {
                             goto relocate;
                         }
-                        return err;
+                        return (err == LFS3_ERR_SRCCORRUPT)
+                                ? LFS3_ERR_CORRUPT
+                                : err;
                     }
 
                     pos_ += d_;
@@ -14369,12 +14470,18 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         }
     }
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return written;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -14418,6 +14525,12 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
     if (err) {
         goto failed;
     }
+
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
     #endif
 
     return 0;
@@ -14426,7 +14539,7 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
     #endif
 }
 
@@ -14743,6 +14856,14 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     if (err) {
         goto failed;
     }
+
+    // did our sync fail after a commit we kept? stay unsynced so a retry
+    // commits and syncs again
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        file->b.h.flags |= LFS3_o_UNSYNC;
+        goto failed;
+    }
     #endif
 
     // clear desync flag
@@ -14752,7 +14873,7 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     #ifndef LFS3_RDONLY
 failed:;
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
     #endif
 }
 
@@ -14943,12 +15064,18 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
         lfs3_file_discardcache(file);
     }
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return 0;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -15055,12 +15182,18 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
             size - size_,
             file->pos);
 
+    // did a sync fail after a commit we kept?
+    err = lfs3_fs_syncerr(lfs3, 0);
+    if (err) {
+        goto failed;
+    }
+
     return 0;
 
 failed:;
     // mark as desync so lfs3_file_close doesn't write to disk
     file->b.h.flags |= LFS3_O_DESYNC;
-    return err;
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -15221,10 +15354,10 @@ int lfs3_set(lfs3_t *lfs3, const char *path,
             LFS3_o_WRSET | LFS3_O_CREAT | LFS3_O_TRUNC,
             &cfg);
     if (err) {
-        return err;
+        return lfs3_fs_syncerr(lfs3, err);
     }
 
-    // let close do any remaining work
+    // let close do any remaining work, this also reports any failed sync
     return lfs3_file_close(lfs3, &file);
 }
 #endif
@@ -15299,8 +15432,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_RDONLY(0, LFS3_GC_COMPACT)
                 | LFS3_GC_CKMETA
                 | LFS3_GC_CKDATA)) == 0);
+    #endif
 
-    // check that gc_compact_thresh makes sense
+    // check that gc_compact_thresh makes sense, note this is also used
+    // by LFS3_M_COMPACT and lfs3_fs_ck without LFS3_GC
     //
     // metadata can't be compacted below block_size/2, and metadata can't
     // exceed a block
@@ -15309,7 +15444,6 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
             || lfs3->cfg->gc_compact_thresh >= lfs3->cfg->block_size/2);
     LFS3_ASSERT(lfs3->cfg->gc_compact_thresh == (lfs3_size_t)-1
             || lfs3->cfg->gc_compact_thresh <= lfs3->cfg->block_size);
-    #endif
     #endif
 
     #ifndef LFS3_RDONLY
@@ -15547,6 +15681,7 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     #ifndef LFS3_RDONLY
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
+    lfs3->syncerr = 0;
     #endif
 
     // TODO are these zeros accomplished by zerogdelta in mountinited?
@@ -16546,6 +16681,12 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(lfs3_m_isrevperturb(flags) || !lfs3_t_ispreerase(flags));
     #endif
+    // the mroot anchor needs blocks 0 and 1, and the gbmap needs one more
+    lfs3_size_t block_count_min = LFS3_IFDEF_GBMAP(
+            (lfs3_f_isgbmap(flags)) ? 3 : 2,
+            2);
+    LFS3_ASSERT(cfg->block_count >= block_count_min);
+    (void)block_count_min;
 
     int err = lfs3_init(lfs3,
             flags & (
@@ -16830,7 +16971,7 @@ static int lfs3_fs_fixorphans(lfs3_t *lfs3) {
 
 // prepare the filesystem for mutation
 #ifndef LFS3_RDONLY
-int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
+static int lfs3_fs_mkconsistent_(lfs3_t *lfs3) {
     // filesystem must be writeable
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
 
@@ -16865,6 +17006,13 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
     }
 
     return 0;
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
+    int err = lfs3_fs_mkconsistent_(lfs3);
+    return lfs3_fs_syncerr(lfs3, err);
 }
 #endif
 
@@ -17042,6 +17190,9 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
     // lfs3_fs_gc_ may stop with the traversal still open, but our mgc
     // lives on the stack, so it must not stay in our handle list
     lfs3_handle_close(lfs3, &mgc.t.h);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
     return err;
 }
 
@@ -17083,11 +17234,15 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
     #endif
 
     // run gc a configurable number of steps
-    return lfs3_fs_gc_(lfs3, &lfs3->gc,
+    int err = lfs3_fs_gc_(lfs3, &lfs3->gc,
             lfs3->cfg->gc_flags,
             (lfs3->cfg->gc_steps)
                 ? lfs3->cfg->gc_steps
                 : 1);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
+    return err;
 }
 #endif
 
@@ -17208,7 +17363,7 @@ int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
         goto failed;
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 
 failed:;
     // restore block_count
@@ -17278,7 +17433,7 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3) {
         goto failed;
     }
 
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 
 failed:;
     // if we failed clear the gbmap bit and reset the gbmap to be safe
@@ -17320,7 +17475,7 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
 
     // on success mark gbmap as not-in-use internally
     lfs3->flags &= ~LFS3_F_GBMAP;
-    return 0;
+    return lfs3_fs_syncerr(lfs3, 0);
 }
 #endif
 
@@ -17392,7 +17547,7 @@ int lfs3_trv_close(lfs3_t *lfs3, lfs3_trv_t *trv) {
     return 0;
 }
 
-int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
+static int lfs3_trv_read_(lfs3_t *lfs3, lfs3_trv_t *trv,
         struct lfs3_tinfo *tinfo) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &trv->gc.t.h));
 
@@ -17454,6 +17609,15 @@ int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
             LFS3_UNREACHABLE();
         }
     }
+}
+
+int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
+        struct lfs3_tinfo *tinfo) {
+    int err = lfs3_trv_read_(lfs3, trv, tinfo);
+    #ifndef LFS3_RDONLY
+    err = lfs3_fs_syncerr(lfs3, err);
+    #endif
+    return err;
 }
 
 static int lfs3_trv_rewind_(lfs3_t *lfs3, lfs3_trv_t *trv) {

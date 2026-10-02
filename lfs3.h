@@ -97,6 +97,16 @@ enum lfs3_err {
     LFS3_ERR_RANGE       = -34,  // Result out of range
 };
 
+// Note on errors from functions that write
+//
+// Most errors leave the filesystem as it was before the call. An error
+// from the sync callback after a commit has been programmed is different:
+// the commit is already readable, so littlefs keeps it, finishes the
+// operation as though the sync succeeded, and then returns the sync error.
+// The operation's effect is visible right away. A power-loss before the
+// next successful sync may undo it, the device decides, but either way the
+// filesystem mounts consistently, with or without it.
+
 // File types
 //
 // LFS3_TYPE_UNKNOWN will always be the largest, including internal
@@ -492,6 +502,10 @@ struct lfs3_cfg {
 
     // Sync the state of the underlying block device. Negative error codes
     // are propagated to the user.
+    //
+    // littlefs syncs after each commit. If this fails after a commit has
+    // been programmed, the commit is kept and the error is returned after
+    // the operation finishes, see the note on errors above.
     #ifndef LFS3_RDONLY
     int (*sync)(const struct lfs3_cfg *c);
     #endif
@@ -521,7 +535,8 @@ struct lfs3_cfg {
     // the read and program sizes.
     lfs3_size_t block_size;
 
-    // Number of erasable blocks on the device.
+    // Number of erasable blocks on the device. Formatting needs at least
+    // 2 blocks, or 3 with LFS3_F_GBMAP.
     lfs3_block_t block_count;
 
     // Number of erase cycles before metadata blocks are relocated for
@@ -1376,6 +1391,8 @@ typedef struct lfs3 {
     #ifndef LFS3_RDONLY
     const lfs3_data_t *graft;
     lfs3_ssize_t graft_count;
+    // error from a failed sync after a commit we kept
+    int syncerr;
     #endif
 
     // global state
@@ -1593,6 +1610,11 @@ int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 // Readonly files have nothing to write and never touch disk. If a readonly
 // file was desynchronized, it catches up with the file on storage, as with
 // lfs3_file_resync.
+//
+// If the sync callback fails after the file's metadata was committed, the
+// commit is kept and other open files see it, but the file stays
+// unsynchronized and is desynchronized, so calling lfs3_file_sync again
+// commits and syncs again.
 //
 // Returns a negative error code on failure.
 int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);

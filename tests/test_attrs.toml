@@ -6036,3 +6036,93 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# build an image with attrs on files, dirs and the root, this is also
+# what make test-rdonly reads back with LFS3_RDONLY builds
+[cases.test_attrs_image]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "dir/file",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // attrs of various types and sizes on the root, a dir, and a file
+    const char *paths[] = {"/", "dir", "dir/file"};
+    uint8_t types[] = {0x00, 'a', 0x7f, 0x80, 0xff};
+    lfs3_size_t sizes[] = {0, 1, 16, BLOCK_SIZE/16, 3};
+    uint8_t buf[BLOCK_SIZE/16];
+    for (lfs3_size_t p = 0; p < 3; p++) {
+        for (lfs3_size_t t = 0; t < 5; t++) {
+            memset(buf, 'a'+p+t, sizeof(buf));
+            lfs3_setattr(&lfs3, paths[p], types[t],
+                    buf, sizes[(p+t) % 5]) => 0;
+        }
+        // and remove one
+        lfs3_removeattr(&lfs3, paths[p], types[p]) => 0;
+    }
+
+    // a file attr written through a file
+    uint8_t fattr[8];
+    memset(fattr, 'f', sizeof(fattr));
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'f',
+            .flags = LFS3_A_WRONLY,
+            .buffer = fattr,
+            .buffer_size = sizeof(fattr),
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 1,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "dir/file",
+            LFS3_O_WRONLY | LFS3_O_APPEND, &filecfg) => 0;
+    lfs3_file_write(&lfs3, &file, "purr", strlen("purr")) => strlen("purr");
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        }
+
+        for (lfs3_size_t p = 0; p < 3; p++) {
+            for (lfs3_size_t t = 0; t < 5; t++) {
+                if (t == p) {
+                    lfs3_sizeattr(&lfs3, paths[p], types[t])
+                            => LFS3_ERR_NOATTR;
+                    continue;
+                }
+
+                lfs3_size_t size = sizes[(p+t) % 5];
+                lfs3_sizeattr(&lfs3, paths[p], types[t]) => size;
+                uint8_t rbuf[BLOCK_SIZE/16];
+                lfs3_getattr(&lfs3, paths[p], types[t], rbuf, sizeof(rbuf))
+                        => size;
+                for (lfs3_size_t i = 0; i < size; i++) {
+                    assert(rbuf[i] == 'a'+p+t);
+                }
+            }
+        }
+
+        uint8_t rbuf[8];
+        lfs3_getattr(&lfs3, "dir/file", 'f', rbuf, sizeof(rbuf)) => 8;
+        assert(memcmp(rbuf, fattr, 8) == 0);
+        lfs3_file_open(&lfs3, &file, "dir/file", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, sizeof(rbuf)) => 8;
+        assert(memcmp(rbuf, "meowpurr", 8) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''

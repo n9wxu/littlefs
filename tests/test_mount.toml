@@ -124,16 +124,19 @@ code = '''
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
 
-    // init should not depend on what's in lfs3_t
+    // init should not depend on what's in lfs3_t, and should free
+    // exactly what it allocated
     memset(&lfs3, 0xab, sizeof(lfs3));
     test_malloc_fail = FAIL;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOMEM;
     assert(test_malloc_fail == 0);
+    assert(test_malloc_live == 0);
 
     memset(&lfs3, 0xab, sizeof(lfs3));
     test_malloc_fail = FAIL;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => LFS3_ERR_NOMEM;
     assert(test_malloc_fail == 0);
+    assert(test_malloc_live == 0);
 
     // the filesystem should still be fine
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
@@ -211,6 +214,380 @@ code = '''
                 | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, -1) : 0)));
 
     lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that format refuses a device too small for the mroot anchor (and
+# the gbmap) before touching the device
+[cases.test_mount_format_tiny]
+defines.TINY_BLOCK_COUNT = [1, 2]
+if = 'TINY_BLOCK_COUNT < ((GBMAP) ? 3 : 2)'
+death = 'block_count'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = TINY_BLOCK_COUNT;
+    lfs3_emubd_simreset(CFG) => 0;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg);
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
+# test that nothing on a rdonly mount writes to the disk, including
+# syncing rdonly files with writable attrs
+[cases.test_mount_rdonly_nowrite]
+defines.MODE = ['LFS3_A_WRONLY', 'LFS3_A_RDWR']
+defines.DESYNC = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // a dir, a small file with an attr, and a file big enough for a
+    // btree
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "dir/cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_setattr(&lfs3, "dir/cat", 'a', "purr", strlen("purr")) => 0;
+
+    uint32_t prng = 42;
+    uint8_t wbuf[4*BLOCK_SIZE];
+    for (lfs3_size_t j = 0; j < 4*BLOCK_SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_open(&lfs3, &file, "dir/whale",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, 4*BLOCK_SIZE) => 4*BLOCK_SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+
+    // count syncs with a far-off injected sync error
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 1000, 0) => 0;
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+
+    // open a rdonly file with a writable attr, change the attr, and sync
+    uint8_t a_buf[256];
+    lfs3_ssize_t a_size;
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'a',
+            .flags = MODE,
+            .buffer = a_buf,
+            .buffer_size = sizeof(a_buf),
+            .size = &a_size,
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 1,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "dir/cat", LFS3_O_RDONLY, &filecfg) => 0;
+    if (DESYNC) {
+        lfs3_file_desync(&lfs3, &file) => 0;
+    }
+    memcpy(a_buf, "hiss", strlen("hiss"));
+    a_size = strlen("hiss");
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_file_desync(&lfs3, &file) => 0;
+    lfs3_file_resync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // read everything
+    uint8_t rbuf[4*BLOCK_SIZE];
+    lfs3_file_open(&lfs3, &file, "dir/whale", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 4*BLOCK_SIZE) => 4*BLOCK_SIZE;
+    assert(memcmp(rbuf, wbuf, 4*BLOCK_SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_getattr(&lfs3, "dir/cat", 'a', rbuf, sizeof(rbuf))
+            => strlen("purr");
+    assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
+
+    // traverse, check, and ask about the filesystem
+    lfs3_trv_t trv;
+    lfs3_trv_open(&lfs3, &trv,
+            LFS3_T_RDONLY | LFS3_T_CKMETA | LFS3_T_CKDATA) => 0;
+    while (true) {
+        struct lfs3_tinfo tinfo;
+        int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+        assert(!err || err == LFS3_ERR_NOENT);
+        if (err == LFS3_ERR_NOENT) {
+            break;
+        }
+    }
+    lfs3_trv_close(&lfs3, &trv) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_RDONLY);
+    assert(lfs3_fs_usage(&lfs3) > 0);
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // nothing should have been written
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+    assert(lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) == 1000);
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 0, 0) => 0;
+
+    // and the attr should be unchanged
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_getattr(&lfs3, "dir/cat", 'a', rbuf, sizeof(rbuf))
+            => strlen("purr");
+    assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that every mutating call on a rdonly mount asserts before
+# writing anything
+#
+# note with LFS3_NO_ASSERT these calls are not checked
+[cases.test_mount_rdonly_mutate]
+# OP=0 => mkdir
+# OP=1 => remove
+# OP=2 => rename
+# OP=3 => setattr
+# OP=4 => removeattr
+# OP=5 => set
+# OP=6 => writable file open
+# OP=7 => mkconsistent
+# OP=8 => grow
+defines.OP = [0, 1, 2, 3, 4, 5, 6, 7, 8]
+death = 'lfs3_m_isrdonly'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_setattr(&lfs3, "cat", 'a', "purr", strlen("purr")) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_emubd_simreset(CFG) => 0;
+    if (OP == 0) {
+        lfs3_mkdir(&lfs3, "dog");
+    } else if (OP == 1) {
+        lfs3_remove(&lfs3, "cat");
+    } else if (OP == 2) {
+        lfs3_rename(&lfs3, "cat", "dog");
+    } else if (OP == 3) {
+        lfs3_setattr(&lfs3, "cat", 'a', "hiss", strlen("hiss"));
+    } else if (OP == 4) {
+        lfs3_removeattr(&lfs3, "cat", 'a');
+    } else if (OP == 5) {
+        lfs3_set(&lfs3, "cat", "woof", strlen("woof"));
+    } else if (OP == 6) {
+        lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY);
+    } else if (OP == 7) {
+        lfs3_fs_mkconsistent(&lfs3);
+    } else if (OP == 8) {
+        lfs3_fs_grow(&lfs3, BLOCK_COUNT);
+    }
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
+# test that a configuration with every optional field zeroed works, and
+# that no operation loops, each one should stay under a bound of block
+# device operations
+#
+# note fcache_size=0 is refused, files need a cache
+[cases.test_mount_zeroed_cfg]
+defines.FILES = 4
+defines.MAX_SIZE = '4*BLOCK_SIZE'
+defines.STEPS = 500
+defines.SEED = 'range(4)'
+fuzz = 'SEED'
+code = '''
+    // only the required fields, prog/erase widths of a whole block make
+    // emubd count calls instead of bytes
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .prog_width = BLOCK_SIZE,
+        .erase_width = BLOCK_SIZE,
+        .ck_progonce = CKPROGONCE,
+    };
+    lfs3_emubd_t bd;
+    struct lfs3_cfg cfg = {
+        .context        = &bd,
+        .read           = lfs3_emubd_read,
+        .prog           = lfs3_emubd_prog,
+        .erase          = lfs3_emubd_erase,
+        .sync           = lfs3_emubd_sync,
+        .read_size      = READ_SIZE,
+        .prog_size      = PROG_SIZE,
+        .block_size     = BLOCK_SIZE,
+        .block_count    = BLOCK_COUNT,
+        .rcache_size    = RCACHE_SIZE,
+        .pcache_size    = PCACHE_SIZE,
+        .fcache_size    = FCACHE_SIZE,
+        .lookahead_size = LOOKAHEAD_SIZE,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // simulated files
+    uint8_t (*sim)[MAX_SIZE] = malloc(FILES*MAX_SIZE);
+    lfs3_size_t sim_size[FILES];
+    bool sim_exists[FILES];
+    for (lfs3_size_t i = 0; i < FILES; i++) {
+        sim_size[i] = 0;
+        sim_exists[i] = false;
+    }
+    uint8_t *buf = malloc(MAX_SIZE);
+
+    uint32_t prng = SEED;
+    lfs3_emubd_sio_t ops = 0;
+    for (lfs3_size_t step = 0; step < STEPS; step++) {
+        lfs3_size_t i = TEST_PRNG(&prng) % FILES;
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint32_t op = TEST_PRNG(&prng) % 6;
+
+        // write somewhere in the file, like test_fwrite
+        if (op <= 1) {
+            lfs3_size_t off = TEST_PRNG(&prng) % (sim_size[i]+1);
+            lfs3_size_t size = TEST_PRNG(&prng) % (MAX_SIZE-off+1);
+            for (lfs3_size_t j = 0; j < size; j++) {
+                sim[i][off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_file_write(&lfs3, &file, &sim[i][off], size) => size;
+            lfs3_file_close(&lfs3, &file) => 0;
+            sim_size[i] = lfs3_max(sim_size[i], off+size);
+            sim_exists[i] = true;
+
+        // truncate or fruncate
+        } else if (op == 2) {
+            lfs3_size_t size = TEST_PRNG(&prng) % (sim_size[i]+1);
+            bool front = TEST_PRNG(&prng) % 2;
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            if (front) {
+                lfs3_file_fruncate(&lfs3, &file, size) => 0;
+                memmove(sim[i], &sim[i][sim_size[i]-size], size);
+            } else {
+                lfs3_file_truncate(&lfs3, &file, size) => 0;
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+            sim_size[i] = size;
+            sim_exists[i] = true;
+
+        // replace the file with the kv api, like test_kv
+        } else if (op == 3) {
+            lfs3_size_t size = TEST_PRNG(&prng) % (MAX_SIZE+1);
+            for (lfs3_size_t j = 0; j < size; j++) {
+                sim[i][j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+
+            lfs3_set(&lfs3, name, sim[i], size) => 0;
+            sim_size[i] = size;
+            sim_exists[i] = true;
+
+        // rename over another file, like test_files
+        } else if (op == 4) {
+            lfs3_size_t i_ = TEST_PRNG(&prng) % FILES;
+            if (!sim_exists[i] || i_ == i) {
+                continue;
+            }
+            char name_[256];
+            sprintf(name_, "file%03x", i_);
+
+            lfs3_rename(&lfs3, name, name_) => 0;
+            memcpy(sim[i_], sim[i], sim_size[i]);
+            sim_size[i_] = sim_size[i];
+            sim_exists[i_] = true;
+            sim_size[i] = 0;
+            sim_exists[i] = false;
+
+        // remove
+        } else {
+            if (!sim_exists[i]) {
+                continue;
+            }
+
+            lfs3_remove(&lfs3, name) => 0;
+            sim_size[i] = 0;
+            sim_exists[i] = false;
+        }
+
+        // no operation should loop
+        lfs3_emubd_sio_t ops_
+                = lfs3_emubd_progs(&cfg) + lfs3_emubd_erases(&cfg);
+        assert(ops_ - ops < 100*BLOCK_COUNT);
+        ops = ops_;
+
+        // check the file we touched
+        if (sim_exists[i]) {
+            lfs3_get(&lfs3, name, buf, MAX_SIZE) => sim_size[i];
+            assert(memcmp(buf, sim[i], sim_size[i]) == 0);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t i = 0; i < FILES; i++) {
+            char name[256];
+            sprintf(name, "file%03x", i);
+            if (sim_exists[i]) {
+                lfs3_size(&lfs3, name) => sim_size[i];
+                lfs3_get(&lfs3, name, buf, MAX_SIZE) => sim_size[i];
+                assert(memcmp(buf, sim[i], sim_size[i]) == 0);
+            } else {
+                lfs3_size(&lfs3, name) => LFS3_ERR_NOENT;
+            }
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(buf);
+    free(sim);
+    lfs3_emubd_destroy(&cfg) => 0;
 '''
 
 
@@ -667,7 +1044,7 @@ code = '''
     // to close them after all open calls, otherwise we just end up with
     // one orphan (littlefs is eager to clean up orphans)
     //
-    lfs3_file_t orphans[ORPHANS];
+    lfs3_file_t orphans[lfs3_max(ORPHANS, 1)];
     for (lfs3_size_t i = 0; i < ORPHANS; i++) {
         char name[256];
         sprintf(name, "jellyfish%03x", i);
@@ -773,7 +1150,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -865,7 +1242,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1545,9 +1922,11 @@ code = '''
 
 # test what happens if we find an unknown config
 [cases.test_mount_incompat_unknown_config]
-# unknown configs before, between, and after our known configs
+# unknown configs before, between, and after our known configs, and with
+# the reserved subtype bit 7 set
 defines.CONFIG = [
     '0x00', '0x01', '0x30', '0x32', '0x33', '0x3b', '0x42', '0x7f',
+    '0x80', '0xff',
 ]
 in = 'lfs3.c'
 code = '''
@@ -1561,11 +1940,91 @@ code = '''
     // create an unknown config
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
-            LFS3_RATTR(3, LFS3_TAG_CONFIG + CONFIG, 0, LFS3_FROM_DATA),
+            LFS3_RATTR(3, LFS3_TAG_CONFIG + (CONFIG & 0x7f), 0,
+                LFS3_FROM_DATA),
             LFS3_RATTR_ARG(strlen("oh no!")),
             LFS3_RATTR_ARG("oh no!"),
             LFS3_RATTR_NULL)) => 0;
+    lfs3_block_t block = lfs3.mroot.r.blocks[0];
     lfs3_unmount(&lfs3) => 0;
+
+    // we can't write tags with bit 7 set, so set it on disk, and fix
+    // the last 4 data bytes so the tag+data checksum, and so the
+    // commit, still matches, crc32c is linear so this is a 32x32
+    // system over GF(2)
+    if (CONFIG & 0x80) {
+        uint8_t *buf = malloc(BLOCK_SIZE);
+        CFG->read(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+
+        // find our tag, ignoring the valid bit
+        lfs3_size_t off = 0;
+        lfs3_size_t found = 0;
+        for (lfs3_size_t i = 0; i+4+6 <= BLOCK_SIZE; i++) {
+            if ((buf[i] & 0x7f) == (LFS3_TAG_CONFIG >> 8)
+                    && buf[i+1] == (CONFIG & 0x7f)
+                    && buf[i+2] == 0
+                    && buf[i+3] == 6
+                    && memcmp(&buf[i+4], "oh no!", 6) == 0) {
+                off = i;
+                found += 1;
+            }
+        }
+        assert(found == 1);
+
+        uint8_t x[4+6];
+        memcpy(x, &buf[off], 4+6);
+        x[0] &= 0x7f;
+        uint32_t target = lfs3_crc32c(0, x, 4+6);
+        x[1] |= 0x80;
+        memset(&x[6], 0, 4);
+        uint32_t base = lfs3_crc32c(0, x, 4+6);
+
+        // what each bit of the last 4 bytes changes
+        uint32_t cols[32];
+        uint32_t sels[32];
+        for (int k = 0; k < 32; k++) {
+            x[6 + k/8] ^= 1 << (k%8);
+            cols[k] = lfs3_crc32c(0, x, 4+6) ^ base;
+            x[6 + k/8] ^= 1 << (k%8);
+            sels[k] = (uint32_t)1 << k;
+        }
+
+        // gauss-jordan, until cols[k] = 1 << k
+        for (int k = 0; k < 32; k++) {
+            int p = k;
+            while (p < 32 && !(cols[p] & ((uint32_t)1 << k))) {
+                p += 1;
+            }
+            assert(p < 32);
+            LFS3_SWAP(uint32_t, &cols[k], &cols[p]);
+            LFS3_SWAP(uint32_t, &sels[k], &sels[p]);
+            for (int j = 0; j < 32; j++) {
+                if (j != k && (cols[j] & ((uint32_t)1 << k))) {
+                    cols[j] ^= cols[k];
+                    sels[j] ^= sels[k];
+                }
+            }
+        }
+
+        uint32_t fix = 0;
+        for (int k = 0; k < 32; k++) {
+            if ((target ^ base) & ((uint32_t)1 << k)) {
+                fix ^= sels[k];
+            }
+        }
+        for (int k = 0; k < 32; k++) {
+            if (fix & ((uint32_t)1 << k)) {
+                x[6 + k/8] ^= 1 << (k%8);
+            }
+        }
+        assert(lfs3_crc32c(0, x, 4+6) == target);
+
+        x[0] |= buf[off] & 0x80;
+        memcpy(&buf[off], x, 4+6);
+        CFG->erase(CFG, block) => 0;
+        CFG->prog(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+        free(buf);
+    }
 
     // mount should now fail
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOTSUP;

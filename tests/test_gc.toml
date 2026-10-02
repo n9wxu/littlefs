@@ -830,6 +830,365 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that pre-erasing at mount on a nearly full disk doesn't
+# allocate without an allocator checkpoint, and that we still find the
+# disk full afterwards
+[cases.test_gc_preerase_ckpoint_full]
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# how many blocks to free, spread out so pre-erasing fragments the gbmap
+defines.FREE = [4, 16, 64]
+if = 'GBMAP'
+ifdef = ['LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+in = 'lfs3.c'
+code = '''
+    // fill the disk, and then free a few blocks
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | LFS3_F_GBMAP,
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+    uint8_t wbuf[BLOCK_SIZE];
+    lfs3_size_t n = 0;
+    while (true) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n);
+        memset(wbuf, 'a'+(n % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        n += 1;
+    }
+    for (lfs3_size_t i = 0; i < FREE; i++) {
+        char name[256];
+        sprintf(name, "fly%04d", (int)(i*(n/FREE)));
+        lfs3_remove(&lfs3, name) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // pre-erase at mount, before anything else checkpoints the
+    // allocator, and without a lookahead scan
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | LFS3_M_REVPERTURB
+                | LFS3_M_PREERASE,
+            CFG) => 0;
+    assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+
+    // write until we run out of space again, this should not take more
+    // than the disk
+    lfs3_size_t m = 0;
+    while (true) {
+        assert(m < 2*BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n+m);
+        memset(wbuf, 'a'+((n+m) % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            assert(lfs3.lookahead.ckpoint <= lfs3.block_count);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        m += 1;
+    }
+    // we only freed FREE blocks
+    assert(m <= FREE);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n+m; i++) {
+            if (i < FREE*(n/FREE) && i % (n/FREE) == 0) {
+                continue;
+            }
+            char name[256];
+            sprintf(name, "fly%04d", i);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            uint8_t rbuf[BLOCK_SIZE];
+            lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+            memset(wbuf, 'a'+(i % 26), BLOCK_SIZE);
+            assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that a pre-erased block whose erased-state no longer matches, say
+# because a prog was attempted before losing power, is never progged
+# without an erase
+[cases.test_gc_preerase_mismatch]
+defines.GC_FLAGS = 'LFS3_GC_PREERASE'
+defines.GC_STEPS = -1
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+defines.PROG_SIZE = [1, 16]
+# check that nothing is progged twice, and count erases
+defines.CKPROGONCE = true
+defines.ERASE_CYCLES = 0xffffffff
+# which pre-erased block to mess with
+defines.NTH = [0, 1, 'BLOCK_COUNT/2']
+if = 'GBMAP'
+ifdef = ['LFS3_GC', 'LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | LFS3_F_GBMAP,
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+
+    // pre-erase everything we can
+    lfs3_emubd_swear_t *wear = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    lfs3_emubd_sio_t *progs = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_sio_t));
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        wear[b] = lfs3_emubd_wear(CFG, b);
+        progs[b] = lfs3_emubd_blockprogs(CFG, b);
+    }
+    for (lfs3_block_t i = 0;; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < 2*BLOCK_COUNT);
+
+        lfs3_fs_gc(&lfs3) => 0;
+
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        if (!(fsinfo.flags & LFS3_I_PREERASE)) {
+            break;
+        }
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // find the nth pre-erased block, erased but not progged since
+    lfs3_sblock_t block = -1;
+    lfs3_block_t count = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        if (lfs3_emubd_wear(CFG, b) > wear[b]
+                && lfs3_emubd_blockprogs(CFG, b) == progs[b]) {
+            if (count == NTH || block == -1) {
+                block = b;
+            }
+            count += 1;
+        }
+    }
+    assert(block != -1);
+
+    // flip a bit in its first prog unit, and make any prog before the
+    // next erase fail the test
+    lfs3_emubd_flipbit(CFG, block, (8*PROG_SIZE)/2 + 1) => 0;
+    lfs3_emubd_mkprogged(CFG, block) => 0;
+    lfs3_emubd_swear_t block_wear = lfs3_emubd_wear(CFG, block);
+    lfs3_emubd_sio_t block_progs = lfs3_emubd_blockprogs(CFG, block);
+
+    // rewrite a file until we've cycled through the disk a couple times
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+    uint32_t prng = 42;
+    uint8_t wbuf[BLOCK_SIZE];
+    for (lfs3_block_t i = 0; i < 2*BLOCK_COUNT; i++) {
+        for (lfs3_size_t j = 0; j < BLOCK_SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "spider",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE) => BLOCK_SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // if our block was progged, it must have been erased first
+        if (lfs3_emubd_blockprogs(CFG, block) > block_progs) {
+            assert(lfs3_emubd_wear(CFG, block) > block_wear);
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+        }
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "spider", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[BLOCK_SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+        assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(wear);
+    free(progs);
+'''
+
+# test that pre-erased blocks are never progged without an erase when
+# mounted without revperturb, where the pre-erase can't be trusted
+[cases.test_gc_preerase_norevperturb]
+defines.GC_FLAGS = 'LFS3_GC_PREERASE'
+defines.GC_STEPS = -1
+# test with a number of different erase values
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# check that nothing is progged twice, and count erases
+defines.CKPROGONCE = true
+defines.ERASE_CYCLES = 0xffffffff
+if = ['GBMAP', 'LFS3_IFYES_REVPERTURB(false, true, true)']
+ifdef = ['LFS3_GC', 'LFS3_GBMAP', 'LFS3_REVPERTURB', 'LFS3_PREERASE']
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                // note preerasing needs revperturb
+                | LFS3_F_REVPERTURB
+                | LFS3_F_GBMAP,
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+
+    // pre-erase everything we can
+    lfs3_emubd_swear_t *wear = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    lfs3_emubd_sio_t *progs = malloc(BLOCK_COUNT*sizeof(lfs3_emubd_sio_t));
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        wear[b] = lfs3_emubd_wear(CFG, b);
+        progs[b] = lfs3_emubd_blockprogs(CFG, b);
+    }
+    for (lfs3_block_t i = 0;; i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < 2*BLOCK_COUNT);
+
+        lfs3_fs_gc(&lfs3) => 0;
+
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        if (!(fsinfo.flags & LFS3_I_PREERASE)) {
+            break;
+        }
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // make any prog of a pre-erased block before its next erase fail
+    // the test
+    bool *preerased = malloc(BLOCK_COUNT*sizeof(bool));
+    lfs3_block_t count = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        preerased[b] = lfs3_emubd_wear(CFG, b) > wear[b]
+                && lfs3_emubd_blockprogs(CFG, b) == progs[b];
+        if (preerased[b]) {
+            lfs3_emubd_mkprogged(CFG, b) => 0;
+            count += 1;
+        }
+        wear[b] = lfs3_emubd_wear(CFG, b);
+        progs[b] = lfs3_emubd_blockprogs(CFG, b);
+    }
+    assert(count > 0);
+
+    // mount without revperturb, and fill the disk
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint8_t wbuf[BLOCK_SIZE];
+    lfs3_size_t n = 0;
+    while (true) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "fly%04d", n);
+        memset(wbuf, 'a'+(n % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        int err = lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+        assert(!err || err == LFS3_ERR_NOSPC);
+        if (!err) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    wbuf, BLOCK_SIZE);
+            assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+            err = lfs3_file_close(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (d < 0) {
+                err = d;
+            }
+        }
+        if (err) {
+            break;
+        }
+        n += 1;
+    }
+
+    // every pre-erased block that was progged must have been erased
+    // first
+    lfs3_block_t used = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        if (preerased[b] && lfs3_emubd_blockprogs(CFG, b) > progs[b]) {
+            assert(lfs3_emubd_wear(CFG, b) > wear[b]);
+            used += 1;
+        }
+    }
+    // and we should have used at least some of them
+    assert(used > 0);
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "fly%04d", i);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            uint8_t rbuf[BLOCK_SIZE];
+            lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE) => BLOCK_SIZE;
+            memset(wbuf, 'a'+(i % 26), BLOCK_SIZE);
+            assert(memcmp(rbuf, wbuf, BLOCK_SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(preerased);
+    free(wear);
+    free(progs);
+'''
+
 # test that as we increase gc_preerase_count, late-erases generally
 # decreases
 [cases.test_gc_preerase_decreasing]
@@ -1174,6 +1533,40 @@ code = '''
 
     lfs3_file_close(&lfs3, &file) => 0;
     lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that a bad gc_compact_thresh is refused before touching the disk,
+# in every build, since compaction doesn't need LFS3_GC
+[cases.test_gc_compact_thresh_check]
+defines.GC_COMPACT_THRESH = ['1', 'BLOCK_SIZE/2 - 1', 'BLOCK_SIZE+1']
+# OP=0 => format
+# OP=1 => mount
+defines.OP = [0, 1]
+death = 'gc_compact_thresh'
+code = '''
+    lfs3_t lfs3;
+    if (OP == 1) {
+        struct lfs3_cfg cfg = *CFG;
+        cfg.gc_compact_thresh = 0;
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                &cfg) => 0;
+    }
+
+    lfs3_emubd_simreset(CFG) => 0;
+    if (OP == 0) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                CFG);
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    }
+'''
+death_code = '''
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
 '''
 
 
@@ -1591,7 +1984,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1694,7 +2087,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1799,7 +2192,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1889,7 +2282,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -1991,7 +2384,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -2157,7 +2550,7 @@ code = '''
             char name[256];
             sprintf(name, "squid%03x", i);
 
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
@@ -2351,7 +2744,7 @@ code = '''
         char name[256];
         sprintf(name, "squid%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -2581,7 +2974,7 @@ code = '''
         char name[256];
         sprintf(name, "squid%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -3574,7 +3967,7 @@ code = '''
         char name[256];
         sprintf(name, "amethyst%03x", i);
 
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
         }
@@ -3614,13 +4007,13 @@ code = '''
             assert(info.size == SIZE);
 
             // try reading the file, note we reset prng above
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
             }
 
             lfs3_file_t file;
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
@@ -3729,7 +4122,7 @@ code = '''
             // create a file here
             char name[256];
             sprintf(name, "amethyst%03x", x);
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
             }
@@ -3869,12 +4262,12 @@ code = '''
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
             uint32_t wprng = sim_prngs[j];
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
             }
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
             assert(memcmp(rbuf, wbuf, SIZE) == 0);
             lfs3_file_close(&lfs3, &file) => 0;
@@ -4181,7 +4574,7 @@ code = '''
 
             // write some initial data if we don't exist
             if (!exist || sticky) {
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint32_t wprng_ = wprng;
                 for (lfs3_size_t k = 0; k < SIZE; k++) {
                     wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -4234,7 +4627,7 @@ code = '''
 
             // write to the file
             lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint32_t wprng_ = wprng;
             for (lfs3_size_t k = 0; k < SIZE; k++) {
                 wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -4487,12 +4880,12 @@ code = '''
         lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
         uint32_t wprng = sim_prngs[j];
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         if (sim_isstickys[j]) {
             lfs3_file_read(&lfs3, &file, rbuf, SIZE) => 0;
         } else {
@@ -4505,13 +4898,13 @@ code = '''
     // check that our file handles match our simulation
     for (lfs3_size_t j = 0; j < sim_file_count; j++) {
         uint32_t wprng = sim_files[j]->prng;
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
         lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_read(&lfs3, &sim_files[j]->file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
     }
@@ -4636,7 +5029,7 @@ code = '''
 
             // write some initial data if we don't exist
             if (!exist || sticky) {
-                uint8_t wbuf[SIZE];
+                uint8_t wbuf[lfs3_max(SIZE, 1)];
                 uint32_t wprng_ = wprng;
                 for (lfs3_size_t k = 0; k < SIZE; k++) {
                     wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -4692,7 +5085,7 @@ code = '''
 
             // write to the file
             lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             uint32_t wprng_ = wprng;
             for (lfs3_size_t k = 0; k < SIZE; k++) {
                 wbuf[k] = 'a' + (TEST_PRNG(&wprng_) % 26);
@@ -4946,6 +5339,7 @@ code = '''
                     sim_size += 1;
                     sim[k] = x;
                     sim_prngs[k] = 0;
+                    sim_isstickys[k] = false;
                     sim_isdirs[k] = true;
                     break;
                 }
@@ -5032,12 +5426,12 @@ code = '''
             lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
 
             uint32_t wprng = sim_prngs[j];
-            uint8_t wbuf[SIZE];
+            uint8_t wbuf[lfs3_max(SIZE, 1)];
             for (lfs3_size_t j = 0; j < SIZE; j++) {
                 wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
             }
 
-            uint8_t rbuf[SIZE];
+            uint8_t rbuf[lfs3_max(SIZE, 1)];
             if (sim_isstickys[j]) {
                 lfs3_file_read(&lfs3, &file, rbuf, SIZE) => 0;
             } else {
@@ -5051,13 +5445,13 @@ code = '''
     // check that our file handles match our simulation
     for (lfs3_size_t j = 0; j < sim_file_count; j++) {
         uint32_t wprng = sim_files[j]->prng;
-        uint8_t wbuf[SIZE];
+        uint8_t wbuf[lfs3_max(SIZE, 1)];
         for (lfs3_size_t j = 0; j < SIZE; j++) {
             wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
         }
 
         lfs3_file_rewind(&lfs3, &sim_files[j]->file) => 0;
-        uint8_t rbuf[SIZE];
+        uint8_t rbuf[lfs3_max(SIZE, 1)];
         lfs3_file_read(&lfs3, &sim_files[j]->file, rbuf, SIZE) => SIZE;
         assert(memcmp(rbuf, wbuf, SIZE) == 0);
     }
