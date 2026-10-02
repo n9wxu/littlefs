@@ -3656,6 +3656,107 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# rm_many_2layers with metastable bits under powerloss
+#
+# Any operation may fail with LFS3_ERR_CORRUPT, and without ckparity a
+# metastable bit may misdirect a lookup. What we check here is that
+# littlefs never asserts and only returns its own error codes
+#
+[cases.test_dirs_rm_many_2layers_metastable]
+defines.POWERLOSS_BEHAVIOR = 'LFS3_EMUBD_POWERLOSS_METASTABLE'
+defines.N = [2, 4]
+defines.REMAINING = [2, 1, 0]
+defines.REMOUNT = [false, true]
+if = 'N > REMAINING'
+reentrant = true
+code = '''
+    // format once per test, or again if a metastable bit stops our mount
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    assert(err <= 0);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // make this many directories
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "dir%03x", i);
+        err = lfs3_mkdir(&lfs3, name);
+        assert(err <= 0);
+
+        // containing this many directories
+        for (lfs3_size_t j = 0; j < N; j++) {
+            sprintf(name, "dir%03x/child%03x", i, j);
+            err = lfs3_mkdir(&lfs3, name);
+            assert(err <= 0);
+        }
+    }
+
+    // now remove some number of directories
+    for (lfs3_size_t i = 0; i < N; i++) {
+        for (lfs3_size_t j = 0; j < N; j++) {
+            if (i < N-REMAINING || j < N-REMAINING) {
+                char name[256];
+                sprintf(name, "dir%03x/child%03x", i, j);
+                err = lfs3_remove(&lfs3, name);
+                assert(err <= 0);
+            }
+        }
+
+        if (i < N-REMAINING) {
+            char name[256];
+            sprintf(name, "dir%03x", i);
+            err = lfs3_remove(&lfs3, name);
+            assert(err <= 0);
+        }
+
+        // remount?
+        if (REMOUNT) {
+            lfs3_unmount(&lfs3) => 0;
+            err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+            assert(err <= 0);
+            if (err) {
+                return;
+            }
+        }
+    }
+
+    // read everything back
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "dir%03x", i);
+        struct lfs3_info info;
+        err = lfs3_stat(&lfs3, name, &info);
+        assert(err <= 0);
+        for (lfs3_size_t j = 0; j < N; j++) {
+            sprintf(name, "dir%03x/child%03x", i, j);
+            err = lfs3_stat(&lfs3, name, &info);
+            assert(err <= 0);
+        }
+    }
+
+    lfs3_dir_t dir;
+    err = lfs3_dir_open(&lfs3, &dir, "/");
+    assert(err <= 0);
+    if (!err) {
+        struct lfs3_info info;
+        while (true) {
+            err = lfs3_dir_read(&lfs3, &dir, &info);
+            assert(err <= 0);
+            if (err) {
+                break;
+            }
+        }
+        lfs3_dir_close(&lfs3, &dir) => 0;
+    }
+
+    err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+    assert(err <= 0);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 [cases.test_dirs_rm_many_3layers]
 defines.N = [1, 2, 4]
 defines.REMAINING = [2, 1, 0]

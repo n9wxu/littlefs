@@ -34,6 +34,13 @@ enum lfs3_ierr {
     LFS3_ERR_SRCCORRUPT = -0x1054,
 };
 
+// for lookups of things an earlier read says exist, not finding them
+// means the disk reads differently now, a bit left metastable by a
+// power loss can do this
+static inline int lfs3_ckfound(int err) {
+    return (err == LFS3_ERR_NOENT) ? LFS3_ERR_CORRUPT : err;
+}
+
 
 /// Simple bd wrappers (asserts go here) ///
 
@@ -3944,8 +3951,12 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     LFS3_ASSERT(!lfs3_rattr_isinternal(rattr));
     // bit 7 is reserved for future subtype extensions
     LFS3_ASSERT(!(lfs3_rattr_tag(rattr) & 0x80));
-    // you can't delete more than what's in the rbyd
-    LFS3_ASSERT(lfs3_rattr_weight(rattr) >= -(lfs3_srid_t)rbyd->weight);
+
+    // rids and weights out of our rbyd's range mean our caller found
+    // them in on-disk state that has since read differently
+    if (lfs3_rattr_weight(rattr) < -(lfs3_srid_t)rbyd->weight) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // ignore noops
     if (lfs3_rattr_isnoop(rattr)) {
@@ -3967,7 +3978,9 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     lfs3_tag_t b_tag;
     if (!lfs3_tag_isgrow(tag) && weight != 0) {
         if (weight > 0) {
-            LFS3_ASSERT(rid <= (lfs3_srid_t)rbyd->weight);
+            if (rid > (lfs3_srid_t)rbyd->weight) {
+                return LFS3_ERR_CORRUPT;
+            }
 
             // it's a bit ugly, but adjusting the rid here makes the following
             // logic work out more consistently
@@ -3975,7 +3988,9 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
             a_rid = rid + 1;
             b_rid = rid + 1;
         } else {
-            LFS3_ASSERT(rid < (lfs3_srid_t)rbyd->weight);
+            if (rid >= (lfs3_srid_t)rbyd->weight) {
+                return LFS3_ERR_CORRUPT;
+            }
 
             // it's a bit ugly, but adjusting the rid here makes the following
             // logic work out more consistently
@@ -3988,7 +4003,9 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         b_tag = 0;
 
     } else {
-        LFS3_ASSERT(rid < (lfs3_srid_t)rbyd->weight);
+        if (rid >= (lfs3_srid_t)rbyd->weight) {
+            return LFS3_ERR_CORRUPT;
+        }
 
         a_rid = rid - lfs3_smax(-weight, 0);
         b_rid = rid;
@@ -5189,8 +5206,7 @@ static lfs3_scmp_t lfs3_rbyd_namelookup(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
                 lower_rid + (upper_rid-1-lower_rid)/2, 0,
                 &rid__, &weight__, &data__);
         if (tag__ < 0) {
-            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-            return tag__;
+            return lfs3_ckfound(tag__);
         }
 
         // if we have no name, treat this rid as always lt
@@ -5582,8 +5598,7 @@ static lfs3_stag_t lfs3_btree_lookupnext_(lfs3_t *lfs3,
             tag__ = lfs3_rbyd_lookup(lfs3, rbyd_, rid__, LFS3_TAG_BRANCH,
                     &data__);
             if (tag__ < 0) {
-                LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-                return tag__;
+                return lfs3_ckfound(tag__);
             }
         }
 
@@ -5684,8 +5699,7 @@ static int lfs3_btree_parent(lfs3_t *lfs3,
                 bid - (bid__-(rbyd_->weight-1)), 0,
                 &rid__, &weight__, &data__);
         if (tag__ < 0) {
-            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-            return tag__;
+            return lfs3_ckfound(tag__);
         }
 
         // if we found a bname, lookup the branch
@@ -5693,8 +5707,7 @@ static int lfs3_btree_parent(lfs3_t *lfs3,
             tag__ = lfs3_rbyd_lookup(lfs3, rbyd_, rid__, LFS3_TAG_BRANCH,
                     &data__);
             if (tag__ < 0) {
-                LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-                return tag__;
+                return lfs3_ckfound(tag__);
             }
         }
 
@@ -5811,8 +5824,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                 lfs3_min(bcommit->bid, btree->r.weight-1),
                 &bcommit->bid, &child, &rid_, NULL, NULL);
         if (tag < 0) {
-            LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-            return tag;
+            return lfs3_ckfound(tag);
         }
 
         // adjust rid
@@ -5845,8 +5857,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
             int err = lfs3_btree_parent(lfs3, btree, bcommit->bid, &child,
                     &parent, &pid);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
         }
 
@@ -5971,8 +5982,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                         pid+1, 0,
                         &sibling_rid, &sibling_weight, &sibling_data);
                 if (sibling_tag < 0) {
-                    LFS3_ASSERT(sibling_tag != LFS3_ERR_NOENT);
-                    return sibling_tag;
+                    return lfs3_ckfound(sibling_tag);
                 }
 
                 // if we found a bname, lookup the branch
@@ -5981,8 +5991,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                             sibling_rid, LFS3_TAG_BRANCH,
                             &sibling_data);
                     if (sibling_tag < 0) {
-                        LFS3_ASSERT(sibling_tag != LFS3_ERR_NOENT);
-                        return sibling_tag;
+                        return lfs3_ckfound(sibling_tag);
                     }
                 }
 
@@ -6018,8 +6027,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                         pid-child.weight, 0,
                         &sibling_rid, &sibling_weight, &sibling_data);
                 if (sibling_tag < 0) {
-                    LFS3_ASSERT(sibling_tag != LFS3_ERR_NOENT);
-                    return sibling_tag;
+                    return lfs3_ckfound(sibling_tag);
                 }
 
                 // if we found a bname, lookup the branch
@@ -6028,8 +6036,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                             sibling_rid, LFS3_TAG_BRANCH,
                             &sibling_data);
                     if (sibling_tag < 0) {
-                        LFS3_ASSERT(sibling_tag != LFS3_ERR_NOENT);
-                        return sibling_tag;
+                        return lfs3_ckfound(sibling_tag);
                     }
                 }
 
@@ -6210,8 +6217,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         lfs3_stag_t split_tag = lfs3_rbyd_lookupnext(lfs3, &sibling, 0, 0,
                 NULL, NULL, &split_name);
         if (split_tag < 0) {
-            LFS3_ASSERT(split_tag != LFS3_ERR_NOENT);
-            return split_tag;
+            return lfs3_ckfound(split_tag);
         }
 
         // prepare commit to parent, tail recursing upwards
@@ -6480,8 +6486,7 @@ static lfs3_scmp_t lfs3_btree_namelookup(lfs3_t *lfs3,
                 did, name, name_len,
                 &rid__, (lfs3_tag_t*)&tag__, &weight__, &data__);
         if (cmp < 0) {
-            LFS3_ASSERT(cmp != LFS3_ERR_NOENT);
-            return cmp;
+            return lfs3_ckfound(cmp);
         }
 
         // if we found a bname, lookup the branch
@@ -6490,8 +6495,7 @@ static lfs3_scmp_t lfs3_btree_namelookup(lfs3_t *lfs3,
                     LFS3_tag_MASK8 | LFS3_TAG_STRUCT,
                     &data__);
             if (tag__ < 0) {
-                LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-                return tag__;
+                return lfs3_ckfound(tag__);
             }
         }
 
@@ -6604,8 +6608,7 @@ static lfs3_stag_t lfs3_btree_traverse(lfs3_t *lfs3,
                     rid__, LFS3_TAG_BRANCH,
                     &data__);
             if (tag__ < 0) {
-                LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-                return tag__;
+                return lfs3_ckfound(tag__);
             }
         }
 
@@ -7748,7 +7751,9 @@ static int lfs3_data_readgrm(lfs3_t *lfs3, lfs3_data_t *data,
         }
 
         // grm inside mtree?
-        LFS3_ASSERT(mid < lfs3_mtree_weight(lfs3));
+        if (mid >= lfs3_mtree_weight(lfs3)) {
+            return LFS3_ERR_CORRUPT;
+        }
         grm->queue[i] = mid;
     }
 
@@ -8258,8 +8263,7 @@ static int lfs3_mtree_lookup(lfs3_t *lfs3, lfs3_smid_t mid,
         lfs3_stag_t tag = lfs3_btree_lookupnext_(lfs3, &lfs3->mtree, mid,
                 &bid, &mdir_->r, &rid, &weight, &data);
         if (tag < 0) {
-            LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-            return tag;
+            return lfs3_ckfound(tag);
         }
         LFS3_ASSERT((lfs3_sbid_t)bid == lfs3_mbid(lfs3, mid));
         LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
@@ -8271,8 +8275,7 @@ static int lfs3_mtree_lookup(lfs3_t *lfs3, lfs3_smid_t mid,
             tag = lfs3_rbyd_lookup(lfs3, &mdir_->r, rid, LFS3_TAG_MDIR,
                     &data);
             if (tag < 0) {
-                LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-                return tag;
+                return lfs3_ckfound(tag);
             }
         }
 
@@ -9140,8 +9143,7 @@ static int lfs3_mroot_parent(lfs3_t *lfs3, const lfs3_block_t mptr[static 2],
         lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, &mdir, LFS3_TAG_MROOT,
                 &data);
         if (tag < 0) {
-            LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-            return tag;
+            return lfs3_ckfound(tag);
         }
 
         // decode mdir
@@ -9198,9 +9200,12 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             for (int j = 0; j < 2; j++) {
                 if (lfs3_mbid(lfs3, lfs3->grm.queue[j]) == lfs3_mbid(lfs3, mid_)
                         && lfs3->grm.queue[j] >= mid_) {
-                    // deleting a pending grm doesn't really make sense
-                    LFS3_ASSERT(lfs3->grm.queue[j]
-                            >= mid_ - lfs3_rattr_weight(r));
+                    // deleting a pending grm doesn't really make sense,
+                    // our grm must be corrupt
+                    if (lfs3->grm.queue[j] < mid_ - lfs3_rattr_weight(r)) {
+                        lfs3_fs_revertgdelta(lfs3);
+                        return LFS3_ERR_CORRUPT;
+                    }
 
                     // adjust the grm
                     lfs3->grm.queue[j] += lfs3_rattr_weight(r);
@@ -9404,8 +9409,7 @@ commit:;
                 LFS3_tag_MASK8 | LFS3_TAG_NAME,
                 &split_name);
         if (split_tag < 0) {
-            LFS3_ASSERT(split_tag != LFS3_ERR_NOENT);
-            err = split_tag;
+            err = lfs3_ckfound(split_tag);
             goto failed;
         }
 
@@ -9590,7 +9594,7 @@ commit:;
             err = lfs3_mroot_parent(lfs3, mrootchild.r.blocks,
                     &mrootparent);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
+                err = lfs3_ckfound(err);
                 goto failed;
             }
 
@@ -9619,7 +9623,7 @@ commit:;
                         LFS3_RATTR_NULL));
             if (err) {
                 LFS3_ASSERT(err != LFS3_ERR_RANGE);
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
+                err = lfs3_ckfound(err);
                 goto failed;
             }
 
@@ -9893,8 +9897,7 @@ static lfs3_stag_t lfs3_mdir_namelookup(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
             did, name, name_len,
             &rid, &tag, NULL, data_);
     if (cmp < 0) {
-        LFS3_ASSERT(cmp != LFS3_ERR_NOENT);
-        return cmp;
+        return lfs3_ckfound(cmp);
     }
 
     // adjust mid if necessary
@@ -9937,8 +9940,7 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
                 did, name, name_len,
                 &bid, (lfs3_tag_t*)&tag, &weight, &data);
         if (cmp < 0) {
-            LFS3_ASSERT(cmp != LFS3_ERR_NOENT);
-            return cmp;
+            return lfs3_ckfound(cmp);
         }
         LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
         LFS3_ASSERT(tag == LFS3_TAG_MNAME
@@ -9976,8 +9978,7 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
             tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MDIR,
                     &data);
             if (tag < 0) {
-                LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-                return tag;
+                return lfs3_ckfound(tag);
             }
         }
 
@@ -10940,8 +10941,7 @@ static int lfs3_gbmap_set__(lfs3_t *lfs3, lfs3_btree_t *gbmap,
     lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, gbmap, block,
             &bid__, &weight__, &ecksum__);
     if (tag__ < 0) {
-        LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-        return tag__;
+        return lfs3_ckfound(tag__);
     }
 
     // wait, already set to expected type? guess we're done
@@ -10970,8 +10970,7 @@ static int lfs3_gbmap_set__(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_stag_t r_tag = lfs3_gbmap_lookupnext(lfs3, gbmap, block+1,
                 &r_bid, &r_weight, &r_ecksum);
         if (r_tag < 0) {
-            LFS3_ASSERT(r_tag != LFS3_ERR_NOENT);
-            return r_tag;
+            return lfs3_ckfound(r_tag);
         }
         LFS3_ASSERT(r_weight == r_bid - block);
 
@@ -11002,8 +11001,7 @@ static int lfs3_gbmap_set__(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_stag_t l_tag = lfs3_gbmap_lookupnext(lfs3, gbmap, block-weight,
                 &l_bid, &l_weight, &l_ecksum);
         if (l_tag < 0) {
-            LFS3_ASSERT(l_tag != LFS3_ERR_NOENT);
-            return l_tag;
+            return lfs3_ckfound(l_tag);
         }
         LFS3_ASSERT(l_bid == block-weight);
 
@@ -11128,8 +11126,7 @@ static int lfs3_gbmap_zerounknown(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, gbmap, window_,
                 &block__, NULL, NULL);
         if (tag__ < 0) {
-            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-            return tag__;
+            return lfs3_ckfound(tag__);
         }
         lfs3_sblock_t d = lfs3_min(
                 block__+1 - window_,
@@ -11807,8 +11804,7 @@ static int lfs3_alloc_preerase(lfs3_t *lfs3) {
         lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
                 &block__, NULL, NULL);
         if (tag__ < 0) {
-            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-            return tag__;
+            return lfs3_ckfound(tag__);
         }
         lfs3_block_t d = lfs3_min(
                 block__+1 - block,
@@ -12037,9 +12033,11 @@ static int lfs3_mkdir_(lfs3_t *lfs3, const char *path) {
     if (tag_ < 0 && tag_ != LFS3_ERR_NOENT) {
         return tag_;
     }
-    LFS3_ASSERT((tag != LFS3_ERR_NOENT)
-            ? tag_ >= 0
-            : tag_ == LFS3_ERR_NOENT);
+    // a different answer means the disk changed under us, our grm
+    // cleans up the bookmark
+    if ((tag != LFS3_ERR_NOENT) != (tag_ != LFS3_ERR_NOENT)) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // commit our new directory into our parent, zeroing the grm in the
     // process
@@ -12096,8 +12094,7 @@ static int lfs3_grm_pushdid(lfs3_t *lfs3, lfs3_did_t did) {
     lfs3_stag_t tag = lfs3_mtree_namelookup(lfs3, did, NULL, 0,
             &bookmark_mdir, NULL);
     if (tag < 0) {
-        LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-        return tag;
+        return lfs3_ckfound(tag);
     }
     lfs3_mid_t bookmark_mid = bookmark_mdir.mid;
 
@@ -12121,8 +12118,7 @@ static int lfs3_grm_pushdid(lfs3_t *lfs3, lfs3_did_t did) {
             LFS3_tag_MASK8 | LFS3_TAG_NAME,
             &data);
     if (tag < 0) {
-        LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-        return tag;
+        return lfs3_ckfound(tag);
     }
 
     lfs3_did_t did_;
@@ -12740,8 +12736,7 @@ static int lfs3_dir_rewind_(lfs3_t *lfs3, lfs3_dir_t *dir) {
     lfs3_stag_t tag = lfs3_mtree_namelookup(lfs3, dir->did, NULL, 0,
             &dir->h.mdir, NULL);
     if (tag < 0) {
-        LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-        return tag;
+        return lfs3_ckfound(tag);
     }
 
     // eagerly set to next entry
@@ -13497,8 +13492,7 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
                     lfs3_ssize_t d_ = lfs3_file_readnext(lfs3, file,
                             pos_, buffer_, d);
                     if (d_ < 0) {
-                        LFS3_ASSERT(d_ != LFS3_ERR_NOENT);
-                        return d_;
+                        return lfs3_ckfound(d_);
                     }
 
                     pos_ += d_;
@@ -13512,8 +13506,7 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
                     lfs3_ssize_t d_ = lfs3_file_readnext(lfs3, file,
                             pos_, file->cache.buffer, d);
                     if (d_ < 0) {
-                        LFS3_ASSERT(d != LFS3_ERR_NOENT);
-                        return d_;
+                        return lfs3_ckfound(d_);
                     }
                     file->cache.pos = pos_;
                     file->cache.size = d_;
@@ -13639,7 +13632,7 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
         err = lfs3_file_lookupnext(lfs3, file, pos,
                 &bid, &weight_, &bptr_);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_NOENT);
+            err = lfs3_ckfound(err);
             goto failed;
         }
 
@@ -13993,8 +13986,7 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                 int err = lfs3_file_lookupnext(lfs3, file, pos_,
                         &bid__, &weight__, &bptr__);
                 if (err) {
-                    LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                    return err;
+                    return lfs3_ckfound(err);
                 }
 
                 // is this data a pure hole? stop early to (FUTURE)
@@ -14298,8 +14290,7 @@ static int lfs3_file_flush_(lfs3_t *lfs3, lfs3_file_t *file,
             err = lfs3_file_lookupnext(lfs3, file, poke,
                     &bid, &weight, &bptr);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
 
             // if left crystal neighbor is a fragment and there is no
@@ -14331,8 +14322,7 @@ static int lfs3_file_flush_(lfs3_t *lfs3, lfs3_file_t *file,
             err = lfs3_file_lookupnext(lfs3, file, poke,
                     &bid, &weight, &bptr);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
 
             // if right crystal neighbor is a fragment, include as a part
@@ -14425,8 +14415,7 @@ static int lfs3_file_flush_(lfs3_t *lfs3, lfs3_file_t *file,
                         file->b.b.r.weight-1),
                     &bid, &weight, &bptr);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
 
             // is our left neighbor in the same block?
@@ -14531,8 +14520,7 @@ fragment:;
                     fragment_start-1,
                     &bid, &weight, &bptr);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
 
             // can we coalesce?
@@ -14565,8 +14553,7 @@ fragment:;
                     fragment_end,
                     &bid, &weight, &bptr);
             if (err) {
-                LFS3_ASSERT(err != LFS3_ERR_NOENT);
-                return err;
+                return lfs3_ckfound(err);
             }
 
             // can we coalesce?
@@ -14856,8 +14843,7 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                     &name_data);
             if (name_tag < 0) {
                 // orphan flag but no stickynote tag?
-                LFS3_ASSERT(name_tag != LFS3_ERR_NOENT);
-                return name_tag;
+                return lfs3_ckfound(name_tag);
             }
 
             // on-disk data also carries its cksize/cksum
@@ -17142,8 +17128,7 @@ static int lfs3_fs_fixgrm(lfs3_t *lfs3) {
         int err = lfs3_mtree_lookup(lfs3, lfs3->grm.queue[0],
                 &mdir);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_NOENT);
-            return err;
+            return lfs3_ckfound(err);
         }
 
         // we also use grm to track orphans that need to be cleaned up,
@@ -17604,8 +17589,7 @@ int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
                 block_count-1,
                 NULL, NULL, NULL);
         if (tag < 0) {
-            LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-            err = tag;
+            err = lfs3_ckfound(tag);
             goto failed;
         }
 
