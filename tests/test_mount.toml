@@ -2978,3 +2978,202 @@ code = '''
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
     lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
 '''
+
+# test that a failed mount never progs or erases, and frees everything
+# it allocated, for each of the incompat failures above and a gcksum
+# mismatch
+[cases.test_mount_fail_nowrite]
+# FAILURE=0  => no magic
+# FAILURE=1  => bad magic
+# FAILURE=2  => major version
+# FAILURE=3  => minor version
+# FAILURE=4  => nonstandard rcompat
+# FAILURE=5  => nonstandard wcompat
+# FAILURE=6  => rdonly wcompat
+# FAILURE=7  => wronly rcompat
+# FAILURE=8  => rcompat overflow
+# FAILURE=9  => wcompat overflow
+# FAILURE=10 => larger block size
+# FAILURE=11 => smaller block size
+# FAILURE=12 => larger block count
+# FAILURE=13 => larger name limit
+# FAILURE=14 => larger file limit
+# FAILURE=15 => unknown config
+# FAILURE=16 => out of phase
+# FAILURE=17 => gcksum mismatch
+defines.FAILURE = 'range(18)'
+# M=0 => rdwr
+# M=1 => rdwr with mount-time work
+# M=2 => rdonly
+# M=3 => rdonly with checks
+defines.M = [0, 1, 2, 3]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // write some files so there is something to check
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "dir/r2d2",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "beep boop", 9) => 9;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // break the filesystem
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    int ERR = LFS3_ERR_NOTSUP;
+    bool rdonly_ok = false;
+    if (FAILURE == 0) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_MAGIC, 0),
+                LFS3_RATTR_NULL)) => 0;
+        ERR = LFS3_ERR_CORRUPT;
+    } else if (FAILURE == 1) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_MAGIC, 0, LFS3_FROM_BUF, 8),
+                LFS3_RATTR_ARG("lottlefs"),
+                LFS3_RATTR_NULL)) => 0;
+        ERR = LFS3_ERR_CORRUPT;
+    } else if (FAILURE == 2 || FAILURE == 3) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_VERSION, 0, LFS3_FROM_BUF, 2),
+                LFS3_RATTR_ARG(((const uint8_t[2]){
+                    LFS3_DISK_VERSION_MAJOR + ((FAILURE == 2) ? 1 : 0),
+                    LFS3_DISK_VERSION_MINOR + ((FAILURE == 3) ? 1 : 0)})),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 4 || FAILURE == 7) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_RCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(
+                    lfs3_rcompat(&lfs3)
+                        | ((FAILURE == 4)
+                            ? LFS3_RCOMPAT_NONSTANDARD
+                            : LFS3_RCOMPAT_WRONLY)),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 5 || FAILURE == 6) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_WCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(
+                    lfs3_wcompat(&lfs3)
+                        | ((FAILURE == 5)
+                            ? LFS3_WCOMPAT_NONSTANDARD
+                            : LFS3_WCOMPAT_RDONLY)),
+                LFS3_RATTR_NULL)) => 0;
+        rdonly_ok = true;
+    } else if (FAILURE == 8 || FAILURE == 9) {
+        uint8_t compat_buf[sizeof(uint32_t) + 72/8];
+        memset(compat_buf, 0, sizeof(compat_buf));
+        lfs3_data_fromle32(
+                (FAILURE == 8) ? lfs3_rcompat(&lfs3) : lfs3_wcompat(&lfs3),
+                compat_buf);
+        compat_buf[sizeof(uint32_t) + 71/8] |= 1 << (71%8);
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(3,
+                    (FAILURE == 8) ? LFS3_TAG_RCOMPAT : LFS3_TAG_WCOMPAT, 0,
+                    LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(sizeof(compat_buf)),
+                LFS3_RATTR_ARG(compat_buf),
+                LFS3_RATTR_NULL)) => 0;
+        rdonly_ok = (FAILURE == 9);
+    } else if (FAILURE >= 10 && FAILURE <= 12) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_GEOMETRY, 0, LFS3_FROM_GEOMETRY),
+                LFS3_RATTR_ARG((&(lfs3_geometry_t){
+                    (FAILURE == 10) ? BLOCK_SIZE*2
+                        : (FAILURE == 11) ? BLOCK_SIZE/2
+                        : BLOCK_SIZE,
+                    (FAILURE == 12) ? BLOCK_COUNT*2 : BLOCK_COUNT})),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 13) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_NAMELIMIT, 0, LFS3_FROM_LEB128),
+                LFS3_RATTR_ARG(LFS3_NAME_MAX*2),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 14) {
+        // a leb128 that decodes to more than LFS3_FILE_MAX
+        uint8_t filelimit_buf[1+LFS3_LEB128_DSIZE];
+        filelimit_buf[0] = 0xff;
+        lfs3_ssize_t d = lfs3_toleb128(LFS3_FILE_MAX,
+                filelimit_buf+1, LFS3_LEB128_DSIZE);
+        assert(d >= 0);
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_FILELIMIT, 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(1+d),
+                LFS3_RATTR_ARG(filelimit_buf),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 15) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_CONFIG + 0x42, 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(strlen("oh no!")),
+                LFS3_RATTR_ARG("oh no!"),
+                LFS3_RATTR_NULL)) => 0;
+    } else if (FAILURE == 16) {
+        lfs3_unmount(&lfs3) => 0;
+        uint8_t shift_buf[BLOCK_SIZE];
+        for (lfs3_size_t i = 0; i < 4; i++) {
+            CFG->read(CFG, 4-1-i, 0, shift_buf, BLOCK_SIZE) => 0;
+            CFG->erase(CFG, 4-1-i + 1) => 0;
+            CFG->prog(CFG, 4-1-i + 1, 0, shift_buf, BLOCK_SIZE) => 0;
+
+            memset(shift_buf, 0, BLOCK_SIZE);
+            strcpy((char*)shift_buf,
+                    "these aren't the files you're looking for ;)");
+            CFG->erase(CFG, 4-1-i) => 0;
+            CFG->prog(CFG, 4-1-i, 0, shift_buf, BLOCK_SIZE) => 0;
+        }
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+        ERR = LFS3_ERR_CORRUPT;
+    } else if (FAILURE == 17) {
+        // commit with a wrong gcksumdelta, the delta depends on the
+        // gcksum we think is on disk
+        lfs3.gcksum ^= 1;
+        lfs3.gcksum_p ^= 1;
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_ATTR('a'), 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(strlen("oh no!")),
+                LFS3_RATTR_ARG("oh no!"),
+                LFS3_RATTR_NULL)) => 0;
+        ERR = LFS3_ERR_CORRUPT;
+    }
+    if (FAILURE != 16) {
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    uint32_t flags
+            = (M == 0) ? LFS3_M_RDWR
+            : (M == 1) ? LFS3_M_RDWR
+                | LFS3_M_MKCONSISTENT
+                | LFS3_M_LOOKAHEAD
+                | LFS3_IFDEF_PREERASE(
+                    LFS3_IFDEF_REVPERTURB(
+                        LFS3_M_PREERASE | LFS3_M_REVPERTURB,
+                        0),
+                    0)
+                | LFS3_M_COMPACT
+                | LFS3_M_CKMETA
+                | LFS3_M_CKDATA
+            : (M == 2) ? LFS3_M_RDONLY
+            : LFS3_M_RDONLY | LFS3_M_CKMETA | LFS3_M_CKDATA;
+    bool ok = rdonly_ok && (flags & LFS3_M_RDONLY);
+
+    // mount, twice, in case the first failure leaves something behind
+    for (int i = 0; i < 2; i++) {
+        lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+        lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+        memset(&lfs3, 0xab, sizeof(lfs3));
+        lfs3_mount(&lfs3, flags, CFG) => (ok) ? 0 : ERR;
+        if (ok) {
+            lfs3_unmount(&lfs3) => 0;
+        }
+        lfs3_emubd_progs(CFG) => progs;
+        lfs3_emubd_erases(CFG) => erases;
+        assert(test_malloc_live == 0);
+    }
+'''
