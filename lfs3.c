@@ -11215,16 +11215,13 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
 
                 // free? erased?
                 //
-                // well, we can only use erased if pre-erase and
-                // revperturb is enabled
+                // erased blocks are free either way, but without
+                // revperturb lfs3_alloc_ must erase them again
                 if (tag == LFS3_TAG_BMFREE
-                        || LFS3_IFDEF_PREERASE(
-                            tag == LFS3_TAG_BMERASED
-                                && lfs3_m_isrevperturb(lfs3->flags),
-                            false)) {
+                        || tag == LFS3_TAG_BMERASED) {
                     lfs3->gbmap.next = +d;
 
-                // in-use? bad? erased? treat as in-use
+                // in-use? bad? treat as in-use
                 } else {
                     lfs3->gbmap.next = -d;
                 }
@@ -11366,9 +11363,14 @@ static lfs3_sblock_t lfs3_alloc_(lfs3_t *lfs3, uint32_t flags,
 
         // erase requested?
         if (lfs3_alloc_iserase(flags)) {
-            // pre-erased?
+            // pre-erased? we can only trust this with revperturb
+            //
+            // note we keep the ecksum either way, so lfs3_allocclaim
+            // still takes the block out of the on-disk gbmap before
+            // data is progged into it
             if (LFS3_IFDEF_PREERASE(
-                    lfs3_ecksum_isecksum(ecksum_),
+                    lfs3_ecksum_isecksum(ecksum_)
+                        && lfs3_m_isrevperturb(lfs3->flags),
                     false)) {
                 #ifdef LFS3_PREERASE
                 // check ecksum
