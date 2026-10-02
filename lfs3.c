@@ -8221,6 +8221,20 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
             // treat end_rid=-1 as "unbounded" in such a way that rid=-1
             // is still included
             && (lfs3_size_t)(rid + 1) <= (lfs3_size_t)end_rid) {
+        // removing our last rid? we're about to be dropped, so don't
+        // append anything, an mdir too full to commit to may still need
+        // to be emptied
+        lfs3_srid_t weight = mdir_->r.weight;
+        for (const lfs3_rattr_t *r = rattrs;
+                *r;
+                r = lfs3_rattr_next(r, NULL)) {
+            weight += lfs3_rattr_weight(r);
+        }
+        if (weight == 0
+                && !(mdir_->mid <= -1
+                    || lfs3_mdir_cmp(mdir_, &lfs3->mroot) == 0)) {
+            return LFS3_ERR_NOENT;
+        }
 
         for (const lfs3_rattr_t *r = rattrs;
                 *r;
