@@ -324,6 +324,10 @@ enum lfs3_type {
 #ifdef LFS3_GBMAP
 #define LFS3_I_GBMAP    0x02000000  // Global on-disk block-map in use
 #endif
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+#define LFS3_I_BADBLOCKS \
+                        0x04000000  // Bad blocks not yet marked on disk
+#endif
 #define LFS3_I_FLUSH    0x00000040  // Mounted with LFS3_M_FLUSH
 #define LFS3_I_SYNC     0x00000080  // Mounted with LFS3_M_SYNC
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVPERTURB)
@@ -1946,6 +1950,42 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 // on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_rmgbmap(lfs3_t *lfs3);
+#endif
+
+// Mark a block as bad
+//
+// littlefs never erases or programs a block marked bad, and keeps the
+// mark in the gbmap across mounts. littlefs marks blocks bad itself when
+// an erase or prog fails with LFS3_ERR_CORRUPT, this is for blocks known
+// to be bad some other way, such as a NAND factory bad-block table.
+//
+// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
+// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap,
+// LFS3_ERR_BUSY if the block is in use, or a negative error code on
+// failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// Clear a block's bad mark
+//
+// The block can be allocated again once it is free.
+//
+// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
+// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap, or a
+// negative error code on failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// Find the next bad block
+//
+// This includes bad blocks not yet marked on disk, see LFS3_I_BADBLOCKS.
+//
+// Returns the first bad block >= block, LFS3_ERR_NOENT if there are no
+// more bad blocks, or a negative error code on failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block);
 #endif
 
 

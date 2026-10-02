@@ -886,3 +886,228 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+## The bad-block API
+
+# test lfs3_fs_mkbad, lfs3_fs_mkgood and lfs3_fs_nextbad
+[cases.test_badblocks_gbmap_api]
+defines.N = 8
+defines.SIZE = '2*BLOCK_SIZE'
+defines.CYCLES = 32
+code = '''
+    struct lfs3_cfg cfg;
+    test_bbg_wrap(&cfg, CFG);
+
+    // without a gbmap there is nowhere to put bad blocks
+    lfs3_t lfs3;
+    #ifndef LFS3_YES_GBMAP
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_fs_mkbad(&lfs3, BLOCK_COUNT/2) => LFS3_ERR_NOTSUP;
+    lfs3_fs_mkgood(&lfs3, BLOCK_COUNT/2) => LFS3_ERR_NOTSUP;
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+    lfs3_unmount(&lfs3) => 0;
+    #endif
+
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+
+    // out of range and the mroot anchor can't be marked
+    lfs3_fs_mkbad(&lfs3, 0) => LFS3_ERR_INVAL;
+    lfs3_fs_mkbad(&lfs3, 1) => LFS3_ERR_INVAL;
+    lfs3_fs_mkbad(&lfs3, BLOCK_COUNT) => LFS3_ERR_INVAL;
+    lfs3_fs_mkbad(&lfs3, -1) => LFS3_ERR_INVAL;
+    lfs3_fs_mkgood(&lfs3, 0) => LFS3_ERR_INVAL;
+    lfs3_fs_mkgood(&lfs3, 1) => LFS3_ERR_INVAL;
+    lfs3_fs_mkgood(&lfs3, BLOCK_COUNT) => LFS3_ERR_INVAL;
+
+    // neither can in-use blocks
+    test_bbg_write(&lfs3, "spider", 42, SIZE);
+    bool *inuse = malloc(BLOCK_COUNT);
+    test_bbg_inuse(&lfs3, inuse);
+    for (lfs3_block_t b = 2; b < BLOCK_COUNT; b++) {
+        if (inuse[b]) {
+            lfs3_fs_mkbad(&lfs3, b) => LFS3_ERR_BUSY;
+        }
+    }
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+
+    // mark a few free blocks bad
+    lfs3_block_t marks[] = {
+        BLOCK_COUNT/4,
+        BLOCK_COUNT/2, BLOCK_COUNT/2+1,
+        BLOCK_COUNT-1,
+    };
+    lfs3_size_t nmarks = sizeof(marks)/sizeof(marks[0]);
+    lfs3_block_t usage = lfs3_fs_usage(&lfs3);
+    for (lfs3_size_t i = 0; i < nmarks; i++) {
+        assert(!inuse[marks[i]]);
+        lfs3_fs_mkbad(&lfs3, marks[i]) => 0;
+        // twice is fine
+        lfs3_fs_mkbad(&lfs3, marks[i]) => 0;
+    }
+    assert(lfs3_fs_usage(&lfs3) == (lfs3_sblock_t)(usage + nmarks));
+
+    // mkbad writes the gbmap
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        // find our marks
+        lfs3_block_t b = 0;
+        for (lfs3_size_t i = 0; i < nmarks; i++) {
+            lfs3_sblock_t b_ = lfs3_fs_nextbad(&lfs3, b);
+            assert(b_ == (lfs3_sblock_t)marks[i]);
+            b = b_+1;
+        }
+        lfs3_fs_nextbad(&lfs3, b) => LFS3_ERR_NOENT;
+        lfs3_fs_nextbad(&lfs3, BLOCK_COUNT) => LFS3_ERR_NOENT;
+    }
+
+    // marked blocks should never be used
+    memset(test_bbg_erases, 0, sizeof(test_bbg_erases));
+    memset(test_bbg_progs, 0, sizeof(test_bbg_progs));
+    for (lfs3_size_t c = 0; c < CYCLES; c++) {
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "file%03d", i);
+            test_bbg_write(&lfs3, name, c*N + i, SIZE);
+        }
+    }
+    for (lfs3_size_t i = 0; i < nmarks; i++) {
+        assert(test_bbg_erases[marks[i]] == 0);
+        assert(test_bbg_progs[marks[i]] == 0);
+    }
+
+    // clear a mark, this block should be used again
+    lfs3_fs_mkgood(&lfs3, marks[0]) => 0;
+    // twice is fine
+    lfs3_fs_mkgood(&lfs3, marks[0]) => 0;
+    // clearing a block that isn't bad does nothing
+    lfs3_fs_mkgood(&lfs3, marks[0]+1) => 0;
+    lfs3_fs_nextbad(&lfs3, 0) => marks[1];
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_fs_nextbad(&lfs3, 0) => marks[1];
+
+    for (lfs3_size_t c = 0; c < CYCLES; c++) {
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "file%03d", i);
+            test_bbg_write(&lfs3, name, c*N + i, SIZE);
+        }
+    }
+    assert(test_bbg_erases[marks[0]] > 0);
+    for (lfs3_size_t i = 1; i < nmarks; i++) {
+        assert(test_bbg_erases[marks[i]] == 0);
+        assert(test_bbg_progs[marks[i]] == 0);
+    }
+    test_bbg_read(&lfs3, "spider", 42, SIZE);
+    lfs3_unmount(&lfs3) => 0;
+
+    // a read-only mount can still find bad blocks
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, &cfg) => 0;
+    lfs3_fs_nextbad(&lfs3, 0) => marks[1];
+    lfs3_unmount(&lfs3) => 0;
+    free(inuse);
+'''
+
+# test that LFS3_I_BADBLOCKS tells us when bad blocks are on disk, and
+# that lfs3_fs_nextbad finds bad blocks before they're on disk
+[cases.test_badblocks_gbmap_api_ibadblocks]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+]
+defines.SIZE = 'BLOCK_SIZE'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+
+    // make the next free block bad
+    lfs3_alloc_ckpoint(&lfs3) => 0;
+    lfs3_sblock_t bad = lfs3_alloc_findfree(&lfs3, NULL);
+    assert(bad >= 2);
+    lfs3_emubd_mkbad(CFG, bad) => 0;
+
+    // write until we find it
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "spider",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'a', SIZE);
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_flush(&lfs3, &file) => 0;
+
+    // either we know about it, or it's already on disk
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS)
+            == test_bbg_isbad(&lfs3, bad));
+    lfs3_fs_nextbad(&lfs3, 0) => bad;
+
+    // the next commit should fix that
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+    lfs3_fs_nextbad(&lfs3, 0) => bad;
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+    lfs3_fs_nextbad(&lfs3, 0) => bad;
+    lfs3_fs_nextbad(&lfs3, bad+1) => LFS3_ERR_NOENT;
+
+    // a block going bad while in use can't be marked until the next
+    // commit releases it
+    if (BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_PROGERROR) {
+        lfs3_block_t inuse = test_bbg_badappend(&lfs3, CFG, "tarantula",
+                wbuf, SIZE/2);
+
+        // we know about it, but haven't marked it yet
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_BADBLOCKS);
+        lfs3_fs_nextbad(&lfs3, inuse) => inuse;
+        assert(!test_bbg_isbad(&lfs3, inuse));
+
+        // it should be marked within a few commits
+        for (int i = 0;; i++) {
+            assert(i < 3);
+            char name[256];
+            sprintf(name, "dir%d", i);
+            lfs3_mkdir(&lfs3, name) => 0;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            if (!(fsinfo.flags & LFS3_I_BADBLOCKS)) {
+                break;
+            }
+        }
+        assert(test_bbg_isbad(&lfs3, inuse));
+
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_block_t lo = lfs3_min(bad, inuse);
+        lfs3_block_t hi = lfs3_max(bad, inuse);
+        lfs3_fs_nextbad(&lfs3, 0) => lo;
+        lfs3_fs_nextbad(&lfs3, lo+1) => hi;
+        lfs3_fs_nextbad(&lfs3, hi+1) => LFS3_ERR_NOENT;
+        uint8_t rbuf[SIZE];
+        lfs3_file_open(&lfs3, &file, "tarantula", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE/2+64;
+        assert(memcmp(rbuf, wbuf, SIZE/2+64) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+

@@ -7658,7 +7658,11 @@ static void lfs3_fs_commitgdelta(lfs3_t *lfs3) {
         lfs3->gbmap.b_p = lfs3->gbmap.b;
         lfs3_data_fromgbmap(&lfs3->gbmap, lfs3->gbmap_p);
 
-        // any bad blocks in use may have been released
+        // any bad blocks marked are now on disk, and any in use may
+        // have been released
+        if (lfs3->gbmap.badq.count == 0) {
+            lfs3->flags &= ~LFS3_I_BADBLOCKS;
+        }
         lfs3->gbmap.badq.commits += (lfs3->gbmap.badq.commits < 0xff);
 
     // if disabled, we still want to keep track of the on-disk gstate
@@ -11186,6 +11190,7 @@ static void lfs3_alloc_pushbad(lfs3_t *lfs3, lfs3_block_t block) {
     badq->count += 1;
 
 done:;
+    lfs3->flags |= LFS3_I_BADBLOCKS;
 }
 #endif
 
@@ -17250,7 +17255,9 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
                     | LFS3_IFDEF_RDONLY(0, LFS3_I_COMPACT)
                     | LFS3_I_CKMETA
                     | LFS3_I_CKDATA
-                    | LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)))
+                    | LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)
+                    | LFS3_IFDEF_RDONLY(0,
+                        LFS3_IFDEF_GBMAP(LFS3_I_BADBLOCKS, 0))))
             // LFS3_I_MKCONSISTENT is a bit of a special case,
             // internally it strictly indicates untracked orphans, but
             // externally it also includes any pending grms
@@ -17971,6 +17978,116 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
     // on success mark gbmap as not-in-use internally
     lfs3->flags &= ~LFS3_F_GBMAP;
     return lfs3_fs_syncerr(lfs3, 0);
+}
+#endif
+
+// mark/unmark bad blocks
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_fs_mkbad_(lfs3_t *lfs3, lfs3_block_t block, bool bad) {
+    // filesystem must be writeable
+    LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+
+    // the mroot anchor can't move, so can't be bad
+    if (block < 2 || block >= lfs3->block_count) {
+        return LFS3_ERR_INVAL;
+    }
+
+    // bad blocks live in the gbmap
+    if (!lfs3_f_isgbmap(lfs3->flags)) {
+        return LFS3_ERR_NOTSUP;
+    }
+
+    // checkpoint the allocator, so we find all in-use blocks
+    int err = lfs3_alloc_ckpoint(lfs3);
+    if (err) {
+        return err;
+    }
+
+    struct lfs3_badq badq;
+    badq.blocks[0] = block;
+    badq.weights[0] = 1;
+    badq.count = 1;
+    uint32_t inuse;
+    err = lfs3_alloc_ckinuse(lfs3, &badq, &inuse);
+    if (err) {
+        return err;
+    }
+
+    // we can't move in-use data out of the way
+    if (bad && inuse) {
+        return LFS3_ERR_BUSY;
+    }
+
+    lfs3_stag_t tag = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
+            NULL, NULL, NULL);
+    if (tag < 0) {
+        LFS3_ASSERT(tag != LFS3_ERR_NOENT);
+        return tag;
+    }
+
+    // update the gbmap, in-use blocks stay in use until the next
+    // repopulation
+    if (bad || tag == LFS3_TAG_BMBAD) {
+        err = lfs3_gbmap_set(lfs3, &lfs3->gbmap.b, block,
+                (bad) ? LFS3_TAG_BMBAD
+                    : (inuse) ? LFS3_TAG_BMINUSE
+                    : LFS3_TAG_BMFREE,
+                NULL);
+        if (err) {
+            return err;
+        }
+        lfs3->gbmap.next = 0;
+    }
+
+    // forget any pending mark, this may forget other bad blocks found
+    // with this one
+    if (!bad) {
+        lfs3_alloc_dropbad(lfs3, block);
+    }
+
+    // write the gbmap to disk
+    err = lfs3_alloc_syncgbmap(lfs3);
+    return lfs3_fs_syncerr(lfs3, err);
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block) {
+    return lfs3_fs_mkbad_(lfs3, block, true);
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block) {
+    return lfs3_fs_mkbad_(lfs3, block, false);
+}
+#endif
+
+// find the next bad block
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
+    // no gbmap? no bad blocks
+    if (!lfs3_f_isgbmap(lfs3->flags)) {
+        return LFS3_ERR_NOENT;
+    }
+
+    // marked in the gbmap?
+    lfs3_sblock_t next = lfs3_gbmap_nextbad(lfs3, block);
+    if (next < 0 && next != LFS3_ERR_NOENT) {
+        return next;
+    }
+
+    // not marked yet?
+    for (lfs3_size_t i = 0; i < lfs3->gbmap.badq.count; i++) {
+        lfs3_block_t block_ = lfs3_max(lfs3->gbmap.badq.blocks[i], block);
+        if (block_ - lfs3->gbmap.badq.blocks[i]
+                    < lfs3->gbmap.badq.weights[i]
+                && (next < 0 || block_ < (lfs3_block_t)next)) {
+            next = block_;
+        }
+    }
+
+    return next;
 }
 #endif
 
