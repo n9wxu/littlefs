@@ -348,34 +348,11 @@ jobs:
           sudo apt-get install -qq gcc python3
           gcc --version
           python3 --version
+      # the default and LFS3_YES_GBMAP builds write images, the
+      # LFS3_RDONLY and LFS3_YES_RDONLY builds check them
       - name: test-rdonly
         run: |
-          # write an image per case with a read-write build, and a
-          # manifest of what each image holds
-          mkdir -p images
-          write_images() {
-            b=$1 ; shift
-            make BUILDDIR=build/$b "$@" test-runner rdonly-runner
-            for t in \
-              test_files_many \
-              test_dirs_mkdir_many_2layers \
-              test_attrs_fuzz_fuzz \
-              test_attrs_many_many
-            do
-              rm -f images/$b-$t.disk
-              ./scripts/test.py -Rbuild/$b/runners/test_runner -Pnone \
-                -dimages/$b-$t.disk $t
-              build/$b/runners/rdonly_runner -m images/$b-$t.disk
-            done
-          }
-          write_images default
-          write_images yes-gbmap LFS3_YES_GBMAP=1
-
-          # read them back with LFS3_RDONLY builds
-          make BUILDDIR=build/rdonly LFS3_RDONLY=1 rdonly-runner
-          build/rdonly/runners/rdonly_runner images/*.disk
-          make BUILDDIR=build/yes-rdonly LFS3_YES_RDONLY=1 rdonly-runner
-          build/yes-rdonly/runners/rdonly_runner images/*.disk
+          make test-rdonly
 
   # run under Valgrind to check for memory errors
   test-valgrind:
