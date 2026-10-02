@@ -8609,10 +8609,37 @@ static lfs3_ssize_t lfs3_mdir_estimate___(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
 }
 #endif
 
+// does this commit only remove one rid or one tag? compaction can leave
+// these out, so removing never needs more room than it frees
+#ifndef LFS3_RDONLY
+static const lfs3_rattr_t *lfs3_mdir_rmrattr(const lfs3_rattr_t *rattrs) {
+    if (!*rattrs
+            || *lfs3_rattr_next(rattrs, NULL)
+            // only plain rms, no grows or masks
+            || (lfs3_rattr_tag(rattrs) & ~LFS3_tag_RM & ~0x0fff)
+            || !lfs3_rattr_isrm(rattrs)) {
+        return NULL;
+    }
+
+    // removing a rid?
+    if (lfs3_rattr_weight(rattrs) == -1
+            && lfs3_tag_key(lfs3_rattr_tag(rattrs)) == 0) {
+        return rattrs;
+    // removing a tag?
+    } else if (lfs3_rattr_weight(rattrs) == 0
+            && lfs3_tag_key(lfs3_rattr_tag(rattrs)) != 0) {
+        return rattrs;
+    } else {
+        return NULL;
+    }
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_compact___(lfs3_t *lfs3,
         lfs3_mdir_t *mdir_, const lfs3_mdir_t *mdir,
-        lfs3_srid_t start_rid, lfs3_srid_t end_rid) {
+        lfs3_srid_t start_rid, lfs3_srid_t end_rid,
+        lfs3_srid_t rm_rid, const lfs3_rattr_t *rm) {
     // this is basically the same as lfs3_rbyd_compact, but with special
     // handling for inlined trees.
     //
@@ -8621,6 +8648,9 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
     //
     // note this returns LFS3_ERR_RANGE if the mdir doesn't fit, mdirs
     // that can't split are compacted without checking the estimate
+    //
+    // if rm is provided, this also leaves out the rid or tag it removes
+    // at rm_rid, see lfs3_mdir_rmrattr
 
     // assume we keep any gcksumdelta, this will get fixed the first time
     // we commit anything
@@ -8648,6 +8678,13 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
         // included
         if ((lfs3_size_t)(rid + 1) > (lfs3_size_t)end_rid) {
             break;
+        }
+
+        // removed by our commit?
+        if (rm && rid == rm_rid
+                && (lfs3_rattr_weight(rm) < 0
+                    || tag == lfs3_tag_key(lfs3_rattr_tag(rm)))) {
+            continue;
         }
 
         // found an inlined shrub? we need to compact the shrub as well to
@@ -8759,6 +8796,14 @@ compact:;
     bool relocated = false;
     bool overrecyclable = true;
 
+    // only removing? we can leave what we remove out of the compaction
+    lfs3_srid_t rm_rid = lfs3_mrid(lfs3, mid);
+    const lfs3_rattr_t *rm = NULL;
+    if (rm_rid >= start_rid
+            && (lfs3_size_t)(rm_rid + 1) <= (lfs3_size_t)end_rid) {
+        rm = lfs3_mdir_rmrattr(rattrs);
+    }
+
     // check if we're within our compaction threshold
     lfs3_ssize_t estimate = lfs3_mdir_estimate___(lfs3, mdir,
             start_rid, end_rid,
@@ -8806,7 +8851,8 @@ compact:;
 
         // compact our mdir, this can only overflow if we skipped
         // splitting above
-        err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid);
+        err = lfs3_mdir_compact___(lfs3, mdir_, mdir, start_rid_, end_rid,
+                rm_rid, rm);
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
@@ -8822,7 +8868,7 @@ compact:;
         // larger than what compaction freed, in which case our caller
         // can try splitting
         err = lfs3_mdir_commit___(lfs3, mdir_, start_rid_, end_rid,
-                mid, rattrs);
+                mid, (rm) ? LFS3_RATTRS(LFS3_RATTR_NULL) : rattrs);
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
@@ -9070,7 +9116,8 @@ commit:;
             err = lfs3_mdir_compact___(lfs3, &mdir_[i^l],
                     mdir,
                     ((i^l) == 0) ?         0 : split_rid,
-                    ((i^l) == 0) ? split_rid :        -1);
+                    ((i^l) == 0) ? split_rid :        -1,
+                    -1, NULL);
             if (err) {
                 // still too big? an entry can't be split
                 if (err == LFS3_ERR_RANGE) {
