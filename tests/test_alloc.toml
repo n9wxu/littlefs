@@ -1238,3 +1238,194 @@ code = '''
     free(wbuf);
     free(rbuf);
 '''
+
+
+# test that littlefs never calls lfs3_malloc when every buffer is
+# provided, and otherwise allocates exactly one file cache per open file
+[cases.test_alloc_static_buffers]
+defines.N = 8
+defines.SIZE = ['FCACHE_SIZE/2', '2*BLOCK_SIZE']
+# FCACHE=0 => the default fcache_size
+# FCACHE=1 => a per-file fcache_size
+defines.FCACHE = [0, 1]
+code = '''
+    uint8_t rcache_buffer[RCACHE_SIZE];
+    uint8_t pcache_buffer[PCACHE_SIZE];
+    uint8_t lookahead_buffer[LOOKAHEAD_SIZE];
+    struct lfs3_cfg cfg = *CFG;
+    cfg.rcache_buffer = rcache_buffer;
+    cfg.pcache_buffer = pcache_buffer;
+    cfg.lookahead_buffer = lookahead_buffer;
+
+    lfs3_size_t fcache_size = (FCACHE) ? 2*FCACHE_SIZE : FCACHE_SIZE;
+    uint8_t fcache_buffers[N][2*FCACHE_SIZE];
+    struct lfs3_file_cfg filecfgs[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        memset(&filecfgs[i], 0, sizeof(struct lfs3_file_cfg));
+        filecfgs[i].fcache_buffer = fcache_buffers[i];
+        filecfgs[i].fcache_size = fcache_size;
+    }
+
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE);
+    assert(wbuf && rbuf);
+
+    // any lfs3_malloc fails, so any call that allocates errors
+    test_malloc_fail = 1;
+
+    // gc may pre-erase, which needs revision perturbation
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0)
+                | LFS3_IFDEF_REVPERTURB(LFS3_F_REVPERTURB, 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | LFS3_IFDEF_REVPERTURB(LFS3_M_REVPERTURB, 0),
+            &cfg) => 0;
+
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t files[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "dir/file%04d", i);
+        lfs3_file_opencfg(&lfs3, &files[i], name,
+                LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL,
+                &filecfgs[i]) => 0;
+    }
+    for (lfs3_size_t i = 0; i < N; i++) {
+        memset(wbuf, 'a'+(i % 26), SIZE);
+        lfs3_file_write(&lfs3, &files[i], wbuf, SIZE) => SIZE;
+        lfs3_file_sync(&lfs3, &files[i]) => 0;
+        lfs3_file_rewind(&lfs3, &files[i]) => 0;
+        lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_truncate(&lfs3, &files[i], SIZE/2) => 0;
+        lfs3_file_fruncate(&lfs3, &files[i], SIZE) => 0;
+        lfs3_file_seek(&lfs3, &files[i], 0, LFS3_SEEK_SET) => 0;
+        lfs3_file_write(&lfs3, &files[i], wbuf, SIZE) => SIZE;
+        lfs3_file_flush(&lfs3, &files[i]) => 0;
+    }
+    for (lfs3_size_t i = 0; i < N; i++) {
+        lfs3_file_close(&lfs3, &files[i]) => 0;
+    }
+
+    lfs3_rename(&lfs3, "dir/file0000", "dir/renamed") => 0;
+    lfs3_remove(&lfs3, "dir/file0001") => 0;
+    lfs3_setattr(&lfs3, "dir", 'a', "attr", 4) => 0;
+    lfs3_getattr(&lfs3, "dir", 'a', rbuf, 4) => 4;
+    lfs3_set(&lfs3, "kv", "value", 5) => 0;
+    lfs3_get(&lfs3, "kv", rbuf, 5) => 5;
+    lfs3_size(&lfs3, "kv") => 5;
+
+    lfs3_dir_t dir;
+    struct lfs3_info info;
+    lfs3_dir_open(&lfs3, &dir, "dir") => 0;
+    while (lfs3_dir_read(&lfs3, &dir, &info) == 0) {
+    }
+    lfs3_dir_close(&lfs3, &dir) => 0;
+
+    lfs3_trv_t trv;
+    struct lfs3_tinfo tinfo;
+    lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+    while (lfs3_trv_read(&lfs3, &trv, &tinfo) == 0) {
+    }
+    lfs3_trv_close(&lfs3, &trv) => 0;
+
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(lfs3_fs_usage(&lfs3) > 0);
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+    lfs3_fs_mkconsistent(&lfs3) => 0;
+    #ifdef LFS3_GC
+    lfs3_fs_gc(&lfs3) => 0;
+    #endif
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // and read everything back, read-write and read-only
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR,
+                &cfg) => 0;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            if (i == 0) {
+                strcpy(name, "dir/renamed");
+            } else {
+                sprintf(name, "dir/file%04d", i);
+            }
+            if (i == 1) {
+                lfs3_stat(&lfs3, name, &info) => LFS3_ERR_NOENT;
+                continue;
+            }
+
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name, LFS3_O_RDONLY,
+                    &filecfgs[i]) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_get(&lfs3, "kv", rbuf, 5) => 5;
+        assert(memcmp(rbuf, "value", 5) == 0);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // nothing called lfs3_malloc
+    assert(test_malloc_count == 0);
+    assert(test_malloc_fail == 1);
+    test_malloc_fail = 0;
+
+    // without buffers, each open allocates exactly one file cache, and
+    // nothing else allocates
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    size_t count = test_malloc_count;
+    size_t live = test_malloc_live;
+    struct lfs3_file_cfg sizecfg = {.fcache_size = fcache_size};
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "file%04d", i);
+        if (FCACHE) {
+            lfs3_file_opencfg(&lfs3, &files[i], name,
+                    LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL,
+                    &sizecfg) => 0;
+        } else {
+            lfs3_file_open(&lfs3, &files[i], name,
+                    LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        }
+        assert(test_malloc_count == count + i+1);
+        assert(test_malloc_live == live + i+1);
+        assert(test_malloc_size == fcache_size);
+    }
+    count = test_malloc_count;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        memset(wbuf, 'a'+(i % 26), SIZE);
+        lfs3_file_write(&lfs3, &files[i], wbuf, SIZE) => SIZE;
+        lfs3_file_sync(&lfs3, &files[i]) => 0;
+        lfs3_file_rewind(&lfs3, &files[i]) => 0;
+        lfs3_file_read(&lfs3, &files[i], rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_truncate(&lfs3, &files[i], SIZE/2) => 0;
+        lfs3_file_write(&lfs3, &files[i], wbuf, SIZE) => SIZE;
+        lfs3_file_flush(&lfs3, &files[i]) => 0;
+        lfs3_file_sync(&lfs3, &files[i]) => 0;
+    }
+    lfs3_set(&lfs3, "kv", "value", 5) => 0;
+    lfs3_get(&lfs3, "kv", rbuf, 5) => 5;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    assert(test_malloc_count == count);
+    for (lfs3_size_t i = 0; i < N; i++) {
+        lfs3_file_close(&lfs3, &files[i]) => 0;
+        assert(test_malloc_live == live + N-(i+1));
+    }
+    assert(test_malloc_count == count);
+    lfs3_unmount(&lfs3) => 0;
+    assert(test_malloc_live == 0);
+
+    free(wbuf);
+    free(rbuf);
+'''

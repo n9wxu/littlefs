@@ -157,14 +157,16 @@ extern volatile test_powercycles_t TEST_PLS;
 //   call fails, 0 never fails
 // - test_malloc_count counts lfs3_malloc calls, including failed calls
 // - test_malloc_live counts allocations not yet lfs3_free'd
+// - test_malloc_size is the size of the last lfs3_malloc call
 //
-// All three reset for every permutation, and lfs3_free of more than was
+// All four reset for every permutation, and lfs3_free of more than was
 // allocated fails the test.
 void *test_malloc(size_t size);
 void test_free(void *p);
 extern size_t test_malloc_fail;
 extern size_t test_malloc_count;
 extern size_t test_malloc_live;
+extern size_t test_malloc_size;
 
 // deterministic prng for pseudo-randomness in tests
 uint32_t test_prng(uint32_t *state);
