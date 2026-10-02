@@ -787,6 +787,277 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that a failed file cache allocation fails the open, registers no
+# handle, writes nothing, and leaks nothing
+[cases.test_files_open_nomem]
+defines.MODE = [
+    'LFS3_O_RDONLY',
+    'LFS3_O_WRONLY',
+    'LFS3_O_RDWR',
+    'LFS3_O_WRONLY | LFS3_O_CREAT',
+    'LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL',
+    'LFS3_O_WRONLY | LFS3_O_TRUNC',
+]
+defines.EXISTS = [false, true]
+if = '(EXISTS) ? !(MODE & LFS3_O_EXCL) : (MODE & LFS3_O_CREAT)'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    lfs3_file_t file;
+    if (EXISTS) {
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "hello!", 6) => 6;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // keep some other handles open
+    lfs3_file_t other;
+    lfs3_file_open(&lfs3, &other, "other",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "/") => 0;
+    lfs3_handle_t *handles = lfs3.handles;
+
+    size_t live = test_malloc_live;
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => 0;
+
+    // fail the file cache allocation
+    memset(&file, 0xab, sizeof(file));
+    test_malloc_fail = 1;
+    lfs3_file_open(&lfs3, &file, "hello", MODE) => LFS3_ERR_NOMEM;
+    assert(test_malloc_fail == 0);
+    assert(test_malloc_live == live);
+
+    // the handle is not registered, and the others are untouched
+    assert(lfs3.handles == handles);
+    assert(!lfs3_handle_isopen(&lfs3, &file.b.h));
+    assert(lfs3_handle_isopen(&lfs3, &other.b.h));
+    assert(lfs3_handle_isopen(&lfs3, &dir.h));
+
+    // and nothing was written
+    lfs3_emubd_progs(CFG) => progs;
+    lfs3_emubd_erases(CFG) => erases;
+    uint32_t cksum_;
+    lfs3_fs_cksum(&lfs3, &cksum_) => 0;
+    assert(cksum_ == cksum);
+
+    // the other handles still work
+    struct lfs3_info info;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    assert(strcmp(info.name, ".") == 0);
+    lfs3_dir_close(&lfs3, &dir) => 0;
+    lfs3_file_write(&lfs3, &other, "other!", 6) => 6;
+    lfs3_file_close(&lfs3, &other) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            assert(test_malloc_live == 0);
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // the file is as before
+        if (EXISTS) {
+            lfs3_stat(&lfs3, "hello", &info) => 0;
+            assert(info.size == 6);
+            uint8_t rbuf[16];
+            lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, 16) => 6;
+            assert(memcmp(rbuf, "hello!", 6) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        } else {
+            lfs3_stat(&lfs3, "hello", &info) => LFS3_ERR_NOENT;
+        }
+        lfs3_stat(&lfs3, "other", &info) => 0;
+        assert(info.size == 6);
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    // and the open works once memory is available
+    lfs3_file_open(&lfs3, &file, "hello", MODE) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    lfs3_unmount(&lfs3) => 0;
+    assert(test_malloc_live == 0);
+'''
+
+# test that close releases the handle even when the sync inside it
+# fails
+[cases.test_files_close_error]
+# FAULT=0 => no space
+# FAULT=1 => every block bad, progs error
+# FAULT=2 => the nth read errors with LFS3_ERR_CORRUPT
+# FAULT=3 => the nth prog errors with LFS3_ERR_IO
+# FAULT=4 => the nth erase errors with LFS3_ERR_IO
+# FAULT=5 => the nth sync errors with LFS3_ERR_IO
+# FAULT=6 => an attribute that can't fit, LFS3_ERR_NOSPC
+defines.FAULT = [0, 1, 2, 3, 4, 5, 6]
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_PROGERROR'
+in = 'lfs3.c'
+code = '''
+    uint8_t old[SIZE];
+    uint8_t new[SIZE];
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        old[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        new[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    // the sweeps fail the 1st, 2nd, ... op of the close in turn, until
+    // the close no longer reaches the failing op
+    bool done = false;
+    for (uint32_t n = 1; !done; n++) {
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, old, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // attach an attribute that can't fit?
+        uint8_t abuf[BLOCK_SIZE];
+        memset(abuf, 'a', BLOCK_SIZE);
+        struct lfs3_attr attr = {
+            .type = 'a',
+            .flags = LFS3_A_WRONLY,
+            .buffer = abuf,
+            .buffer_size = BLOCK_SIZE,
+        };
+        struct lfs3_file_cfg filecfg = {
+            .attrs = (FAULT == 6) ? &attr : NULL,
+            .attr_count = (FAULT == 6) ? 1 : 0,
+        };
+        lfs3_file_opencfg(&lfs3, &file, "hello", LFS3_O_WRONLY,
+                &filecfg) => 0;
+        lfs3_file_write(&lfs3, &file, new, SIZE) => SIZE;
+
+        // fill the disk?
+        lfs3_size_t filled = 0;
+        if (FAULT == 0) {
+            uint8_t fbuf[BLOCK_SIZE];
+            memset(fbuf, 'f', BLOCK_SIZE);
+            lfs3_file_t fill;
+            lfs3_file_open(&lfs3, &fill, "fill",
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            while (true) {
+                lfs3_ssize_t d = lfs3_file_write(&lfs3, &fill,
+                        fbuf, BLOCK_SIZE);
+                assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+                if (d == LFS3_ERR_NOSPC) {
+                    break;
+                }
+                int err = lfs3_file_sync(&lfs3, &fill);
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (err) {
+                    break;
+                }
+                filled += BLOCK_SIZE;
+            }
+            lfs3_file_close(&lfs3, &fill) => 0;
+        }
+
+        int ERR = LFS3_ERR_NOSPC;
+        lfs3_emubd_op_t op = LFS3_EMUBD_OP_READ;
+        if (FAULT == 1) {
+            for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+                lfs3_emubd_mkbad(CFG, b) => 0;
+            }
+        } else if (FAULT >= 2 && FAULT <= 5) {
+            op = (FAULT == 2) ? LFS3_EMUBD_OP_READ
+                    : (FAULT == 3) ? LFS3_EMUBD_OP_PROG
+                    : (FAULT == 4) ? LFS3_EMUBD_OP_ERASE
+                    : LFS3_EMUBD_OP_SYNC;
+            ERR = (FAULT == 2) ? LFS3_ERR_CORRUPT : LFS3_ERR_IO;
+            lfs3_emubd_mkioerror(CFG, op, n, ERR) => 0;
+        }
+
+        int err = lfs3_file_close(&lfs3, &file);
+        int err_;
+        if (FAULT == 0) {
+            // a full disk may still have room in the file's mdir
+            assert(err == 0 || err == ERR);
+            done = true;
+        } else if (FAULT == 1 || FAULT == 6) {
+            assert(err == ERR);
+            done = true;
+        } else if (lfs3_emubd_ioerror(CFG, op) > 0) {
+            // the close finished before the nth op, we're done
+            lfs3_emubd_mkioerror(CFG, op, 0, 0) => 0;
+            assert(err == 0);
+            done = true;
+        } else {
+            assert(err == 0 || err == ERR);
+        }
+
+        // the handle is released
+        assert(!lfs3_handle_isopen(&lfs3, &file.b.h));
+        assert(lfs3.handles == NULL);
+
+        if (FAULT == 1) {
+            for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+                lfs3_emubd_mkgood(CFG, b) => 0;
+            }
+        }
+
+        // our in-RAM state matches the disk, note a shrub commit may
+        // land before the failing mdir commit, so the cksum may change
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        lfs3_t lfs3_;
+        lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
+        uint32_t cksum_;
+        lfs3_fs_cksum(&lfs3_, &cksum_) => 0;
+        lfs3_unmount(&lfs3_) => 0;
+        assert(cksum_ == cksum);
+
+        // and later commits work
+        err_ = lfs3_mkdir(&lfs3, "after");
+        assert(err_ == 0 || (FAULT == 0 && err_ == LFS3_ERR_NOSPC));
+
+        // unmount succeeds and frees everything
+        lfs3_unmount(&lfs3) => 0;
+        assert(test_malloc_live == 0);
+
+        // the file is either old or new, and the old version can only be
+        // left if the close failed
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "after", &info) => (err_) ? LFS3_ERR_NOENT : 0;
+        lfs3_stat(&lfs3, "hello", &info) => 0;
+        assert(info.size == SIZE);
+        uint8_t rbuf[SIZE];
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, new, SIZE) == 0
+                || (err && memcmp(rbuf, old, SIZE) == 0));
+        lfs3_file_close(&lfs3, &file) => 0;
+        if (FAULT == 0) {
+            lfs3_stat(&lfs3, "fill", &info) => 0;
+            assert(info.size == filled);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
 # test creating multiple files
 [cases.test_files_many]
 defines.N = [1, 2, 4, 8, 16, 32, 64]

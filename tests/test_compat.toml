@@ -1338,3 +1338,265 @@ code = '''
     lfsp_unmount(&lfsp) => 0;
 '''
 
+
+
+## gbmap compatibility tests ##
+
+# test that images with and without a gbmap mount as expected in builds
+# with and without LFS3_GBMAP, and that a driver that doesn't track bad
+# blocks never writes blocks a newer driver marked bad in the gbmap
+#
+# ROLE=0 => make the image and check it, the same build on both sides
+# ROLE=1 => only make the image, with -d this writes it to a file
+# ROLE=2 => check the image in the file TEST_COMPAT_GBMAP_IMAGE
+#
+# make test-compat-gbmap exchanges images between the default,
+# LFS3_GBMAP, and LFS3_YES_GBMAP builds with ROLE=1 and ROLE=2, GBMAP and
+# BMBAD must then describe the image
+[cases.test_compat_gbmap_exchange]
+defines.ROLE = 0
+defines.GBMAP = [false, true]
+defines.BMBAD = [false, true]
+# count erases
+defines.ERASE_CYCLES = 0xffffffff
+if = [
+    'ROLE == 2 || LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
+    '!BMBAD || GBMAP',
+]
+in = 'lfs3.c'
+code = '''
+    #define TEST_COMPAT_GBMAP_N 12
+    #define TEST_COMPAT_GBMAP_BAD 8
+    #define TEST_COMPAT_GBMAP_SIZE(i) \
+        ((const lfs3_size_t[]){0, 7, 100, 1000, 5000, 20000}[(i) % 6])
+    #define TEST_COMPAT_GBMAP_DATA(i, buffer) do { \
+        uint32_t prng_ = 42 + (i); \
+        for (lfs3_size_t j_ = 0; j_ < TEST_COMPAT_GBMAP_SIZE(i); j_++) { \
+            (buffer)[j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+    } while (0)
+    uint8_t *wbuf = malloc(20000);
+    uint8_t *rbuf = malloc(20000+1);
+    assert(wbuf && rbuf);
+    lfs3_t lfs3;
+
+    if (ROLE == 0 || ROLE == 1) {
+        // make the image
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mkdir(&lfs3, "dir") => 0;
+        for (lfs3_size_t i = 0; i < TEST_COMPAT_GBMAP_N; i++) {
+            char name[256];
+            sprintf(name, "dir/file%03x", i);
+            TEST_COMPAT_GBMAP_DATA(i, wbuf);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            lfs3_file_write(&lfs3, &file, wbuf, TEST_COMPAT_GBMAP_SIZE(i))
+                    => TEST_COMPAT_GBMAP_SIZE(i);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_setattr(&lfs3, "dir", 'a', "gbmap?", 6) => 0;
+
+        // mark some free blocks bad in the gbmap, as a driver that tracks
+        // bad blocks would
+        #ifdef LFS3_GBMAP
+        if (BMBAD) {
+            lfs3_size_t marked = 0;
+            for (lfs3_block_t b = BLOCK_COUNT-1;
+                    b > 0 && marked < TEST_COMPAT_GBMAP_BAD;
+                    b--) {
+                lfs3_bid_t bid;
+                lfs3_bid_t weight;
+                lfs3_stag_t tag = lfs3_gbmap_lookupnext(&lfs3,
+                        &lfs3.gbmap.b, b, &bid, &weight, NULL);
+                assert(tag >= 0);
+                if (tag == LFS3_TAG_BMFREE || tag == LFS3_TAG_BMERASED) {
+                    lfs3_gbmap_set(&lfs3, &lfs3.gbmap.b, b,
+                            LFS3_TAG_BMBAD, NULL) => 0;
+                    marked += 1;
+                }
+            }
+            assert(marked == TEST_COMPAT_GBMAP_BAD);
+            lfs3_alloc_syncgbmap(&lfs3) => 0;
+        }
+        #endif
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    if (ROLE == 2) {
+        // load the image
+        const char *path = getenv("TEST_COMPAT_GBMAP_IMAGE");
+        assert(path);
+        FILE *f = fopen(path, "rb");
+        assert(f);
+        uint8_t *block = malloc(BLOCK_SIZE);
+        assert(block);
+        for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+            size_t d = fread(block, 1, BLOCK_SIZE, f);
+            assert(d == BLOCK_SIZE);
+            CFG->erase(CFG, b) => 0;
+            CFG->prog(CFG, b, 0, block, BLOCK_SIZE) => 0;
+        }
+        assert(fgetc(f) == EOF);
+        fclose(f);
+        free(block);
+    }
+
+    if (ROLE == 0 || ROLE == 2) {
+        // check the image
+        #define TEST_COMPAT_GBMAP_CK() do { \
+            struct lfs3_info info; \
+            int err_ = lfs3_stat(&lfs3, "dir", &info); \
+            assert(!err_); \
+            assert(info.type == LFS3_TYPE_DIR); \
+            uint8_t abuf[6]; \
+            lfs3_ssize_t d_ = lfs3_getattr(&lfs3, "dir", 'a', abuf, 6); \
+            assert(d_ == 6); \
+            assert(memcmp(abuf, "gbmap?", 6) == 0); \
+            for (lfs3_size_t i = 0; i < TEST_COMPAT_GBMAP_N; i++) { \
+                char name[256]; \
+                sprintf(name, "dir/file%03x", i); \
+                TEST_COMPAT_GBMAP_DATA(i, wbuf); \
+                lfs3_file_t file; \
+                err_ = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY); \
+                assert(!err_); \
+                d_ = lfs3_file_read(&lfs3, &file, rbuf, 20000+1); \
+                assert(d_ == (lfs3_ssize_t)TEST_COMPAT_GBMAP_SIZE(i)); \
+                assert(memcmp(rbuf, wbuf, TEST_COMPAT_GBMAP_SIZE(i)) == 0); \
+                err_ = lfs3_file_close(&lfs3, &file); \
+                assert(!err_); \
+            } \
+            err_ = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA); \
+            assert(!err_); \
+        } while (0)
+
+        // any build can read any image, without writing
+        lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+        lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        TEST_COMPAT_GBMAP_CK();
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_emubd_progs(CFG) => progs;
+        lfs3_emubd_erases(CFG) => erases;
+
+        // only builds with LFS3_GBMAP can write images with a gbmap, and
+        // LFS3_YES_GBMAP builds can only write images with a gbmap
+        int expected = 0;
+        #ifndef LFS3_GBMAP
+        if (GBMAP) {
+            expected = LFS3_ERR_NOTSUP;
+        }
+        #endif
+        #ifdef LFS3_YES_GBMAP
+        if (!GBMAP) {
+            expected = LFS3_ERR_NOTSUP;
+        }
+        #endif
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => expected;
+        lfs3_emubd_progs(CFG) => progs;
+        lfs3_emubd_erases(CFG) => erases;
+
+        if (!expected) {
+            // find any blocks marked bad
+            lfs3_block_t bad[TEST_COMPAT_GBMAP_BAD];
+            lfs3_emubd_swear_t bad_wear[TEST_COMPAT_GBMAP_BAD];
+            lfs3_emubd_sio_t bad_progs[TEST_COMPAT_GBMAP_BAD];
+            lfs3_size_t bad_count = 0;
+            #ifdef LFS3_GBMAP
+            #define TEST_COMPAT_GBMAP_FINDBAD(count) do { \
+                count = 0; \
+                for (lfs3_block_t b = 0; b < BLOCK_COUNT;) { \
+                    lfs3_bid_t bid_; \
+                    lfs3_bid_t weight_; \
+                    lfs3_stag_t tag_ = lfs3_gbmap_lookupnext(&lfs3, \
+                            &lfs3.gbmap.b, b, &bid_, &weight_, NULL); \
+                    assert(tag_ >= 0); \
+                    for (; b <= bid_; b++) { \
+                        if (tag_ == LFS3_TAG_BMBAD) { \
+                            assert(count < TEST_COMPAT_GBMAP_BAD); \
+                            bad[count] = b; \
+                            count += 1; \
+                        } \
+                    } \
+                } \
+            } while (0)
+            if (lfs3_f_isgbmap(lfs3.flags)) {
+                TEST_COMPAT_GBMAP_FINDBAD(bad_count);
+            }
+            #endif
+            assert(bad_count == ((BMBAD) ? TEST_COMPAT_GBMAP_BAD : 0));
+            for (lfs3_size_t j = 0; j < bad_count; j++) {
+                bad_wear[j] = lfs3_emubd_wear(CFG, bad[j]);
+                bad_progs[j] = lfs3_emubd_blockprogs(CFG, bad[j]);
+            }
+
+            // fill the disk, free some space, and fill it again, a few
+            // times, so the gbmap is repopulated
+            lfs3_size_t created = 0;
+            for (int pass = 0; pass < 4; pass++) {
+                while (true) {
+                    char name[256];
+                    sprintf(name, "fill%04x", created);
+                    memset(wbuf, 'f', 2*BLOCK_SIZE);
+                    lfs3_file_t file;
+                    int err = lfs3_file_open(&lfs3, &file, name,
+                            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+                    assert(!err || err == LFS3_ERR_NOSPC);
+                    if (err) {
+                        break;
+                    }
+                    created += 1;
+                    lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                            wbuf, 2*BLOCK_SIZE);
+                    assert(d == 2*BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+                    err = lfs3_file_close(&lfs3, &file);
+                    assert(!err || err == LFS3_ERR_NOSPC);
+                    if (d < 0 || err) {
+                        break;
+                    }
+                }
+
+                // remove every other fill file
+                for (lfs3_size_t i = pass % 2; i < created; i += 2) {
+                    char name[256];
+                    sprintf(name, "fill%04x", i);
+                    int err = lfs3_remove(&lfs3, name);
+                    assert(!err || err == LFS3_ERR_NOENT);
+                }
+            }
+
+            // bad blocks were never erased or progged, and are still
+            // marked bad
+            for (lfs3_size_t j = 0; j < bad_count; j++) {
+                assert(lfs3_emubd_wear(CFG, bad[j]) == bad_wear[j]);
+                assert(lfs3_emubd_blockprogs(CFG, bad[j]) == bad_progs[j]);
+            }
+            #ifdef LFS3_GBMAP
+            if (lfs3_f_isgbmap(lfs3.flags)) {
+                lfs3_size_t bad_count_;
+                TEST_COMPAT_GBMAP_FINDBAD(bad_count_);
+                assert(bad_count_ == bad_count);
+            }
+            #undef TEST_COMPAT_GBMAP_FINDBAD
+            #endif
+
+            // and our image is still there
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            TEST_COMPAT_GBMAP_CK();
+            lfs3_unmount(&lfs3) => 0;
+        }
+        #undef TEST_COMPAT_GBMAP_CK
+    }
+
+    free(wbuf);
+    free(rbuf);
+    #undef TEST_COMPAT_GBMAP_N
+    #undef TEST_COMPAT_GBMAP_BAD
+    #undef TEST_COMPAT_GBMAP_SIZE
+    #undef TEST_COMPAT_GBMAP_DATA
+'''

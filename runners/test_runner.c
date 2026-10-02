@@ -598,9 +598,11 @@ void test_trace_resume(void) {
 size_t test_malloc_fail = 0;
 size_t test_malloc_count = 0;
 size_t test_malloc_live = 0;
+size_t test_malloc_size = 0;
 
 void *test_malloc(size_t size) {
     test_malloc_count += 1;
+    test_malloc_size = size;
 
     if (test_malloc_fail) {
         test_malloc_fail -= 1;
@@ -629,6 +631,7 @@ static void test_malloc_reset(void) {
     test_malloc_fail = 0;
     test_malloc_count = 0;
     test_malloc_live = 0;
+    test_malloc_size = 0;
 }
 
 

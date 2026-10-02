@@ -906,6 +906,117 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that rewriting a fixed set of files doesn't leak blocks, the
+# gbmap allocates its own nodes, and old nodes must return to the free
+# pool by the next repopulation
+[cases.test_gbmap_leak]
+defines.N = 4
+defines.SIZE = ['FCACHE_SIZE/2', 'BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.REWRITES = 10000
+defines.WARMUP = 1000
+# GC=1 => run lfs3_fs_gc after every rewrite
+defines.GC = [false, true]
+if = 'LFS3_IFDEF_GC(true, !GC)'
+in = 'lfs3.c'
+code = '''
+    // gc may pre-erase, which needs revision perturbation
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | LFS3_F_GBMAP
+                | LFS3_IFDEF_REVPERTURB(LFS3_F_REVPERTURB, 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | LFS3_IFDEF_REVPERTURB(LFS3_M_REVPERTURB, 0),
+            CFG) => 0;
+
+    // count the blocks the gbmap says are in use
+    #define TEST_GBMAP_LEAK_INUSE(inuse_) do { \
+        inuse_ = 0; \
+        for (lfs3_bid_t bid_ = 0; bid_ < BLOCK_COUNT;) { \
+            lfs3_bid_t bid__; \
+            lfs3_bid_t weight_; \
+            lfs3_stag_t tag_ = lfs3_gbmap_lookupnext(&lfs3, \
+                    &lfs3.gbmap.b, bid_, &bid__, &weight_, NULL); \
+            assert(tag_ >= 0); \
+            if (tag_ == LFS3_TAG_BMINUSE) { \
+                inuse_ += bid__+1 - bid_; \
+            } \
+            bid_ = bid__+1; \
+        } \
+    } while (0)
+
+    lfs3_block_t usage_max = 0;
+    lfs3_block_t inuse_max = 0;
+    for (uint32_t r = 0; r < REWRITES; r++) {
+        for (lfs3_size_t n = 0; n < N; n++) {
+            char name[256];
+            sprintf(name, "file%03x", n);
+            uint32_t prng = r*N + n;
+            uint8_t wbuf[SIZE];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+            lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        if (GC) {
+            #ifdef LFS3_GC
+            lfs3_fs_gc(&lfs3) => 0;
+            #endif
+        }
+
+        // usage, and what the gbmap thinks is in use, must stop growing
+        // once the gbmap has been repopulated a few times
+        lfs3_sblock_t usage = lfs3_fs_usage(&lfs3);
+        assert(usage > 0);
+        lfs3_block_t inuse;
+        TEST_GBMAP_LEAK_INUSE(inuse);
+        if (r < WARMUP) {
+            usage_max = lfs3_max(usage_max, (lfs3_block_t)usage);
+            inuse_max = lfs3_max(inuse_max, inuse);
+        } else {
+            if ((lfs3_block_t)usage > usage_max+2
+                    || inuse > inuse_max+2) {
+                printf("rewrite %"PRIu32": usage %"PRId32" (max %"PRIu32"), "
+                        "gbmap in-use %"PRIu32" (max %"PRIu32")\n",
+                        r, usage, usage_max, inuse, inuse_max);
+            }
+            assert((lfs3_block_t)usage <= usage_max+2);
+            assert(inuse <= inuse_max+2);
+        }
+    }
+    #undef TEST_GBMAP_LEAK_INUSE
+
+    // check our files
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    for (lfs3_size_t n = 0; n < N; n++) {
+        char name[256];
+        sprintf(name, "file%03x", n);
+        uint32_t prng = (REWRITES-1)*N + n;
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+
+        lfs3_file_t file;
+        uint8_t rbuf[SIZE];
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that lookgbmap_thresh repopulates the gbmap when known blocks
 # <= lookgbmap_thresh
 [cases.test_gbmap_lookgbmap_thresh]

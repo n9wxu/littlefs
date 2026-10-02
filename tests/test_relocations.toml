@@ -2062,3 +2062,129 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+
+# test that a metadata pair relocates before either of its blocks is
+# erased more than block_recycles+1 times since the pair was allocated
+#
+# the mroot anchor, blocks 0 and 1, can't relocate, littlefs extends the
+# mroot chain instead, so it is left out
+[cases.test_relocations_wear_bound]
+defines.BLOCK_RECYCLES = [0, 1, 4, 16, 100]
+defines.ERASE_CYCLES = 0xffffffff
+defines.BLOCK_SIZE = 512
+# MDIR=0 => commit to the mroot
+# MDIR=1 => commit to an mdir in the mtree
+defines.MDIR = [0, 1]
+# relocations to watch
+defines.RELOCATIONS = 4
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "target",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // find the pair holding our target
+    #define TEST_WEAR_BOUND_PAIR(pair) do { \
+        const char *path_ = "target"; \
+        lfs3_mdir_t mdir_; \
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(&lfs3, &path_, \
+                &mdir_, NULL); \
+        assert(tag_ == LFS3_TAG_REG); \
+        (pair)[0] = mdir_.r.blocks[0]; \
+        (pair)[1] = mdir_.r.blocks[1]; \
+    } while (0)
+
+    // for an mdir in the mtree, add files until the target is not in
+    // the mroot
+    lfs3_block_t pair[2];
+    TEST_WEAR_BOUND_PAIR(pair);
+    for (lfs3_size_t i = 0;
+            MDIR && lfs3_mptr_cmp(pair, lfs3.mroot.r.blocks) == 0;
+            i++) {
+        // a bit hacky, but this catches infinite loops
+        LFS3_ASSERT(i < BLOCK_COUNT);
+
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(i % 26), 32);
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, 32) => 32;
+        lfs3_file_close(&lfs3, &file) => 0;
+        TEST_WEAR_BOUND_PAIR(pair);
+    }
+
+    // erases of each block since its pair was allocated
+    lfs3_emubd_swear_t *base = malloc(
+            BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    lfs3_emubd_swear_t *pre = malloc(
+            BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    assert(base && pre);
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        base[b] = lfs3_emubd_wear(CFG, b);
+    }
+
+    // commit to the target's pair until we've seen enough relocations
+    lfs3_size_t relocations = 0;
+    lfs3_size_t compactions = 0;
+    for (uint32_t i = 0; relocations < RELOCATIONS; i++) {
+        // a bit hacky, but this catches pairs that never relocate
+        LFS3_ASSERT(i < 1000000);
+
+        for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+            pre[b] = lfs3_emubd_wear(CFG, b);
+        }
+
+        lfs3_setattr(&lfs3, "target", 'a', &i, sizeof(i)) => 0;
+
+        lfs3_block_t pair_[2];
+        TEST_WEAR_BOUND_PAIR(pair_);
+        if (lfs3_mptr_cmp(pair_, pair) != 0) {
+            // count erases of a new block from before this commit
+            for (int j = 0; j < 2; j++) {
+                if (pair_[j] != pair[0] && pair_[j] != pair[1]) {
+                    base[pair_[j]] = pre[pair_[j]];
+                }
+            }
+            pair[0] = pair_[0];
+            pair[1] = pair_[1];
+            relocations += 1;
+        }
+
+        for (int j = 0; j < 2; j++) {
+            if (lfs3_emubd_wear(CFG, pair[j]) != pre[pair[j]]) {
+                compactions += 1;
+            }
+            if (pair[j] <= 1) {
+                continue;
+            }
+            lfs3_emubd_swear_t erases
+                    = lfs3_emubd_wear(CFG, pair[j]) - base[pair[j]];
+            if (erases > BLOCK_RECYCLES+1) {
+                printf("block 0x%"PRIx32" of 0x{%"PRIx32",%"PRIx32"} "
+                        "erased %"PRId32" times since allocation\\n",
+                        pair[j], pair[0], pair[1], erases);
+            }
+            assert(erases <= BLOCK_RECYCLES+1);
+        }
+    }
+    printf("%"PRIu32" relocations, %"PRIu32" compactions\\n",
+            relocations, compactions);
+    #undef TEST_WEAR_BOUND_PAIR
+
+    // and everything is still readable
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint32_t v;
+    lfs3_getattr(&lfs3, "target", 'a', &v, sizeof(v)) => sizeof(v);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    free(base);
+    free(pre);
+'''
