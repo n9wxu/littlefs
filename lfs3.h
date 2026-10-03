@@ -73,6 +73,18 @@ typedef uint32_t lfs3_ocompat_t;
 #define LFS3_FILE_MAX 2147483647
 #endif
 
+// Maximum number of runs of bad blocks kept in RAM until they can be
+// recorded in the gbmap, each costs two block addresses in lfs3_t. Bad
+// blocks found one after another share a run. If more go bad at once,
+// the smallest runs are forgotten until littlefs tries them again. Only
+// used with LFS3_GBMAP. Limited to <= 32.
+#ifndef LFS3_BADQ_SIZE
+#define LFS3_BADQ_SIZE 4
+#endif
+#if LFS3_BADQ_SIZE < 1 || LFS3_BADQ_SIZE > 32
+#error "LFS3_BADQ_SIZE must be in 1..32"
+#endif
+
 
 // Possible error codes, these are negative to allow
 // valid positive return values
@@ -311,6 +323,10 @@ enum lfs3_type {
 #define LFS3_I_RDONLY   0x00000001  // Mounted read only
 #ifdef LFS3_GBMAP
 #define LFS3_I_GBMAP    0x02000000  // Global on-disk block-map in use
+#endif
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+#define LFS3_I_BADBLOCKS \
+                        0x04000000  // Bad blocks not yet marked on disk
 #endif
 #define LFS3_I_FLUSH    0x00000040  // Mounted with LFS3_M_FLUSH
 #define LFS3_I_SYNC     0x00000080  // Mounted with LFS3_M_SYNC
@@ -1446,6 +1462,19 @@ typedef struct lfs3 {
             lfs3_block_t count;
         } preeraser;
         #endif
+        #if !defined(LFS3_RDONLY)
+        // runs of bad blocks not yet marked in the gbmap, the first
+        // checked were in use when we last looked, we look again after
+        // 2^backoff commits
+        struct lfs3_badq {
+            lfs3_block_t blocks[LFS3_BADQ_SIZE];
+            lfs3_block_t weights[LFS3_BADQ_SIZE];
+            uint8_t count;
+            uint8_t checked;
+            uint8_t commits;
+            uint8_t backoff;
+        } badq;
+        #endif
         lfs3_btree_t b;
         lfs3_btree_t b_p;
     } gbmap;
@@ -1843,6 +1872,9 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
 // Note: Result is best effort. If files share COW structures, the returned
 // usage may be larger than the filesystem actually is.
 //
+// With the gbmap, blocks marked bad are included, since they can't be
+// used either.
+//
 // Returns the number of allocated blocks, or a negative error code on failure.
 lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
 
@@ -1931,10 +1963,48 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 
 // Disable the global on-disk block-map
 //
+// Note this forgets any bad blocks, see lfs3_fs_mkbad.
+//
 // Returns LFS3_ERR_NOENT if no gbmap is found, or a negative error code
 // on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_rmgbmap(lfs3_t *lfs3);
+#endif
+
+// Mark a block as bad
+//
+// littlefs never erases or programs a block marked bad, and keeps the
+// mark in the gbmap across mounts. littlefs marks blocks bad itself when
+// an erase or prog fails with LFS3_ERR_CORRUPT, this is for blocks known
+// to be bad some other way, such as a NAND factory bad-block table.
+//
+// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
+// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap,
+// LFS3_ERR_BUSY if the block is in use, or a negative error code on
+// failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// Clear a block's bad mark
+//
+// The block can be allocated again once it is free.
+//
+// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
+// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap, or a
+// negative error code on failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// Find the next bad block
+//
+// This includes bad blocks not yet marked on disk, see LFS3_I_BADBLOCKS.
+//
+// Returns the first bad block >= block, LFS3_ERR_NOENT if there are no
+// more bad blocks, or a negative error code on failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block);
 #endif
 
 
