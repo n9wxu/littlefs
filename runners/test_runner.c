@@ -635,6 +635,56 @@ static void test_malloc_reset(void) {
 }
 
 
+// caches for littlefs without malloc
+#ifdef LFS3_NO_MALLOC
+void *test_buffer(int i, size_t size) {
+    static void *buffers[3];
+    static size_t sizes[3];
+    assert(i >= 0 && i < 3);
+    if (size > sizes[i]) {
+        buffers[i] = realloc(buffers[i], size);
+        assert(buffers[i]);
+        sizes[i] = size;
+    }
+    return buffers[i];
+}
+
+#define TEST_FILES 16
+
+static struct test_file {
+    const lfs3_file_t *file;
+    struct lfs3_file_cfg cfg;
+    size_t size;
+} test_files[TEST_FILES];
+
+int test_file_open(lfs3_t *lfs3, lfs3_file_t *file,
+        const char *path, uint32_t flags) {
+    // find a cache no open file is using
+    struct test_file *f = NULL;
+    for (size_t i = 0; i < TEST_FILES && !f; i++) {
+        const lfs3_handle_t *h = lfs3->handles;
+        while (h && h != (const lfs3_handle_t*)test_files[i].file) {
+            h = h->next;
+        }
+        if (!h || test_files[i].file == file) {
+            f = &test_files[i];
+        }
+    }
+    assert(f);
+
+    if (lfs3->cfg->fcache_size > f->size) {
+        f->cfg.fcache_buffer = realloc(f->cfg.fcache_buffer,
+                lfs3->cfg->fcache_size);
+        assert(f->cfg.fcache_buffer);
+        f->size = lfs3->cfg->fcache_size;
+    }
+    f->cfg.fcache_size = lfs3->cfg->fcache_size;
+    f->file = file;
+    return lfs3_file_opencfg(lfs3, file, path, flags, &f->cfg);
+}
+#endif
+
+
 // test prng
 uint32_t test_prng(uint32_t *state) {
     // A simple xorshift32 generator, easily reproducible. Keep in mind

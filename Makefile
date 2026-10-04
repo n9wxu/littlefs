@@ -43,6 +43,8 @@ RDONLY_DIR ?= $(BUILDDIR)/rdonly
 RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 COMPAT_DIR ?= $(BUILDDIR)/compat
+NOMALLOC_DIR ?= $(BUILDDIR)/nomalloc
+NOMALLOC_TESTS ?= tests/test_badblocks_gbmap.toml
 
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
@@ -607,6 +609,18 @@ test-compat-gbmap:
 				|| exit 1 ; \
 		done ; \
 	done
+
+## Run the bad-block suites without malloc
+#
+# Builds a runner with LFS3_NO_MALLOC and LFS3_GBMAP, so any lfs3_malloc
+# fails, gives littlefs static caches and each file its own cache, and
+# runs test_badblocks_gbmap in it. Everything goes in NOMALLOC_DIR.
+.PHONY: test-nomalloc
+test-nomalloc:
+	$(MAKE) BUILDDIR=$(NOMALLOC_DIR) LFS3_NO_MALLOC=1 LFS3_GBMAP=1 \
+		TESTS="$(NOMALLOC_TESTS)" test-runner
+	./scripts/test.py -R$(NOMALLOC_DIR)/runners/test_runner $(TESTFLAGS) \
+		$(notdir $(NOMALLOC_TESTS:.toml=))
 
 ## List the tests
 .PHONY: test-list list-tests

@@ -68,6 +68,11 @@
         .shrub_size                     = SHRUB_SIZE,
         .fragment_size                  = FRAGMENT_SIZE,
         .crystal_thresh                 = CRYSTAL_THRESH,
+        #ifdef LFS3_NO_MALLOC
+        .rcache_buffer                  = test_buffer(0, RCACHE_SIZE),
+        .pcache_buffer                  = test_buffer(1, PCACHE_SIZE),
+        .lookahead_buffer               = test_buffer(2, LOOKAHEAD_SIZE),
+        #endif
     };
     struct lfs3_cfg *TEST_CFG = &_cfg;
 #endif

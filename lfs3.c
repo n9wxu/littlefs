@@ -13727,13 +13727,17 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 }
 
 // default file config
+#ifndef LFS3_NO_MALLOC
 static const struct lfs3_file_cfg lfs3_file_defaultcfg = {0};
+#endif
 
+#ifndef LFS3_NO_MALLOC
 int lfs3_file_open(lfs3_t *lfs3, lfs3_file_t *file,
         const char *path, uint32_t flags) {
     return lfs3_file_opencfg(lfs3, file, path, flags,
             &lfs3_file_defaultcfg);
 }
+#endif
 
 // clean up resources
 static void lfs3_file_close_(lfs3_t *lfs3, lfs3_file_t *file) {

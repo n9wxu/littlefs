@@ -58,9 +58,13 @@ void test_trace(const char *fmt, ...);
 #endif
 
 // override lfs3_malloc/lfs3_free so tests can count allocations and
-// inject allocation failures
+// inject allocation failures, unless littlefs has no malloc at all
+#ifndef LFS3_NO_MALLOC
 #define LFS3_MALLOC test_malloc
 #define LFS3_FREE test_free
+#else
+#include <stdlib.h>
+#endif
 
 
 // note these are indirectly included in any generated files
@@ -167,6 +171,21 @@ extern size_t test_malloc_fail;
 extern size_t test_malloc_count;
 extern size_t test_malloc_live;
 extern size_t test_malloc_size;
+
+// without malloc, littlefs needs its caches given to it, test_buffer
+// lends the runner's cache buffers, at least size bytes, and
+// lfs3_file_open gives each file a cache of fcache_size bytes
+//
+// a file's cache is free again once the file is no longer open
+#ifdef LFS3_NO_MALLOC
+void *test_buffer(int i, size_t size);
+
+struct lfs3;
+struct lfs3_file;
+int test_file_open(struct lfs3 *lfs3, struct lfs3_file *file,
+        const char *path, uint32_t flags);
+#define lfs3_file_open test_file_open
+#endif
 
 // deterministic prng for pseudo-randomness in tests
 uint32_t test_prng(uint32_t *state);
