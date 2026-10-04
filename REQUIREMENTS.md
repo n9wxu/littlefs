@@ -991,12 +991,19 @@ littlefs shall survive a power loss while blocks are wearing out.
 - **Source:** Derived: the combination of LFS3-PL-01 and LFS3-FAIL-11.
 - **Measure:** reentrant case results, and the NOSPC classification at end
   of life.
-- **Pass:** NEW reentrant variants of `exhaustion::spam_file_fuzz` pass
-  under `-Plinear` with `ERASE_CYCLES=10` in B-DEF.
+- **Pass:** `exhaustion::spam_file_pl_fuzz` passes under `-Plinear` with
+  `ERASE_CYCLES=10` in B-DEF, B-YGB and B-BIG. The wear under test is the
+  workload's: a format interrupted before the workload starts is repeated,
+  and the case resets the wear of every block format writes (the anchor
+  blocks 0 and 1, and block 2, the gbmap root, when the gbmap is enabled)
+  before each repeat. A format with block 2 worn out is LFS3-FAIL-16 and
+  LFS3-BAD-14, not this requirement.
 - **Fail:** any permutation fails, or end of life is reported as anything
   other than `LFS3_ERR_NOSPC`.
-- **Verified by:** NEW. `test_exhaustion` has no reentrant case.
-- **Status:** Untested.
+- **Verified by:** `exhaustion::spam_file_pl_fuzz` (NEW-10).
+- **Status:** Partly tested on `v3-integration`: passes in B-DEF and B-BIG;
+  60 permutations fail in B-YGB because ten interrupted formats wear out
+  block 2 before the workload starts (issue #4).
 - **When:** nightly.
 
 #### LFS3-PL-27
@@ -6752,7 +6759,7 @@ new environment (9.2).
 | LFS3-PL-20 | Untested | nightly | reentrant gc, `lfs3_fs_ck`, RDWR traversals, mount work flags |
 | LFS3-PL-22 | Untested | every CI run | reentrant format then mount |
 | LFS3-PL-25 | Untested | nightly | reentrant variants of `badblocks::region_*`/`alternating_*` |
-| LFS3-PL-26 | Untested | nightly | reentrant variant of `exhaustion::spam_file_fuzz` |
+| LFS3-PL-26 | Partly | nightly | `exhaustion::spam_file_pl_fuzz` in B-YGB |
 | LFS3-INT-03 | Partly | every CI run | fill the erased region after each commit with every byte value |
 | LFS3-INT-04 | Untested | every CI run | flip a bit after the last commit; the next commit must compact |
 | LFS3-INT-06 | Partly | every CI run | deterministic rollback of a non-latest mdir; mount must fail |

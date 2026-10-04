@@ -1279,8 +1279,11 @@ defines; procedure; pass and fail; extension needed.
   `BADBLOCK_BEHAVIOR` 0 and 1; `BLOCK_RECYCLES` 4; `SEED` range(5).
 - **Procedure:** Rewrite files until `LFS3_ERR_NOSPC`, with power losses
   throughout. After the first `LFS3_ERR_NOSPC`, remount read-only and read
-  everything.
-- **Pass:** A until end of life, then G.
+  everything. A format that a power loss interrupts is repeated; before each
+  repeat, reset the wear of every block format writes (blocks 0 and 1, and
+  block 2 with the gbmap), so that the workload, not the repeated formats,
+  wears the disk out.
+- **Pass:** A until end of life, then G, in B-DEF, B-YGB and B-BIG.
 - **Fail:** any error other than `LFS3_ERR_NOSPC` at end of life; data loss.
 - **Extension:** none.
 
