@@ -836,7 +836,8 @@ code = '''
     assert(test_malloc_live == live);
 
     // the handle is not registered, and the others are untouched
-    assert(lfs3.handles == handles);
+    bool registered = lfs3.handles != handles;
+    assert(!registered);
     assert(!lfs3_handle_isopen(&lfs3, &file.b.h));
     assert(lfs3_handle_isopen(&lfs3, &other.b.h));
     assert(lfs3_handle_isopen(&lfs3, &dir.h));
@@ -1009,7 +1010,8 @@ code = '''
 
         // the handle is released
         assert(!lfs3_handle_isopen(&lfs3, &file.b.h));
-        assert(lfs3.handles == NULL);
+        bool released = lfs3.handles == NULL;
+        assert(released);
 
         if (FAULT == 1) {
             for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
