@@ -1288,23 +1288,26 @@ defines; procedure; pass and fail; extension needed.
 
 - **File and case:** `tests/test_powerloss.toml`, `test_powerloss_dirty_mark`,
   internal (`in = 'lfs3.c'`).
-- **Covers:** DEG-11, DEG-12.
-- **Defines:** `SHAPE` 0 (inlined), 1 (bshrub), 2 (btree); `SYNCS` 0, 1, 3.
-- **Procedure:** Open a file for writing, write and sync `SYNCS` times,
-  close. After each step, look up the file's `DIRTY` tag on disk. Count
-  commits (`cfg->sync` calls) and erases of the session against the same
-  session with marks compiled out of the count. Then repeat without the
-  close, drop the `lfs3_t` as a power loss would, remount with emubd
-  counters, and check the repair, then the first `lfs3_fs_mkconsistent`.
-  Finally unmount and mount once more.
-- **Pass:** the first commit carries the mark and later syncs keep it;
-  close clears it with at most one extra commit; `SYNCS` 0 and `lfs3_set`
-  never mark; the mount after the dropped session rewrites the file's pair
-  and the pairs on its path once; the first mkconsistent removes the stale
-  mark; the last mount, after a clean shutdown, programs and erases
-  nothing.
-- **Fail:** any other mark state, an extra erase in a session, or a write
-  at a clean mount.
+- **Covers:** DEG-11, DEG-12, DEG-14.
+- **Defines:** `SIZE` 8 (inlined), `BLOCK_SIZE/8` (bshrub), `2*BLOCK_SIZE`
+  (btree); `SYNCS` 0, 1, 3.
+- **Procedure:** Format, and check that the `SETTLED` wcompat flag is
+  clear. Create a file, write `SIZE` bytes, sync `SYNCS` times, close,
+  looking up the file's `DIRTY` tag on disk after each step, and count the
+  progs and erases of the close. Reopen it, write, sync and close. Write a
+  second file with `lfs3_set`. Then write and sync a third file, and desync
+  and close it so nothing clears its mark, as a power loss would leave it;
+  unmount and remount with emubd counters. Check the stale mark, run
+  `lfs3_fs_mkconsistent`, then unmount and mount once more and read every
+  file back.
+- **Pass:** the stickynote commit carries the mark and every sync keeps
+  it; close clears it without an erase, programming at most two prog units
+  after a sync; `lfs3_set` never marks; the mount after the abandoned
+  session erases (it settles the pair) and sets the `SETTLED` wcompat
+  flag; the stale mark stays until `lfs3_fs_mkconsistent` removes it; the
+  last mount programs and erases nothing; every file reads back.
+- **Fail:** any other mark state, an erase at close, a write at a clean
+  mount, or a settled filesystem without the flag.
 - **Extension:** none.
 
 #### NEW-132 `ck::crystallize_flipped`
@@ -1321,6 +1324,21 @@ defines; procedure; pass and fail; extension needed.
   `LFS3_M_CKDATACKSUMS`.
 - **Fail:** the append succeeds and the flip is copied under the new
   block's checksum.
+- **Extension:** none.
+
+#### NEW-133 `ck::ckdata_unaligned`
+
+- **File and case:** `tests/test_ck.toml`, `test_ck_ckdata_unaligned`.
+  B-DEF and B-BIG.
+- **Covers:** CFG-10.
+- **Defines:** `PROG_SIZE` 16; `CRYSTAL_THRESH` 0, 1, 8; `SIZE` 2047, 2048,
+  2049, 4097.
+- **Procedure:** Write a file of `SIZE` bytes in one write and close it,
+  so its blocks are crystallized with tails that are not multiples of
+  `prog_size`. Run `lfs3_fs_ck` and `lfs3_file_ck` with `CKDATA`.
+- **Pass:** both return 0.
+- **Fail:** `LFS3_ERR_CORRUPT` on undamaged data: a block checksum that
+  covers the padding of its last prog instead of its `cksize` bytes.
 - **Extension:** none.
 
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`

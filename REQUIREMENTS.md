@@ -4884,9 +4884,12 @@ describes: 0, 1, less than `prog_size`, `block_size`, more than
   `crystal_thresh < prog_size`.
 - **Measure:** `fwrite::*` results.
 - **Pass:** `fwrite::*` pass with `CRYSTAL_THRESH` in {0, 1, 15, 512, 4096,
-  4097, -1} and `PROG_SIZE` in {1, 16}, in B-DEF.
-- **Fail:** any permutation fails.
-- **Verified by:** as listed.
+  4097, -1} and `PROG_SIZE` in {1, 16}, in B-DEF; a block crystallized
+  with `crystal_thresh < prog_size` checksums exactly its `cksize` bytes,
+  so `ck::ckdata_unaligned` (NEW-133) checks it clean.
+- **Fail:** any permutation fails, or a check reports an undamaged block
+  corrupt.
+- **Verified by:** as listed, NEW-133.
 - **Status:** Partly tested (512 and -1 only).
 - **When:** nightly.
 
@@ -6482,8 +6485,8 @@ documentation shall recommend the smallest repair that applies.
 
 littlefs shall mark a file dirty on disk in the first metadata commit of each
 write session, keep the mark through the session's syncs, and clear it in
-the commit that ends the session; the mark shall cost no erase and at most
-one extra commit per write session.
+the commit that ends the session; the mark shall add no commit except at
+most one at close, and no erase of its own.
 
 - **Source:** Proposal (issue #1). The mark tells a mount which metadata
   pairs the interrupted session was writing, so only those are repaired.
@@ -6491,13 +6494,15 @@ one extra commit per write session.
   erases of a session.
 - **Pass:** `powerloss::dirty_mark` (NEW-131) shows: a handle's first commit
   (a stickynote, a shrub commit, a sync) carries the mark; later syncs keep
-  it; `lfs3_file_close` clears it, with one small extra commit only when
-  nothing else is pending; a session that commits only at close, and
-  `lfs3_set`, never mark; a mark left by a power loss is removed by the
-  first `lfs3_fs_mkconsistent` after the mount that repaired it; no
-  session erases more than without marks.
+  it; `lfs3_file_close` clears it without an erase, with one small extra
+  commit only when nothing else is pending; a session that commits only at
+  close, and `lfs3_set`, never mark; a mark left by a power loss is removed
+  by the first `lfs3_fs_mkconsistent` after the mount that repaired it.
+  The mark's bytes bring mdir compactions forward: on the cost bench
+  (B.4) the number of commits is unchanged and erases grow by up to 16%
+  on small-file workloads, under 1% on W-LOG.
 - **Fail:** a session commit without the mark, a mark left after a clean
-  close, or an extra erase.
+  close, or an erase at close.
 - **Verified by:** NEW-131.
 - **Status:** Not implemented.
 - **When:** every CI run.
@@ -6547,7 +6552,7 @@ since the last mount that settled it, and every pair showing a power loss.
   behaviour-4 permutations of NEW-05, NEW-06, NEW-11 and
   `dirs::rm_many_2layers` pass criterion A; a pair written since the last
   mount costs one erase at the mount and one compaction at its next write,
-  and an unwritten settled pair costs nothing.
+  and an unwritten settled pair costs nothing (B.4).
 - **Fail:** a completed sync lost, or a settled pair rewritten again
   without a write.
 - **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
@@ -6565,16 +6570,26 @@ append to a block whose state may not read the same twice.
   differently launders a flipped bit under a fresh checksum.
 - **Measure:** the repair copy and the blocks littlefs appends to.
 - **Pass:** the repair copies the active block commit by commit, checking
-  each commit's checksum on the bytes it copies; a commit that fails is
-  treated as torn; the copy keeps the revision count so the global state is
-  unchanged, and its last commit carries a `SETTLED` note in a program unit
-  of its own; a fetch prefers a settled copy over an equal revision; the
-  first write to a settled pair, and to the older block of a pair whose
-  newer block failed to fetch, compacts instead of appending. NEW-08 and
-  NEW-130 pass with power losses during the repairs themselves.
-- **Fail:** a repair that commits bytes other than those checked, or an
-  append after a settled commit or a failed newer block.
-- **Verified by:** NEW-08, NEW-130.
+  each commit's checksum on the bytes it copies, over several reads, and
+  stops before a commit that fails or reads differently; the copy keeps
+  the revision count so the global state is unchanged, and its last
+  commit's `CKSUM` carries a settled generation (SPEC.md, settled copies),
+  padded so its checksum sits in a program unit of its own when there is
+  room; a fetch of two blocks with equal revision counts prefers the
+  settled copy, then the successor generation, then the longer log; the
+  first write to a settled pair, to either block of a pair with equal
+  revision counts, and to the older block of a pair whose newer block
+  failed to fetch, compacts instead of appending; the first mount that
+  finds a settled copy sets the `SETTLED` wcompat flag. NEW-08, NEW-130,
+  and the behaviour-4 permutations of NEW-05, NEW-06, NEW-11 and
+  `dirs::rm_many_2layers` pass with power losses during the repairs
+  themselves.
+- **Fail:** a repair that commits bytes other than those checked, an
+  append after a settled commit, a tie or a failed newer block, or a
+  settled copy on a filesystem without the `SETTLED` flag after a
+  read-write mount.
+- **Verified by:** NEW-08, NEW-130, NEW-131, NEW-05, NEW-06, NEW-11,
+  `dirs::rm_many_2layers`.
 - **Status:** Not implemented.
 - **When:** every CI run.
 
@@ -7285,6 +7300,56 @@ Under GCC 13 on Ubuntu 24.04 (Docker), the default suite at `b10efaa`
 failed 56 of 634,616 permutations, all in test_badblocks, where glibc's
 FORTIFY checks caught the test sims' own overflow (fixed in `9ec4c44`).
 That run has not yet been repeated on the fixed branches.
+
+### B.4 Cost of the power-loss repair modes
+
+The same device and W-LOG as B.1 (r = 50, 10 minutes, one write session),
+plus two small-file workloads: W-SMALL rewrites 64 files of 100 bytes 4
+times (256 sessions of open, write, close), and W-APPEND opens one file,
+appends 32 bytes and closes it, 1000 times. Each run formats, writes 7
+seed files, remounts, then runs the workload. "Clean" ends with
+`lfs3_file_close` and `lfs3_unmount`; "cut" drops the `lfs3_t` after the
+last sync, as a power loss would. Commits counts `cfg->sync` calls (one per
+commit or data flush). Base is `3c0afc90`, before the dirty mark and
+settling; A is the default mode, B is `LFS3_M_SETTLE`.
+
+| Workload | `prog_size` | Mode | Session commits | Session erases | Mount erases, clean | Mount erases, cut | Next mount |
+|---|---|---|---|---|---|---|---|
+| W-LOG | 256 | base | 4,494 | 867 | 0 | 0 | 0 |
+| W-LOG | 256 | A | 4,495 | 867 | 0 | 3 | 0 |
+| W-LOG | 256 | B | 4,495 | 868 | 3 | 3 | 0 |
+| W-LOG | 16 | base | 4,398 | 400 | 0 | 0 | 0 |
+| W-LOG | 16 | A | 4,440 | 402 | 0 | 3 | 0 |
+| W-LOG | 16 | B | 4,440 | 402 | 3 | 3 | 0 |
+| W-SMALL | 256 | base | 331 | 35 | 0 | 0 | 0 |
+| W-SMALL | 256 | A | 330 | 39 | 0 | 3 | 0 |
+| W-SMALL | 256 | B | 331 | 40 | 13 | 13 | 0 |
+| W-SMALL | 16 | base | 328 | 26 | 0 | 0 | 0 |
+| W-SMALL | 16 | A | 330 | 30 | 0 | 3 | 0 |
+| W-SMALL | 16 | B | 330 | 31 | 12 | 12 | 0 |
+| W-APPEND | 256 | base | 3,556 | 365 | 0 | 0 | 0 |
+| W-APPEND | 256 | A | 3,556 | 366 | 0 | 3 | 0 |
+| W-APPEND | 256 | B | 3,556 | 366 | 3 | 3 | 0 |
+| W-APPEND | 16 | base | 3,556 | 228 | 0 | 0 | 0 |
+| W-APPEND | 16 | A | 3,556 | 252 | 0 | 3 | 0 |
+| W-APPEND | 16 | B | 3,556 | 252 | 3 | 3 | 0 |
+
+Observations:
+
+- The dirty mark rides in commits the session makes anyway: commit counts
+  are unchanged. Its bytes bring compactions forward, up to 16% more
+  erases on small-file workloads, under 1% on W-LOG.
+- A mount in mode A after a power cut settles the dirty file's pair and its
+  path: 2 erases here, plus a third, once per filesystem, for the commit
+  that sets the `SETTLED` wcompat flag. A clean mount writes nothing but
+  scans each mdir for marks: 146 to 216 reads on W-LOG, 578 to 850 on
+  W-SMALL.
+- Mode B pays at every read-write mount after writes, clean or not: one
+  erase per pair written since the last mount (3 for one file, 12 to 13 for
+  64 files spread over many pairs), and a compaction at each pair's next
+  write. A mount with nothing written since costs nothing.
+- Mount times stay within one erase per settled pair, 45 ms typical on
+  this part.
 
 ## Appendix C. Coverage index
 
