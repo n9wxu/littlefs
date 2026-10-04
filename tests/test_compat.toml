@@ -1600,3 +1600,236 @@ code = '''
     #undef TEST_COMPAT_GBMAP_SIZE
     #undef TEST_COMPAT_GBMAP_DATA
 '''
+
+
+
+## byte-order tests ##
+
+# test that images move between hosts of either byte order
+#
+# A fixed workload of dirs, files of every layout, attrs and kv entries,
+# then a check that every lfs3_stat, lfs3_dir_read, lfs3_get and
+# lfs3_getattr gives what the workload wrote
+#
+# ROLE=0 => make the image and check it, the same build on both sides
+# ROLE=1 => only make the image, with -d this writes it to a file
+# ROLE=2 => check the image in the file TEST_COMPAT_ENDIAN_IMAGE
+#
+# ROLE=1 and ROLE=2 append the lfs3_fs_cksum they find to the file
+# TEST_COMPAT_ENDIAN_CKSUM, if set
+#
+# make test-compat-endian exchanges images between a native build and a
+# build for a host of the other byte order run under qemu
+[cases.test_compat_endian_exchange]
+defines.ROLE = 0
+code = '''
+    #define TEST_COMPAT_ENDIAN_N 8
+    #define TEST_COMPAT_ENDIAN_SIZE(i) \
+        ((const lfs3_size_t[]){ \
+            0, 7, 200, 1000, 5000, 70000, 3*4096+17, 300}[(i)])
+    #define TEST_COMPAT_ENDIAN_DATA(i, buffer, size) do { \
+        uint32_t prng_ = 0x6c667333 + (i); \
+        for (lfs3_size_t j_ = 0; j_ < (size); j_++) { \
+            (buffer)[j_] = TEST_PRNG(&prng_) & 0xff; \
+        } \
+    } while (0)
+    const char *paths[TEST_COMPAT_ENDIAN_N] = {
+        "empty",
+        "a/inline",
+        "a/fragment",
+        "a/b/fragments",
+        "a/b/block",
+        "c/btree",
+        "c/appended",
+        "renamed",
+    };
+    const char *dirs[4] = {"/", "a", "a/b", "c"};
+    uint8_t *wbuf = malloc(70000);
+    uint8_t *rbuf = malloc(70000+1);
+    assert(wbuf && rbuf);
+    lfs3_t lfs3;
+
+    if (ROLE == 0 || ROLE == 1) {
+        // make the image
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mkdir(&lfs3, "a") => 0;
+        lfs3_mkdir(&lfs3, "a/b") => 0;
+        lfs3_mkdir(&lfs3, "c") => 0;
+        lfs3_mkdir(&lfs3, "c/gone") => 0;
+        for (lfs3_size_t i = 0; i < TEST_COMPAT_ENDIAN_N; i++) {
+            lfs3_size_t size = TEST_COMPAT_ENDIAN_SIZE(i);
+            TEST_COMPAT_ENDIAN_DATA(i, wbuf, size);
+            // written in one go, in small appends, through lfs3_set, or
+            // under another name
+            const char *path = (i == 7) ? "c/gone/torename" : paths[i];
+            if (i == 2) {
+                lfs3_set(&lfs3, path, wbuf, size) => 0;
+                continue;
+            }
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, path,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            lfs3_size_t chunk = (i == 3 || i == 6) ? 61 : lfs3_max(size, 1);
+            for (lfs3_size_t j = 0; j < size; j += chunk) {
+                lfs3_size_t d = lfs3_min(chunk, size-j);
+                lfs3_file_write(&lfs3, &file, &wbuf[j], d) => d;
+                if (i == 3 || i == 6) {
+                    lfs3_file_sync(&lfs3, &file) => 0;
+                }
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_rename(&lfs3, "c/gone/torename", paths[7]) => 0;
+        lfs3_remove(&lfs3, "c/gone") => 0;
+
+        // attrs of a few sizes on dirs, files and "/"
+        for (lfs3_size_t i = 0; i < 4; i++) {
+            uint8_t abuf[255];
+            for (lfs3_size_t t = 0; t < 3; t++) {
+                lfs3_size_t size = (const lfs3_size_t[]){1, 16, 255}[t];
+                memset(abuf, 'A' + i*3 + t, size);
+                lfs3_setattr(&lfs3, dirs[i], 'a'+t, abuf, size) => 0;
+                lfs3_setattr(&lfs3, paths[i+1], 'a'+t, abuf, size) => 0;
+            }
+        }
+
+        // a file-attached attr
+        uint8_t fattr[4] = {0x01, 0x02, 0x03, 0x04};
+        struct lfs3_attr attr = {
+            .type = 'f',
+            .flags = LFS3_A_WRONLY,
+            .buffer = fattr,
+            .buffer_size = 4,
+        };
+        struct lfs3_file_cfg filecfg = {.attrs = &attr, .attr_count = 1};
+        lfs3_file_t file;
+        lfs3_file_opencfg(&lfs3, &file, paths[5], LFS3_O_WRONLY,
+                &filecfg) => 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        if (ROLE == 1) {
+            uint32_t cksum;
+            lfs3_fs_cksum(&lfs3, &cksum) => 0;
+            const char *cksum_path = getenv("TEST_COMPAT_ENDIAN_CKSUM");
+            if (cksum_path) {
+                FILE *f = fopen(cksum_path, "a");
+                assert(f);
+                fprintf(f, "%08"PRIx32"\n", cksum);
+                fclose(f);
+            }
+        }
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    if (ROLE == 2) {
+        // load the image
+        const char *path = getenv("TEST_COMPAT_ENDIAN_IMAGE");
+        assert(path);
+        FILE *f = fopen(path, "rb");
+        assert(f);
+        uint8_t *block = malloc(BLOCK_SIZE);
+        assert(block);
+        for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+            size_t d = fread(block, 1, BLOCK_SIZE, f);
+            assert(d == BLOCK_SIZE);
+            CFG->erase(CFG, b) => 0;
+            CFG->prog(CFG, b, 0, block, BLOCK_SIZE) => 0;
+        }
+        assert(fgetc(f) == EOF);
+        fclose(f);
+        free(block);
+    }
+
+    if (ROLE == 0 || ROLE == 2) {
+        // check the image, read-only first, so we know reading writes
+        // nothing
+        for (int rdonly = 1; rdonly >= 0; rdonly--) {
+            lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG)
+                    => 0;
+
+            // every file
+            for (lfs3_size_t i = 0; i < TEST_COMPAT_ENDIAN_N; i++) {
+                lfs3_size_t size = TEST_COMPAT_ENDIAN_SIZE(i);
+                TEST_COMPAT_ENDIAN_DATA(i, wbuf, size);
+                struct lfs3_info info;
+                lfs3_stat(&lfs3, paths[i], &info) => 0;
+                assert(info.type == LFS3_TYPE_REG);
+                assert(info.size == size);
+                assert(strcmp(info.name, strrchr(paths[i], '/')
+                        ? strrchr(paths[i], '/')+1
+                        : paths[i]) == 0);
+                lfs3_size(&lfs3, paths[i]) => size;
+                lfs3_get(&lfs3, paths[i], rbuf, 70000+1) => size;
+                assert(memcmp(rbuf, wbuf, size) == 0);
+            }
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, "c/gone", &info) => LFS3_ERR_NOENT;
+
+            // every dir, in order
+            const char *listings[4][5] = {
+                {"a", "c", "empty", "renamed", NULL},
+                {"b", "fragment", "inline", NULL},
+                {"block", "fragments", NULL},
+                {"appended", "btree", NULL},
+            };
+            for (lfs3_size_t i = 0; i < 4; i++) {
+                lfs3_dir_t dir;
+                lfs3_dir_open(&lfs3, &dir, dirs[i]) => 0;
+                lfs3_dir_read(&lfs3, &dir, &info) => 0;
+                assert(strcmp(info.name, ".") == 0);
+                lfs3_dir_read(&lfs3, &dir, &info) => 0;
+                assert(strcmp(info.name, "..") == 0);
+                for (lfs3_size_t j = 0; listings[i][j]; j++) {
+                    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+                    assert(strcmp(info.name, listings[i][j]) == 0);
+                    char path[256];
+                    sprintf(path, "%s/%s",
+                            (i == 0) ? "" : dirs[i], listings[i][j]);
+                    struct lfs3_info info_;
+                    lfs3_stat(&lfs3, path + (i == 0), &info_) => 0;
+                    assert(info.type == info_.type);
+                    assert(info.size == info_.size);
+                }
+                lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+                lfs3_dir_close(&lfs3, &dir) => 0;
+            }
+
+            // every attr
+            for (lfs3_size_t i = 0; i < 4; i++) {
+                uint8_t abuf[255];
+                for (lfs3_size_t t = 0; t < 3; t++) {
+                    lfs3_size_t size = (const lfs3_size_t[]){1, 16, 255}[t];
+                    memset(abuf, 'A' + i*3 + t, size);
+                    lfs3_getattr(&lfs3, dirs[i], 'a'+t, rbuf, 256) => size;
+                    assert(memcmp(rbuf, abuf, size) == 0);
+                    lfs3_getattr(&lfs3, paths[i+1], 'a'+t, rbuf, 256)
+                            => size;
+                    assert(memcmp(rbuf, abuf, size) == 0);
+                }
+            }
+            uint8_t fattr[4];
+            lfs3_getattr(&lfs3, paths[5], 'f', fattr, 4) => 4;
+            assert(memcmp(fattr, "\x01\x02\x03\x04", 4) == 0);
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+            uint32_t cksum;
+            lfs3_fs_cksum(&lfs3, &cksum) => 0;
+            const char *cksum_path = getenv("TEST_COMPAT_ENDIAN_CKSUM");
+            if (rdonly && ROLE == 2 && cksum_path) {
+                FILE *f = fopen(cksum_path, "a");
+                assert(f);
+                fprintf(f, "%08"PRIx32"\n", cksum);
+                fclose(f);
+            }
+            lfs3_unmount(&lfs3) => 0;
+        }
+    }
+
+    free(wbuf);
+    free(rbuf);
+    #undef TEST_COMPAT_ENDIAN_N
+    #undef TEST_COMPAT_ENDIAN_SIZE
+    #undef TEST_COMPAT_ENDIAN_DATA
+'''
