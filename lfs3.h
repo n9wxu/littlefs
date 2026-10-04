@@ -117,6 +117,7 @@ enum lfs3_err {
     LFS3_ERR_NOMEM       = -12,  // No more memory available
     LFS3_ERR_NOATTR      = -61,  // No data/attr available
     LFS3_ERR_NAMETOOLONG = -36,  // File name too long
+    LFS3_ERR_BADFD       = -77,  // File handle in bad state
     LFS3_ERR_RANGE       = -34,  // Result out of range
 };
 
@@ -1757,10 +1758,12 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 // An explicit and successful call to either lfs3_file_sync or
 // lfs3_file_resync reverses this, marking the file as synchronized again.
 //
-// Some errors can leave a file partially updated, matching neither its
-// contents before nor after the failed operation. lfs3_file_sync then
-// returns LFS3_ERR_INVAL instead of writing it out, and only
-// lfs3_file_resync can recover the file.
+// Some errors can leave a file handle torn, matching neither the file's
+// contents before nor after the failed operation. Calls that would read,
+// write, flush, sync, check or size it then return LFS3_ERR_BADFD and
+// write nothing, as does lfs3_file_seek from LFS3_SEEK_END. Only
+// lfs3_file_resync, which drops the unsynchronized changes, or closing
+// the file recovers it.
 //
 // Returns a negative error code on failure.
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);

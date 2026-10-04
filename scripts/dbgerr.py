@@ -25,6 +25,7 @@ ERR_NOSPC       = -28   # No space left on device
 ERR_NOMEM       = -12   # No more memory available
 ERR_NOATTR      = -61   # No data/attr available
 ERR_NAMETOOLONG = -36   # File name too long
+ERR_BADFD       = -77   # File handle in bad state
 ERR_RANGE       = -34   # Result out of range
 
 

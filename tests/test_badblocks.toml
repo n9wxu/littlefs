@@ -6410,10 +6410,10 @@ code = '''
 '''
 
 # test that an error in the middle of a graft spanning many entries never
-# reaches disk, even if we try to sync
+# reaches disk or the application, even if we try to sync
 #
 # grafts can take more than one commit, so the file may be left
-# partially grafted
+# partially grafted, torn, which only lfs3_file_resync or close undo
 [cases.test_badblocks_graft_torn]
 defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
 # OP=0 => write
@@ -6482,20 +6482,51 @@ code = '''
         // try to sync anyways, this should either write a consistent
         // file or refuse
         err = lfs3_file_sync(&lfs3, &file);
-        assert(!err || err == LFS3_ERR_INVAL);
-        if (err == LFS3_ERR_INVAL) {
+        assert(!err || err == LFS3_ERR_BADFD);
+        if (err == LFS3_ERR_BADFD) {
             printf("--- badblock: 0x%x ---\n", badblock);
             torn += 1;
 
-            // only resync can recover
-            lfs3_file_sync(&lfs3, &file) => LFS3_ERR_INVAL;
-            lfs3_file_resync(&lfs3, &file) => 0;
-            lfs3_file_size(&lfs3, &file) => SIZE;
+            // a torn handle refuses anything that reads, writes or sizes
+            // it, and writes nothing
+            lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+            lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
             uint8_t rbuf[2*SIZE];
+            lfs3_file_sync(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_flush(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => LFS3_ERR_BADFD;
+            lfs3_file_write(&lfs3, &file, wbuf, CHUNK) => LFS3_ERR_BADFD;
+            lfs3_file_truncate(&lfs3, &file, SIZE/2) => LFS3_ERR_BADFD;
+            lfs3_file_fruncate(&lfs3, &file, SIZE/2) => LFS3_ERR_BADFD;
+            lfs3_file_size(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END)
+                    => LFS3_ERR_BADFD;
+            lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+                    => LFS3_ERR_BADFD;
+            assert(lfs3_emubd_progs(CFG) == progs);
+            assert(lfs3_emubd_erases(CFG) == erases);
+
+            // but its position still works
+            lfs3_file_seek(&lfs3, &file, CHUNK, LFS3_SEEK_SET) => CHUNK;
+            lfs3_file_seek(&lfs3, &file, CHUNK, LFS3_SEEK_CUR) => 2*CHUNK;
+            lfs3_file_tell(&lfs3, &file) => 2*CHUNK;
             lfs3_file_rewind(&lfs3, &file) => 0;
-            lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
-            assert(memcmp(rbuf, sim, SIZE) == 0);
-            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_desync(&lfs3, &file) => 0;
+
+            // only resync can recover, or close drops it without writing
+            if (torn % 2 == 0) {
+                lfs3_file_resync(&lfs3, &file) => 0;
+                lfs3_file_size(&lfs3, &file) => SIZE;
+                lfs3_file_rewind(&lfs3, &file) => 0;
+                lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+                assert(memcmp(rbuf, sim, SIZE) == 0);
+                lfs3_file_sync(&lfs3, &file) => 0;
+            } else {
+                lfs3_file_close(&lfs3, &file) => 0;
+                assert(lfs3_emubd_progs(CFG) == progs);
+                assert(lfs3_emubd_erases(CFG) == erases);
+                lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+            }
         }
         lfs3_file_close(&lfs3, &file) => 0;
 
