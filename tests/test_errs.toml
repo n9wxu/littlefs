@@ -608,6 +608,13 @@ code = '''
             assert(after == 0);
         }
 
+        // remove and rename leave their cleanup pending
+        if (!err) {
+            struct lfs3_fsinfo fsinfo;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(fsinfo.flags & LFS3_I_MKCONSISTENT);
+        }
+
         // check the call's own state
         if (CALL == TEST_ERRS_FORMAT) {
             // we can always format again
@@ -721,6 +728,10 @@ code = '''
         assert(!done || OP == LFS3_EMUBD_OP_SYNC || !err);
         test_errs_check(&lfs3, CALL, done);
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!(fsinfo.flags & LFS3_I_MKCONSISTENT));
 
         // calling again finishes the job, or finds it done
         if (CALL == TEST_ERRS_MKDIR) {
