@@ -6126,3 +6126,151 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+
+## P1 tests ##
+
+# attributes on the root directory, across remounts and an mroot chain
+# extension
+#
+# root attributes live in the mroot, so they must follow the mroot when
+# the mroot anchor extends the mroot chain and the mroot relocates
+[cases.test_attrs_root]
+# relocate on every other compaction, the anchor can't relocate so it
+# extends the mroot chain instead
+defines.BLOCK_RECYCLES = 0
+defines.BLOCK_SIZE = 512
+# four attrs of BLOCK_SIZE/8 don't fit in the mroot
+defines.SIZE = [1, 8, 'BLOCK_SIZE/16']
+# a file in the mroot that must not change
+defines.ROOTFILE = [false, true]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    if (ROOTFILE) {
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "cat",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", 4) => 4;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // a fixed set of attrs, 'n' is rewritten below
+    #define TEST_ATTRS_ROOT_VALUE(type, i, buffer) \
+        memset(buffer, 'a' + (((type) + (i)) % 26), SIZE)
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    const uint8_t types[3] = {'a', 'b', 'c'};
+    for (lfs3_size_t t = 0; t < 3; t++) {
+        TEST_ATTRS_ROOT_VALUE(types[t], 0, wbuf);
+        lfs3_setattr(&lfs3, "/", types[t], wbuf, SIZE) => 0;
+    }
+
+    // set has, getattr, sizeattr and the removed set agree
+    bool removed[3] = {false, false, false};
+    uint32_t n = 0;
+    bool has_n = false;
+    #define TEST_ATTRS_ROOT_CK() do { \
+        for (lfs3_size_t t = 0; t < 3; t++) { \
+            if (removed[t]) { \
+                assert(lfs3_sizeattr(&lfs3, "/", types[t]) \
+                        == LFS3_ERR_NOATTR); \
+                assert(lfs3_getattr(&lfs3, "/", types[t], rbuf, SIZE+1) \
+                        == LFS3_ERR_NOATTR); \
+                continue; \
+            } \
+            TEST_ATTRS_ROOT_VALUE(types[t], 0, wbuf); \
+            assert(lfs3_sizeattr(&lfs3, "/", types[t]) == SIZE); \
+            assert(lfs3_getattr(&lfs3, "/", types[t], rbuf, SIZE+1) \
+                    == SIZE); \
+            assert(memcmp(rbuf, wbuf, SIZE) == 0); \
+        } \
+        if (has_n) { \
+            TEST_ATTRS_ROOT_VALUE('n', n, wbuf); \
+            assert(lfs3_sizeattr(&lfs3, "/", 'n') == SIZE); \
+            assert(lfs3_getattr(&lfs3, "/", 'n', rbuf, SIZE+1) == SIZE); \
+            assert(memcmp(rbuf, wbuf, SIZE) == 0); \
+        } else { \
+            assert(lfs3_sizeattr(&lfs3, "/", 'n') == LFS3_ERR_NOATTR); \
+        } \
+        if (ROOTFILE) { \
+            lfs3_file_t file_; \
+            uint8_t fbuf_[5]; \
+            assert(lfs3_file_open(&lfs3, &file_, "cat", \
+                    LFS3_O_RDONLY) == 0); \
+            assert(lfs3_file_read(&lfs3, &file_, fbuf_, 5) == 4); \
+            assert(memcmp(fbuf_, "meow", 4) == 0); \
+            assert(lfs3_file_close(&lfs3, &file_) == 0); \
+        } \
+        struct lfs3_info info_; \
+        assert(lfs3_stat(&lfs3, "/", &info_) == 0); \
+        assert(info_.type == LFS3_TYPE_DIR); \
+    } while (0)
+    TEST_ATTRS_ROOT_CK();
+
+    // remount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+
+    // rewrite 'n' until the mroot has moved a few times, the first move
+    // extends the mroot chain if large attrs haven't already
+    lfs3_block_t mroot[2] = {lfs3.mroot.r.blocks[0], lfs3.mroot.r.blocks[1]};
+    lfs3_size_t moves = 0;
+    for (n = 0; moves < 4; n++) {
+        // a bit hacky, but this catches an mroot that never moves
+        assert(n < 100*BLOCK_COUNT);
+
+        TEST_ATTRS_ROOT_VALUE('n', n, wbuf);
+        lfs3_setattr(&lfs3, "/", 'n', wbuf, SIZE) => 0;
+        has_n = true;
+        if (lfs3_mptr_cmp(lfs3.mroot.r.blocks, mroot) != 0) {
+            mroot[0] = lfs3.mroot.r.blocks[0];
+            mroot[1] = lfs3.mroot.r.blocks[1];
+            moves += 1;
+            TEST_ATTRS_ROOT_CK();
+        }
+    }
+    n -= 1;
+    // the anchor can't relocate
+    assert(lfs3_mptr_cmp(lfs3.mroot.r.blocks,
+            LFS3_MPTR_MROOTANCHOR()) != 0);
+    TEST_ATTRS_ROOT_CK();
+
+    // remove one, and 'n'
+    lfs3_removeattr(&lfs3, "/", 'b') => 0;
+    removed[1] = true;
+    lfs3_removeattr(&lfs3, "/", 'n') => 0;
+    has_n = false;
+    TEST_ATTRS_ROOT_CK();
+    // removing again finds nothing
+    lfs3_removeattr(&lfs3, "/", 'b') => LFS3_ERR_NOATTR;
+    TEST_ATTRS_ROOT_CK();
+
+    // remount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // and set them again, after the extension
+    TEST_ATTRS_ROOT_VALUE('b', 0, wbuf);
+    lfs3_setattr(&lfs3, "/", 'b', wbuf, SIZE) => 0;
+    removed[1] = false;
+    n += 1;
+    TEST_ATTRS_ROOT_VALUE('n', n, wbuf);
+    lfs3_setattr(&lfs3, "/", 'n', wbuf, SIZE) => 0;
+    has_n = true;
+    TEST_ATTRS_ROOT_CK();
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_ATTRS_ROOT_CK
+    #undef TEST_ATTRS_ROOT_VALUE
+'''
