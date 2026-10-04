@@ -37,6 +37,7 @@ TEST_GCDA  := $(TEST_A:%.t.a.c=%.t.a.gcda)
 TEST_PERF  := $(TEST_RUNNER:%=%.perf)
 TEST_TRACE := $(TEST_RUNNER:%=%.trace)
 TEST_CSV   := $(TEST_RUNNER:%=%.csv)
+TEST_ERRLOG := $(TEST_RUNNER:%=%.errs)
 
 RDONLY_RUNNER ?= $(BUILDDIR)/runners/rdonly_runner
 RDONLY_DIR ?= $(BUILDDIR)/rdonly
@@ -623,6 +624,18 @@ test-nomalloc:
 	./scripts/test.py -R$(NOMALLOC_DIR)/runners/test_runner $(TESTFLAGS) \
 		$(notdir $(NOMALLOC_TESTS:.toml=))
 
+## Check the error codes the tests see against lfs3.h
+#
+# Runs the tests with TEST_ERRS set, so the runner records each error code
+# a public function returns, see runners/test_errs.h, then checks that
+# lfs3.h lists every one with its function, see scripts/ckerrs.py.
+.PHONY: test-errs
+test-errs: test-runner
+	rm -f $(TEST_ERRLOG)
+	TEST_ERRS=$(abspath $(TEST_ERRLOG)) \
+		./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
+	./scripts/ckerrs.py $(TEST_ERRLOG)
+
 ## List the tests
 .PHONY: test-list list-tests
 test-list list-tests: test-runner
@@ -961,6 +974,7 @@ clean:
 	rm -f $(TEST_PERF)
 	rm -f $(TEST_TRACE)
 	rm -f $(TEST_CSV)
+	rm -f $(TEST_ERRLOG)
 	rm -f $(RDONLY_RUNNER)
 	rm -f $(BUILDDIR)/runners/rdonly_runner.o
 	rm -rf $(RDONLY_DIR)
