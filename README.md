@@ -126,6 +126,8 @@ that conforms to the `C99` standard.
 All littlefs calls have the potential to return a negative error code. The
 errors can be either one of those found in the `enum lfs_error` in
 [lfs.h](lfs.h), or an error returned by the user's block device operations.
+What each code means, what firmware should do about it, and the state each
+call leaves behind, are in [ERRORS.md](ERRORS.md).
 
 In the configuration struct, the `prog` and `erase` function provided by the
 user may return a `LFS_ERR_CORRUPT` error if the implementation already can
@@ -193,6 +195,10 @@ More details on how littlefs works can be found in [DESIGN.md](DESIGN.md) and
 
 - [SPEC.md](SPEC.md) - The on-disk specification of littlefs with all the
   nitty-gritty details. May be useful for tooling development.
+
+- [ERRORS.md](ERRORS.md) - What each error code means, what to do about it,
+  and the state each call leaves after an error. Useful for firmware that
+  runs unattended.
 
 ## Testing
 
