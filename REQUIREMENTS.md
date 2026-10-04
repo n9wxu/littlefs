@@ -3529,6 +3529,38 @@ littlefs shall return the size of an existing attribute from
 - **Status:** Tested.
 - **When:** every CI run.
 
+#### LFS3-ATTR-14
+
+littlefs shall fill with zeros the bytes of a readable
+`lfs3_file_cfg.attrs` buffer past an attribute shorter than the buffer,
+whenever it loads or updates the buffer, and shall leave the buffer as the
+application set it when the attribute does not exist.
+
+- **Source:** Derived. `lfs3.h` is silent on these bytes; littlefs v2
+  states both rules for file attributes ("if the stored attribute is
+  smaller than the buffer, it will be padded with zeros", "If the
+  attribute is not found, it will be created implicitly", `lfs.h`). Without
+  `size`, an attribute's size is `buffer_size` (`lfs3.h`), so a writable
+  one writes the whole buffer back at every sync: unfilled bytes would put
+  whatever the stack held on disk (issue #2, found by valgrind). An
+  attribute that does not exist is created from the buffer, so the
+  application initialises that buffer.
+- **Measure:** buffer contents after open, after `lfs3_setattr` of a
+  shorter value, and after another handle syncs a shorter value; valgrind
+  over `test_attrs`.
+- **Pass:** `attrs::fattr_zerofill` (NEW-131) finds zeros past the
+  attribute and the application's bytes when the attribute is missing,
+  with and without `size`, in B-DEF, B-YGB and B-BIG, and
+  `test.py --valgrind -Pnone` over the CI valgrind suites reports nothing.
+- **Fail:** a non-zero byte past the attribute, a changed buffer for a
+  missing attribute, or a valgrind report.
+- **Verified by:** `attrs::fattr_zerofill` (NEW-131); the CI valgrind job.
+- **Status:** Known defect on `v3-integration` (issue #2): open and the
+  updates from `lfs3_setattr` and other handles' syncs leave the bytes past
+  the attribute untouched, and 9 `attrs::fattr_*` cases with `MODE=2,
+  MUTSIZE=0` fail under valgrind.
+- **When:** every CI run.
+
 ### 6.11 Key-value API (KV)
 
 #### LFS3-KV-01
@@ -6882,6 +6914,7 @@ new environment (9.2).
 | LFS3-ATTR-07 | Untested | every CI run | all 256 attribute types on one file |
 | LFS3-ATTR-10 | Partly | every CI run | `buffer_size = LFS3_ERR_NOATTR` removes at sync |
 | LFS3-ATTR-12 | Defect | every CI run | open with `LFS3_A_RDONLY | LFS3_A_LAZY` (`attrs::fattr_rdonly` on v3-fix-files) |
+| LFS3-ATTR-14 | Defect | every CI run | zeros past a short attribute, `attrs::fattr_zerofill` |
 | LFS3-KV-04 | Defect | every CI run | `lfs3_set` above `file_limit` (`kv::set_fbig` on v3-fix-files) |
 | LFS3-KV-05 | Partly | every CI run | `lfs3_get`/`lfs3_size` on a directory |
 | LFS3-KV-08 | Untested | every CI run | `lfs3_get` on an uncreated file |
