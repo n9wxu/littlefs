@@ -14276,6 +14276,10 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                 pos + size,
                 file->b.b.r.weight));
 
+    // anything still in the pcache was left by an operation that failed,
+    // it must never reach disk, or our checksum
+    lfs3_bd_droppcache(lfs3);
+
     // resuming crystallization? or do we need to allocate a new block?
     if (!lfs3_o_isuncryst(file->b.h.flags)) {
         goto relocate;
@@ -14295,9 +14299,11 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             == file->leaf.weight);
 
     // before we write, claim the erased state!
+    //
+    // this includes our own, if we fail after programming anything we
+    // can't resume here, the bytes past our leaf are no longer erased
     for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
         if (lfs3_o_type(h->flags) == LFS3_TYPE_REG
-                && h != &file->b.h
                 && lfs3_bptr_block(&((lfs3_file_t*)h)->leaf.bptr)
                     == lfs3_bptr_block(&file->leaf.bptr)) {
             lfs3_bptr_claim(&((lfs3_file_t*)h)->leaf.bptr);
