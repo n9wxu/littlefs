@@ -421,6 +421,7 @@ enum lfs3_btype {
                         0x04000000  // Filesystem ckpointed during traversal
 #define LFS3_t_DIRTY    0x02000000  // Filesystem ckpointed outside traversal
 #define LFS3_t_STALE    0x01000000  // Block queue probably out-of-date
+#define LFS3_t_REPAIR   0x00008000  // Move data off of suspect blocks
 
 // an alias for all check work
 #define LFS3_T_CK (LFS3_T_CKMETA | LFS3_T_CKDATA)
@@ -804,6 +805,43 @@ struct lfs3_cfg {
     // repops at the risk of large latency spikes.
     #ifdef LFS3_GBMAP
     lfs3_block_t lookgbmap_thresh;
+    #endif
+
+    // Number of times to read a block again when it fails a check, in
+    // lfs3_fs_ck, lfs3_fs_gc, traversals, and mounts with LFS3_M_CKMETA
+    // or LFS3_M_CKDATA. Only data blocks and B-tree nodes are read again,
+    // their checksums are recorded where they're referenced.
+    //
+    // A read can fail while the supply is low and pass later, so a failed
+    // check doesn't prove the data is lost. A block that needed a retry
+    // stays listed by lfs3_fs_nextsuspect, and on a writable filesystem
+    // lfs3_fs_ck, lfs3_fs_gc and mount-time checks move its contents,
+    // exactly the bytes of a read that passed the checksum, to a new
+    // block. The old block is used again if it then erases and progs
+    // cleanly, and marked bad if it doesn't, or if it needs moving again
+    // in the same mount. LFS3_ERR_CORRUPT is returned only if every read
+    // fails. mdirs and mtree nodes aren't moved.
+    //
+    // 0 doesn't read again or move anything. Where the supply can sag or
+    // power can be lost mid-write, we suggest 3: a block that fails 4
+    // reads in a row is unlikely to be readable later.
+    #ifdef LFS3_GBMAP
+    lfs3_size_t ck_retries;
+    #endif
+
+    // Number of times lfs3_fs_ck, and mounts and formats with
+    // LFS3_M_CKMETA, LFS3_M_CKDATA, LFS3_F_CKMETA or LFS3_F_CKDATA, check
+    // every block.
+    //
+    // A bit that reads differently each time, such as one left
+    // metastable by a power loss, is more likely to be caught by more
+    // passes, though no number of passes proves a cell won't drift later.
+    // Each pass reads the whole filesystem. We suggest 2 for a check after
+    // an unexpected power loss, and 1 otherwise.
+    //
+    // Defaults to 1 pass when zero.
+    #ifdef LFS3_GBMAP
+    lfs3_size_t ck_passes;
     #endif
 };
 
@@ -1490,9 +1528,14 @@ typedef struct lfs3 {
             uint8_t backoff;
         } badq;
         // blocks that failed a read or check, oldest first, which isn't
-        // proof they're bad
+        // proof they're bad, which of them we've moved data off of, which
+        // we couldn't move this check, and the block we're moving data
+        // off of, if any
         struct lfs3_suspects {
             lfs3_block_t blocks[LFS3_SUSPECTS_SIZE];
+            uint32_t moved;
+            uint32_t stuck;
+            lfs3_sblock_t moving;
             uint8_t count;
         } suspects;
         #endif
@@ -1936,8 +1979,19 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3);
 // This actually supports all janitorial work, but spins until all work
 // is complete. See lfs3_fs_gc for incremental gc.
 //
-// Returns LFS3_ERR_CORRUPT if a checksum mismatch is found, or a negative
-// error code on failure.
+// With ck_retries, a data block or B-tree node that fails its check is
+// read again, and on a writable filesystem one that needed a retry is
+// moved to a new block, see ck_retries. With ck_passes every block is
+// checked more than once. Blocks that fail are listed by
+// lfs3_fs_nextsuspect.
+//
+// If a check still fails, the smallest repair that applies is usually
+// best: lfs3_file_ck finds the files that can't be read, which can be
+// removed, a damaged gbmap can be rebuilt with lfs3_fs_rmgbmap and
+// lfs3_fs_mkgbmap, and only damaged metadata needs a reformat.
+//
+// Returns LFS3_ERR_CORRUPT if a checksum mismatch is found that reading
+// again doesn't fix, or a negative error code on failure.
 int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags);
 
 // Perform any janitorial work that may be pending

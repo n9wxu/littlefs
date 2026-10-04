@@ -26,6 +26,8 @@
     TEST_DEFINE(FRAGMENT_SIZE,          LFS3_MIN(BLOCK_SIZE/16, 512)        )
     TEST_DEFINE(CRYSTAL_THRESH,         BLOCK_SIZE/16                       )
     TEST_DEFINE(LOOKGBMAP_THRESH,       BLOCK_COUNT/4                       )
+    TEST_DEFINE(CK_RETRIES,             0                                   )
+    TEST_DEFINE(CK_PASSES,              0                                   )
     TEST_DEFINE(ERASE_VALUE,            0xff                                )
     #ifndef TEST_KIWIBD
     TEST_DEFINE(ERASE_CYCLES,           0                                   )
@@ -55,6 +57,8 @@
         #ifdef LFS3_GBMAP
         .gc_lookgbmap_thresh            = GC_LOOKGBMAP_THRESH,
         .lookgbmap_thresh               = LOOKGBMAP_THRESH,
+        .ck_retries                     = CK_RETRIES,
+        .ck_passes                      = CK_PASSES,
         #endif
         #ifdef LFS3_PREERASE
         .gc_preerase_count              = GC_PREERASE_COUNT,

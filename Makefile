@@ -44,7 +44,7 @@ RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 COMPAT_DIR ?= $(BUILDDIR)/compat
 NOMALLOC_DIR ?= $(BUILDDIR)/nomalloc
-NOMALLOC_TESTS ?= tests/test_badblocks_gbmap.toml
+NOMALLOC_TESTS ?= tests/test_badblocks_gbmap.toml tests/test_repair.toml
 
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
@@ -614,7 +614,8 @@ test-compat-gbmap:
 #
 # Builds a runner with LFS3_NO_MALLOC and LFS3_GBMAP, so any lfs3_malloc
 # fails, gives littlefs static caches and each file its own cache, and
-# runs test_badblocks_gbmap in it. Everything goes in NOMALLOC_DIR.
+# runs test_badblocks_gbmap and test_repair in it. Everything goes in
+# NOMALLOC_DIR.
 .PHONY: test-nomalloc
 test-nomalloc:
 	$(MAKE) BUILDDIR=$(NOMALLOC_DIR) LFS3_NO_MALLOC=1 LFS3_GBMAP=1 \
