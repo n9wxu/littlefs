@@ -6071,3 +6071,218 @@ code = '''
     #undef TEST_ROLLBACK_LOAD
     #undef TEST_ROLLBACK_COMMIT
 '''
+
+# can a flipped bit in the source of a copy end up under a fresh
+# checksum?
+#
+# We flip one bit of committed data, check that lfs3_fs_ck finds it,
+# then make littlefs copy it. With the check option that covers the
+# source the copy must fail with LFS3_ERR_CORRUPT, without it the flip
+# may be copied, and once copied no check can find it. We print which
+# happened
+#
+# SOURCE=0 => mdir compaction, the source is an attr in an mdir
+# SOURCE=1 => B-tree node compaction into a new block, the source is a
+#             fragment in a file's B-tree node
+# SOURCE=2 => crystallization of fragments into a data block, the source
+#             is a fragment in a shrub
+# SOURCE=3 => crystallization of a data block into a new block, the
+#             source is the old data block
+#
+# CK=0 => no checks
+# CK=1 => LFS3_M_CKFETCHES
+# CK=2 => LFS3_M_CKMETAPARITY
+# CK=3 => LFS3_M_CKDATACKSUMS
+[cases.test_ck_launder]
+defines.SOURCE = [0, 1, 2, 3]
+defines.CK = [0, 1, 2, 3]
+# no shrubs for B-tree nodes, and no crystallization to keep fragments
+# there
+defines.SHRUB_SIZE = 'BLOCK_SIZE/4 * (SOURCE != 1)'
+defines.CRYSTAL_THRESH = '(SOURCE == 1) ? BLOCK_SIZE+1 : BLOCK_SIZE/16'
+if = [
+    'LFS3_IFDEF_CKFETCHES(true, CK != 1)',
+    'LFS3_IFDEF_CKMETAPARITY(true, CK != 2)',
+    'LFS3_IFDEF_CKDATACKSUMS(true, CK != 3)',
+]
+in = 'lfs3.c'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CK == 1) ? LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, -1) : 0)
+            | ((CK == 2) ? LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, -1) : 0)
+            | ((CK == 3) ? LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, -1) : 0);
+    // which check options cover which source, metadata parity covers
+    // tags and inline data, fetch checks cover B-tree nodes and data
+    // blocks, data checksums cover data blocks
+    bool covered = (SOURCE == 0) ? (CK == 2)
+            : (SOURCE == 1) ? (CK == 1 || CK == 2)
+            : (SOURCE == 2) ? (CK == 2)
+            : (CK == 1 || CK == 3);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // write our source
+    uint8_t wbuf[BLOCK_SIZE];
+    uint32_t prng = 42;
+    for (lfs3_size_t j = 0; j < BLOCK_SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_size_t size;
+    if (SOURCE == 0) {
+        size = 0;
+    } else if (SOURCE == 1 || SOURCE == 2) {
+        // a few fragments
+        size = 3*64;
+        for (lfs3_size_t j = 0; j < size; j += 64) {
+            lfs3_file_write(&lfs3, &file, &wbuf[j], 64) => 64;
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+    } else {
+        // a data block
+        size = BLOCK_SIZE;
+        lfs3_file_write(&lfs3, &file, wbuf, size) => size;
+    }
+    // where we flip, in the second fragment, or in the half of the data
+    // block a rewrite of the first half copies
+    lfs3_size_t pos = (SOURCE == 0) ? 8
+            : (SOURCE == 3) ? 3*BLOCK_SIZE/4
+            : 64+8;
+    lfs3_file_close(&lfs3, &file) => 0;
+    if (SOURCE == 0) {
+        lfs3_setattr(&lfs3, "octopus", 'a', wbuf, 16) => 0;
+    }
+
+    // find the byte we flip, and for B-tree nodes the end of the node's
+    // last commit
+    lfs3_block_t block;
+    lfs3_size_t off;
+    lfs3_size_t eoff = -1;
+    if (SOURCE == 0) {
+        lfs3_mdir_t mdir;
+        lfs3_data_t data;
+        lfs3_lookupattr(&lfs3, "octopus", 'a', &mdir, &data) => 0;
+        assert(lfs3_data_ondisk(&data));
+        assert(lfs3_data_size(&data) == 16);
+        block = data.u.disk.block;
+        off = data.u.disk.off + pos;
+    } else {
+        lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, pos, &bid, &weight, &bptr) => 0;
+        assert(lfs3_data_ondisk(&bptr.d));
+        assert(lfs3_bptr_isbptr(&bptr) == (SOURCE == 3));
+        lfs3_off_t start = bid - (weight-1);
+        block = bptr.d.u.disk.block;
+        off = bptr.d.u.disk.off + (pos - start);
+        if (SOURCE == 1) {
+            // in a B-tree node, not a shrub
+            assert(!lfs3_rbyd_isshrub(&file.b.b.r));
+            assert(block == file.b.b.r.blocks[0]);
+            lfs3_rbyd_t rbyd;
+            lfs3_rbyd_fetch(&lfs3, &rbyd, block, 0) => 0;
+            eoff = lfs3_rbyd_eoff(&rbyd);
+            assert(eoff < BLOCK_SIZE);
+        } else if (SOURCE == 2) {
+            assert(lfs3_rbyd_isshrub(&file.b.b.r));
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    printf("flipping 0x%x.%x+1\n", block, off);
+
+    // flip a bit in our source, and for B-tree nodes disturb the erased
+    // state so the next commit compacts the node into a new block
+    lfs3_emubd_flipbit(CFG, block, 8*off + 1) => 0;
+    if (SOURCE == 1) {
+        lfs3_emubd_flipbit(CFG, block, 8*eoff + 7) => 0;
+    }
+    lfs3_bd_droprcache(&lfs3);
+
+    // a check before the copy finds the flip
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+
+    // now make littlefs copy it
+    int err;
+    if (SOURCE == 0) {
+        lfs3_mdir_t mdir;
+        const char *path = "octopus";
+        lfs3_mtree_pathlookup(&lfs3, &path, &mdir, NULL) => LFS3_TAG_REG;
+        lfs3_mdir_claim(&mdir);
+        err = lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_ATTR('b'), 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(4),
+                LFS3_RATTR_ARG("meow"),
+                LFS3_RATTR_NULL));
+    } else {
+        err = lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDWR);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (!err) {
+            lfs3_ssize_t d;
+            if (SOURCE == 1) {
+                // a commit to the B-tree node
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                d = lfs3_file_write(&lfs3, &file, "meow", 4);
+            } else if (SOURCE == 2) {
+                // enough data to crystallize the fragments
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                d = lfs3_file_write(&lfs3, &file, &wbuf[size],
+                        BLOCK_SIZE/8);
+            } else {
+                // rewrite the first half of the block, the second half
+                // is copied into the new block
+                for (lfs3_size_t j = 0; j < BLOCK_SIZE/2; j++) {
+                    wbuf[j] = 'A' + (j % 26);
+                }
+                d = lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE/2);
+            }
+            assert(d >= 0 || d == LFS3_ERR_CORRUPT);
+            err = (d < 0) ? (int)d : 0;
+            int err_ = lfs3_file_close(&lfs3, &file);
+            assert(!err_ || err_ == LFS3_ERR_CORRUPT);
+            if (!err) {
+                err = err_;
+            }
+        }
+    }
+    assert(!err || err == LFS3_ERR_CORRUPT);
+
+    // with the check option that covers the source, the copy is refused
+    if (covered) {
+        assert(err == LFS3_ERR_CORRUPT);
+    }
+
+    // was the flip copied into a fresh checksum? a check after the copy
+    // still finds the flip if the source is still in use
+    int ck = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+    assert(!ck || ck == LFS3_ERR_CORRUPT);
+    if (err) {
+        // a refused copy leaves the flip where a check finds it
+        assert(ck == LFS3_ERR_CORRUPT);
+        printf("SOURCE=%d CK=%d: copy refused\n", (int)SOURCE, (int)CK);
+    } else {
+        // the copy reads without an error, flipped or not
+        uint8_t rbuf[BLOCK_SIZE+1];
+        uint8_t c;
+        if (SOURCE == 0) {
+            lfs3_getattr(&lfs3, "octopus", 'a', rbuf, 16) => 16;
+            c = rbuf[pos];
+        } else {
+            lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+            lfs3_file_seek(&lfs3, &file, pos, LFS3_SEEK_SET) => pos;
+            lfs3_file_read(&lfs3, &file, &c, 1) => 1;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        printf("SOURCE=%d CK=%d: copy done, %s, check after the copy %s\n",
+                (int)SOURCE, (int)CK,
+                (c != wbuf[pos]) ? "laundered" : "copied clean",
+                (ck) ? "finds the flip" : "passes");
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
