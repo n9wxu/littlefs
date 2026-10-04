@@ -1361,7 +1361,8 @@ flipped bits" of `lfs3.h`.
   each lookup, and a fetch that reads a flipped bit falls back to the older
   commit without an error. That is not a parity question; it belongs with
   issue #6, and class 2 of the case counts it.
-- **Status:** Untested as restated (D-5 is resolved by the restatement).
+- **Status:** Tested on v3-integration (59b39cf6). D-5 is resolved by the
+  restatement.
 - **When:** every CI run.
 
 #### LFS3-INT-20
@@ -1485,7 +1486,8 @@ that falls back to an older commit (issue #6).
 - **Fail:** a miss in class 0 or 1.
 - **Verified by:** `ck_readflip::spam` with `CK=1`; the class 1 assertion
   is pending as `ck_readflip_spam_ckfetches.patch`.
-- **Status:** Known defect (D-6).
+- **Status:** Known defect (D-6): 15 misses in 604 class 1 rounds of
+  `ck_readflip::spam` with `CK=1`, against 18 without fetch checks.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -1638,7 +1640,7 @@ for data blocks, and for metadata as LFS3-INT-19 says.
   in B-BIG.
 - **Fail:** flipped data is returned without an error.
 - **Verified by:** as listed; `ck_readflip::spam`, see LFS3-INT-19.
-- **Status:** Untested as restated, see LFS3-INT-19.
+- **Status:** Tested on v3-integration (59b39cf6).
 - **When:** every CI run.
 
 #### LFS3-FAIL-10
