@@ -369,7 +369,7 @@ Selected with `-DPOWERLOSS_BEHAVIOR=n` (`bd/lfs3_emubd.h:45-51`).
 | 1 | SOMEBITS | prog: one bit in the first `prog_size` bytes is programmed; erase: the old data stays and one bit flips |
 | 2 | MOSTBITS | is applied, then one bit in the first `prog_size` bytes (or, for an erase, anywhere) flips |
 | 3 | OOO | every block written since the last `sync` reverts, except the one being written |
-| 4 | METASTABLE | is applied, then one bit that it wrote (for an erase, one bit of the block) becomes metastable and reads of it return random values until the block's next prog or erase. Bits outside the interrupted operation never change: a flip there is bit rot (F12 to F14), not power loss |
+| 4 | METASTABLE | is applied, then one bit that it wrote (for an erase, one bit of the block) becomes metastable and reads of it return random values until the block is erased, as a half-programmed cell does; later progs elsewhere in the block don't settle it. Bits outside the interrupted operation never change: a flip there is bit rot (F12 to F14), not power loss |
 
 **PLB-TORN** means the set {0, 1, 2, 3}. **PLB-ALL** means {0, 1, 2, 3, 4}.
 
@@ -614,22 +614,26 @@ interrupted operation is torn as in SOMEBITS, MOSTBITS or OOO.
 
 #### LFS3-PL-03
 
-littlefs shall either return the last synced data or return
-`LFS3_ERR_CORRUPT` after a power loss that leaves a metastable bit, and shall
-not return other data without an error, when mounted with
-`LFS3_M_CKMETAPARITY | LFS3_M_CKDATACKSUMS`.
+littlefs shall return from every read after a power loss that leaves a
+metastable bit either data that a completed sync or the sync in progress
+wrote, or `LFS3_ERR_CORRUPT`, when mounted with
+`LFS3_M_CKMETAPARITY | LFS3_M_CKDATACKSUMS`, in both repair modes of
+LFS3-DEG-12 and LFS3-DEG-13.
 
 - **Source:** Proposal. #1111 ("Global-checksums") names metastability as a
   risk that checksums address. Without the ck* read checks, reads of
   already-fetched metadata are not re-checked (`tests/test_ck.toml:2725`).
-- **Measure:** data returned by reads and the error codes after remount.
-- **Pass:** NEW reentrant cases derived from `powerloss::spam_f_pl_fuzz`
-  and `powerloss::spam_dir_many`, accepting `LFS3_ERR_CORRUPT` as an outcome,
-  pass under `-Plinear -DPOWERLOSS_BEHAVIOR=4` in B-BIG.
-- **Fail:** any read returns data that is neither the last synced data nor
-  an error.
-- **Verified by:** NEW.
-- **Status:** Untested. No case uses METASTABLE.
+- **Measure:** data returned by reads and the error codes after remount,
+  under `POWERLOSS_BEHAVIOR=4` (the bit stays metastable until its block is
+  erased, 5.5).
+- **Pass:** `powerloss::metastable` (NEW-08) reports no read of data that
+  neither a completed sync nor the sync in progress wrote, with
+  `MODE` 0 (default) and 1 (`LFS3_M_SETTLE`), in B-BIG.
+- **Fail:** any read returns other data without an error.
+- **Verified by:** NEW-08.
+- **Status:** Untested. The tag-size flip that `LFS3_M_CKMETAPARITY` can't
+  catch (2 wrong reads in 11,039 power losses before the METASTABLE bit was
+  confined to the interrupted prog) is not seen once it is confined.
 - **When:** nightly.
 
 #### LFS3-PL-04
@@ -6297,21 +6301,31 @@ enough to keep operating on a best-effort basis.
 
 #### LFS3-DEG-01
 
-littlefs shall keep every file whose last sync completed as it was at that
-sync, after any power loss, and shall not build new committed state on the
-last writes of a file that was incomplete when power was lost.
+littlefs shall keep every file as of its last completed sync after any power
+loss, and shall re-establish the last writes of a write session that a power
+loss interrupted from bytes that pass their checksum before it builds new
+state on them. In the default mode this holds except in the residual cases
+of LFS3-DEG-12; with `LFS3_M_SETTLE` (LFS3-DEG-13) it holds except for a
+power loss during the mount-time repair itself.
 
 - **Source:** Proposal (issue #1). Data in flight at a power loss may be lost;
-  synced data may not. Today a commit interrupted by a power loss can read as
-  whole once, littlefs appends synced commits after it, and a later read of
-  the interrupted commit as torn drops them.
-- **Measure:** synced content after power loss, under every emubd power-loss
-  behaviour, METASTABLE included.
-- **Pass:** `powerloss::metastable` and the pending
-  `powerloss::metastable_builton` lose no completed sync.
+  synced data may not. An interrupted program can leave cells that read one
+  way at one mount and the other way at the next: a commit read as whole is
+  built on, and when it later reads as torn everything after it in its
+  block goes with it, or a pointer to a relocated pair reverts and every
+  commit since is lost with no error.
+- **Measure:** completed syncs after each power loss, under every emubd
+  power-loss behaviour, METASTABLE (persistent until erase) included.
+- **Pass:** `powerloss::metastable` (NEW-08) and
+  `powerloss::metastable_builton` (NEW-130) lose no completed sync with
+  `LFS3_M_SETTLE`, and in the default mode lose none outside the residual
+  cases, which they count and print; the behaviour-4 permutations of NEW-05,
+  NEW-06, NEW-11 and `dirs::rm_many_2layers`, mounted with `LFS3_M_SETTLE`,
+  pass criterion A.
 - **Fail:** a completed sync missing after a remount, with or without an
-  error.
-- **Verified by:** NEW-08 and the patch in issue #1.
+  error, outside the residual cases of the mode.
+- **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
+  `dirs::rm_many_2layers`.
 - **Status:** Known defect (issue #1).
 - **When:** every CI run (behaviours 0-5), nightly with permute(1).
 
@@ -6463,6 +6477,126 @@ documentation shall recommend the smallest repair that applies.
 - **Verified by:** NEW, with the repairing check of issue #19.
 - **Status:** Partly: `lfs3_fs_rmgbmap`/`lfs3_fs_mkgbmap` rebuild the gbmap.
 - **When:** before v3-beta.
+
+#### LFS3-DEG-11
+
+littlefs shall mark a file dirty on disk in the first metadata commit of each
+write session, keep the mark through the session's syncs, and clear it in
+the commit that ends the session; the mark shall cost no erase and at most
+one extra commit per write session.
+
+- **Source:** Proposal (issue #1). The mark tells a mount which metadata
+  pairs the interrupted session was writing, so only those are repaired.
+- **Measure:** the `DIRTY` tag on disk (SPEC.md) and the commits, progs and
+  erases of a session.
+- **Pass:** `powerloss::dirty_mark` (NEW-131) shows: a handle's first commit
+  (a stickynote, a shrub commit, a sync) carries the mark; later syncs keep
+  it; `lfs3_file_close` clears it, with one small extra commit only when
+  nothing else is pending; a session that commits only at close, and
+  `lfs3_set`, never mark; a mark left by a power loss is removed by the
+  first `lfs3_fs_mkconsistent` after the mount that repaired it; no
+  session erases more than without marks.
+- **Fail:** a session commit without the mark, a mark left after a clean
+  close, or an extra erase.
+- **Verified by:** NEW-131.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-DEG-12
+
+littlefs shall, at every read-write mount in its default mode, rewrite from
+verified bytes, before anything is appended, every metadata pair that holds
+a dirty file, every pair on the path from the mroot anchor to it, and every
+pair showing a power loss (a torn tail after its last commit, or a newer
+block that fails to fetch), skipping pairs already settled by an earlier
+repair and unwritten since; and shall write nothing at a mount when there is
+no such pair.
+
+- **Source:** Proposal (issue #1). Complete (clean) files are trusted as
+  they are, so a mount after a clean shutdown costs nothing.
+- **Measure:** which pairs a mount rewrites, the bd operations of a mount,
+  and the residual cases.
+- **Pass:** NEW-08 and NEW-130 with `MODE` 0 lose no completed sync outside
+  the residual cases; NEW-131 shows no prog or erase at a mount without a
+  dirty file or a torn pair. The residual cases are documented in `lfs3.h`:
+  a power loss during (1) the commit that clears a mark (a file's close,
+  `lfs3_set`), (2) a single-commit metadata operation (`lfs3_mkdir`'s
+  second commit, `lfs3_remove`, `lfs3_rename`, `lfs3_setattr`,
+  `lfs3_removeattr`, `lfs3_fs_grow`, the removals of
+  `lfs3_fs_mkconsistent`), or (3) the repair itself, when the interrupted
+  program reads as whole at one mount and as torn at a later one and
+  something was built on it in between.
+- **Fail:** a completed sync lost outside the residual cases, or a write at
+  a mount with nothing to repair.
+- **Verified by:** NEW-08, NEW-130, NEW-131.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-DEG-13
+
+littlefs shall, when mounted read-write with `LFS3_M_SETTLE`, rewrite from
+verified bytes, before anything is appended, every metadata pair written
+since the last mount that settled it, and every pair showing a power loss.
+
+- **Source:** Proposal (issue #1). For applications that can't accept the
+  residual cases of LFS3-DEG-12, at the cost of one erase per pair written
+  since the last mount.
+- **Measure:** completed syncs after power losses under METASTABLE; erases
+  per mount.
+- **Pass:** NEW-08 and NEW-130 with `MODE` 1 lose no completed sync; the
+  behaviour-4 permutations of NEW-05, NEW-06, NEW-11 and
+  `dirs::rm_many_2layers` pass criterion A; a pair written since the last
+  mount costs one erase at the mount and one compaction at its next write,
+  and an unwritten settled pair costs nothing.
+- **Fail:** a completed sync lost, or a settled pair rewritten again
+  without a write.
+- **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
+  `dirs::rm_many_2layers`.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-DEG-14
+
+littlefs shall rewrite a metadata pair only from bytes that pass the
+checksum of the commit they belong to, as read for the copy, and shall not
+append to a block whose state may not read the same twice.
+
+- **Source:** Proposal (issue #1). A copy that checksums bytes it read
+  differently launders a flipped bit under a fresh checksum.
+- **Measure:** the repair copy and the blocks littlefs appends to.
+- **Pass:** the repair copies the active block commit by commit, checking
+  each commit's checksum on the bytes it copies; a commit that fails is
+  treated as torn; the copy keeps the revision count so the global state is
+  unchanged, and its last commit carries a `SETTLED` note in a program unit
+  of its own; a fetch prefers a settled copy over an equal revision; the
+  first write to a settled pair, and to the older block of a pair whose
+  newer block failed to fetch, compacts instead of appending. NEW-08 and
+  NEW-130 pass with power losses during the repairs themselves.
+- **Fail:** a repair that commits bytes other than those checked, or an
+  append after a settled commit or a failed newer block.
+- **Verified by:** NEW-08, NEW-130.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-DEG-15
+
+littlefs shall check a data block's checksum on the bytes it copies when it
+crystallizes them into a new block, in every build, not only with
+`LFS3_M_CKDATACKSUMS`.
+
+- **Source:** Proposal (issue #1). The first append after a remount copies
+  the file's partial last block; an unchecked copy launders a flipped bit
+  under the new block's checksum.
+- **Measure:** the result of an append that copies a block with a flipped
+  bit.
+- **Pass:** `ck::crystallize_flipped` (NEW-132) returns
+  `LFS3_ERR_CORRUPT` from the append in B-DEF and B-BIG, and the file's
+  checksum still detects the flip.
+- **Fail:** the append succeeds, or the flip reads back under a valid
+  checksum.
+- **Verified by:** NEW-132.
+- **Status:** Known defect (issue #1).
+- **When:** every CI run.
 
 ## 7. Summary
 
@@ -6739,7 +6873,7 @@ new environment (9.2).
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
 | LFS3-GEN-07 | Untested | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-GEN-08 | Defect | every CI run | the LFS3-MOUNT-21 case, with bounds checks |
-| LFS3-PL-03 | Untested | nightly | reentrant cases under METASTABLE that accept `LFS3_ERR_CORRUPT`, B-BIG |
+| LFS3-PL-03 | Untested | nightly | `powerloss::metastable` (NEW-08) in both repair modes, B-BIG |
 | LFS3-PL-06 | Partly | every CI run | reentrant flush-without-sync case (explicit flush, `O_FLUSH`, `M_FLUSH`) |
 | LFS3-PL-11 | Partly | every CI run | reentrant `lfs3_setattr`/`lfs3_removeattr` on paths |
 | LFS3-PL-12 | Untested | every CI run | reentrant `lfs3_set` fuzz, values below and above the one-commit limit |

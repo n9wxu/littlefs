@@ -437,7 +437,7 @@ table (end of 6.4) lists the same classes.
 | F2 | Power loss, SOMEBITS | `POWERLOSS_BEHAVIOR=1`: one bit of the interrupted prog lands; an interrupted erase leaves old data with one bit flipped |
 | F3 | Power loss, MOSTBITS | `POWERLOSS_BEHAVIOR=2`: the interrupted write lands with one bit wrong |
 | F4 | Power loss, OOO | `POWERLOSS_BEHAVIOR=3`: every block written since the last sync reverts, except the one being written |
-| F5 | Power loss, METASTABLE | `POWERLOSS_BEHAVIOR=4`: the write lands and one bit it wrote (for an erase, one bit of the block) then reads randomly |
+| F5 | Power loss, METASTABLE | `POWERLOSS_BEHAVIOR=4`: the write lands and one bit it wrote (for an erase, one bit of the block) then reads randomly until the block is erased |
 | F6 | Bad block, PROGERROR | `BADBLOCK_BEHAVIOR=0` with `lfs3_emubd_mkbad`: prog returns `LFS3_ERR_CORRUPT` |
 | F7 | Bad block, ERASEERROR | `BADBLOCK_BEHAVIOR=1`: erase returns `LFS3_ERR_CORRUPT` |
 | F8 | Bad block, READERROR | `BADBLOCK_BEHAVIOR=2`: reads return `LFS3_ERR_CORRUPT`; at write time only `LFS3_M_CKPROGS` reads back |
@@ -473,7 +473,7 @@ error code or the code the block device returned (LFS3-GEN-05).
 |---|---|
 | A | **Power loss survived.** `lfs3_mount` returns 0. Every file reads back exactly as of its last `lfs3_file_sync` or `lfs3_file_close` that returned 0, or as of the sync that was in progress. Every `lfs3_mkdir`, `lfs3_remove` and `lfs3_rename` is either complete or absent. `lfs3_fs_ck(LFS3_CK_CKMETA \| LFS3_CK_CKDATA)` returns 0. The workload continues to the end. Allowed errors: `LFS3_ERR_EXIST` or `LFS3_ERR_NOENT` when the test repeats an operation that had already completed. (PL-01, PL-04 to PL-17) |
 | A1 | **Format survived.** After the loss, `lfs3_format` and then `lfs3_mount` both return 0, and criterion A holds for a workload that follows. (PL-22) |
-| B | **Metastable bit survived.** As A, except that `lfs3_mount`, reads and checks may also return `LFS3_ERR_CORRUPT`. With `LFS3_M_CKMETAPARITY \| LFS3_M_CKDATACKSUMS`, no read returns data that no completed sync wrote. (PL-03) |
+| B | **Metastable bit survived.** As A, except that `lfs3_mount`, reads and checks may also return `LFS3_ERR_CORRUPT`. With `LFS3_M_CKMETAPARITY \| LFS3_M_CKDATACKSUMS`, no read returns data that neither a completed sync nor the sync in progress wrote. No completed sync is lost: with `LFS3_M_SETTLE` none at all, in the default mode none outside the residual cases of LFS3-DEG-12, which the case counts and prints. (PL-03, DEG-01, DEG-12, DEG-13) |
 | C | **Relocated.** The operation returns 0 while a good free block exists, and `LFS3_ERR_NOSPC` only when none does. Content equals the model before and after remount. `lfs3_fs_ck(LFS3_CK_CKMETA \| LFS3_CK_CKDATA)` returns 0. (FAIL-01 to FAIL-06, FILE-10, FILE-11) |
 | D | **Detected.** The operation, or the next check that covers the block, returns `LFS3_ERR_CORRUPT`. No call returns flipped or stale data without an error, under the check options the test names. Nothing is programmed or erased on a block that held committed data before the fault. Files that do not use the bad block stay readable. (FAIL-04, FAIL-07 to FAIL-10, FAIL-17, INT-10 to INT-22) |
 | E | **Format refused.** `lfs3_format` returns a negative error, not 0. A format of a device without the bad block then succeeds. (FAIL-16) |
@@ -627,9 +627,9 @@ reverts, except the one being written.
 #### F5. Power loss, METASTABLE
 
 Injection: `POWERLOSS_BEHAVIOR=4`: the write lands, and one bit it wrote (for
-an erase, one bit of the block) then reads randomly until the block is next
-programmed or erased. Bytes outside the interrupted operation never change;
-`bd::metastable` checks this.
+an erase, one bit of the block) then reads randomly until the block is
+erased; later programs elsewhere in the block don't settle it. Bytes outside
+the interrupted operation never change; `bd::metastable` checks this.
 
 | Operations | Coverage | Tests | Recovered means |
 |---|---|---|---|
@@ -1061,10 +1061,12 @@ J-PL, and every checker in J-SAN.
 - **Torn behaviours in every build.** J-PL runs behaviours 1 to 3 in B-DEF and
   B-BIG only. Every other build runs ATOMIC.
 - **METASTABLE on existing cases.** Existing reentrant cases assert exact
-  success after every remount, which METASTABLE does not promise
-  (criterion B). Behaviour 4 runs only on cases written to accept
-  `LFS3_ERR_CORRUPT` (NEW-08, and the METASTABLE permutations of NEW-01,
-  NEW-05, NEW-06 and NEW-11).
+  success after every remount. In the default mode METASTABLE does not
+  promise that (LFS3-DEG-12 leaves residual cases), so behaviour 4 runs
+  only on cases written for criterion B (NEW-08, NEW-130, the METASTABLE
+  permutations of NEW-01), and on NEW-05, NEW-06, NEW-11 and
+  `dirs::rm_many_2layers` mounted with `LFS3_M_SETTLE`, where criterion A
+  holds.
 - **valgrind under power loss.** Power-loss `longjmp`s leak the test's own
   allocations, so valgrind runs `-Pnone` only. ASan and UBSan run the
   power-loss schedule.
@@ -1201,8 +1203,9 @@ defines; procedure; pass and fail; extension needed.
   `lfs3_fs_gc`, `lfs3_fs_mkconsistent`, `lfs3_fs_ck` with each work flag, a
   read-write traversal with `LFS3_T_COMPACT | LFS3_T_MKCONSISTENT |
   LFS3_T_LOOKAHEAD`, and a remount with each `LFS3_M_*` work flag.
-- **Pass:** A for behaviours 0 to 3, B for 4.
-- **Fail:** as A or B.
+- **Pass:** A for behaviours 0 to 3, and for 4 when every mount adds
+  `LFS3_M_SETTLE` (DEG-13).
+- **Fail:** as A.
 - **Extension:** none.
 
 #### NEW-06 `powerloss::gbmap_pl`
@@ -1218,7 +1221,7 @@ defines; procedure; pass and fail; extension needed.
   filesystem and assert that no referenced block lies in a BMFREE or BMERASED
   range inside the gbmap's known window.
 - **Pass:** the flag is consistent, the internal check holds, the standard
-  check passes (A; B for behaviour 4).
+  check passes (A; for behaviour 4 every mount adds `LFS3_M_SETTLE`).
 - **Fail:** a mount failure, a referenced block recorded free, a check
   failure.
 - **Extension:** none.
@@ -1242,17 +1245,82 @@ defines; procedure; pass and fail; extension needed.
 
 - **File and case:** `tests/test_powerloss.toml`,
   `test_powerloss_metastable`, reentrant, fuzz. B-BIG.
-- **Covers:** PL-03. Matrix F5 × O3 to O9 and O13.
-- **Defines:** `POWERLOSS_BEHAVIOR` 4; `BLOCK_RECYCLES` -1 and 1; `SEED`
-  range(20).
+- **Covers:** PL-03, DEG-01, DEG-12, DEG-13, DEG-14. Matrix F5 × O3 to O9
+  and O13.
+- **Defines:** `POWERLOSS_BEHAVIOR` 4; `MODE` 0 (default) and 1
+  (`LFS3_M_SETTLE`); `BLOCK_RECYCLES` -1 and 1; `SEED` range(20).
 - **Procedure:** Mount with `LFS3_M_CKMETAPARITY | LFS3_M_CKDATACKSUMS`. Run
   mkdir, remove, rename, writes, syncs, truncate, fruncate and
   `lfs3_fs_grow` by one block, with step attributes. After each power loss,
   if `lfs3_mount` returns `LFS3_ERR_CORRUPT`, count it and reformat. Read
-  every file; a read may return `LFS3_ERR_CORRUPT`.
+  every file; a read may return `LFS3_ERR_CORRUPT`. At each power loss the
+  case records which operation was running in the block emubd left
+  metastable (`lfs3_emubd_metastable`), so it can tell a residual case of
+  LFS3-DEG-12 from a protected one.
 - **Pass:** no read returns data other than the expected content at the
-  stored step or the step in progress (B); no assert.
-- **Fail:** wrong data without an error; an assert.
+  stored step or the step in progress (B); no completed sync is lost with
+  `MODE` 1, and with `MODE` 0 none while every block still metastable was
+  left by a protected operation; the residual losses are counted and
+  printed; no assert.
+- **Fail:** wrong data without an error; a completed sync lost outside the
+  residual cases; an assert.
+- **Extension:** E-10 (`lfs3_emubd_metastable`).
+
+#### NEW-130 `powerloss::metastable_builton`
+
+- **File and case:** `tests/test_powerloss.toml`,
+  `test_powerloss_metastable_builton`. B-DEF and B-BIG.
+- **Covers:** DEG-01, DEG-12, DEG-13, DEG-14.
+- **Defines:** `MODE` 0 and 1; `KIND` 0 (`lfs3_set`, a residual case in
+  the default mode) and 1 (a sync inside an open write session); `SEED`
+  range(8).
+- **Procedure:** On its own METASTABLE emubd, count the progs of the
+  commit, then repeat it with a power loss at its last prog, which leaves a
+  bit of that prog metastable until the block is erased. Mount until the
+  commit reads as whole, commit `b` with `lfs3_set` (a sync that returns 0),
+  unmount, then mount 64 more times and look for `b`.
+- **Pass:** `b` is never missing, except with `MODE` 0 and `KIND` 0, where
+  the losses are counted and printed.
+- **Fail:** `b` missing in any other permutation.
+- **Extension:** none.
+
+#### NEW-131 `powerloss::dirty_mark`
+
+- **File and case:** `tests/test_powerloss.toml`, `test_powerloss_dirty_mark`,
+  internal (`in = 'lfs3.c'`).
+- **Covers:** DEG-11, DEG-12.
+- **Defines:** `SHAPE` 0 (inlined), 1 (bshrub), 2 (btree); `SYNCS` 0, 1, 3.
+- **Procedure:** Open a file for writing, write and sync `SYNCS` times,
+  close. After each step, look up the file's `DIRTY` tag on disk. Count
+  commits (`cfg->sync` calls) and erases of the session against the same
+  session with marks compiled out of the count. Then repeat without the
+  close, drop the `lfs3_t` as a power loss would, remount with emubd
+  counters, and check the repair, then the first `lfs3_fs_mkconsistent`.
+  Finally unmount and mount once more.
+- **Pass:** the first commit carries the mark and later syncs keep it;
+  close clears it with at most one extra commit; `SYNCS` 0 and `lfs3_set`
+  never mark; the mount after the dropped session rewrites the file's pair
+  and the pairs on its path once; the first mkconsistent removes the stale
+  mark; the last mount, after a clean shutdown, programs and erases
+  nothing.
+- **Fail:** any other mark state, an extra erase in a session, or a write
+  at a clean mount.
+- **Extension:** none.
+
+#### NEW-132 `ck::crystallize_flipped`
+
+- **File and case:** `tests/test_ck.toml`, `test_ck_crystallize_flipped`.
+  B-DEF and B-BIG.
+- **Covers:** DEG-15.
+- **Defines:** `SIZE` so that the file's last block is partly full;
+  `BIT` range(8).
+- **Procedure:** Write and close a file whose last block is partly full,
+  remount, flip a bit inside that block's checksummed range with
+  `lfs3_emubd_flipbit`, then append enough to crystallize a new block.
+- **Pass:** the append returns `LFS3_ERR_CORRUPT`, without
+  `LFS3_M_CKDATACKSUMS`.
+- **Fail:** the append succeeds and the flip is copied under the new
+  block's checksum.
 - **Extension:** none.
 
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
@@ -1297,7 +1365,8 @@ defines; procedure; pass and fail; extension needed.
   writes call `lfs3_fs_gc` with `LFS3_GC_PREERASE` (one step). Writes include
   whole blocks, so that pre-erased blocks are claimed for data, and small
   appends, so that metadata uses them.
-- **Pass:** A (B for behaviour 4), and the prog-once check never fires: no
+- **Pass:** A (for behaviour 4 every mount adds `LFS3_M_SETTLE`), and the
+  prog-once check never fires: no
   block is programmed without an erase unless its erased-state checksum
   matched. An internal check at each remount: the on-disk gbmap window does
   not include a block that holds data.
@@ -1635,6 +1704,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | E-7 | **Allocator hook.** Wrap `malloc` and `free` in the test runner (`-Wl,--wrap=malloc`, as `BENCH_CFLAGS` already does for heap statistics) with counting and fail-the-k-th-call modes | `Makefile`, `runners/test_runner.c` | NEW-50, NEW-72, NEW-86, NEW-87 |
 | E-8 | **Read-only image harness.** The runner sets the write fields of `struct lfs3_cfg`, so it cannot build in B-RO. A small program, `runners/rdonly_runner.c`, mounts disk images written with `test.py -d` by B-DEF and B-YGB runs and compares them with a manifest written next to them | `runners/`, `Makefile` | NEW-46 |
 | E-9 | **Sparse device.** A block device whose memory grows only with the blocks written, for `block_count` near 2^31 (emubd keeps an array of block pointers) | `bd/` | NEW-88 |
+| E-10 | **Metastable query.** `lfs3_emubd_metastable(cfg, block)`: whether the block holds a metastable bit, so a case can tell which operation left it | `bd/lfs3_emubd.c` | NEW-08 |
 
 ### 6.5 P1: remaining features and failure modes
 
