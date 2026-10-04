@@ -24,7 +24,7 @@ jobs:
         arch: [x86_64, thumb, mips, powerpc]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -202,7 +202,7 @@ jobs:
 
       # create size statuses
       - name: upload-sizes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: sizes-${{matrix.arch}}
           path: sizes
@@ -248,7 +248,7 @@ jobs:
             }' | tee status/$(basename $f .csv).json
           done
       - name: upload-status-sizes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: status-sizes-${{matrix.arch}}
           path: status
@@ -265,7 +265,7 @@ jobs:
         arch: [x86_64, mips]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -302,7 +302,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -319,7 +319,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -340,7 +340,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -359,7 +359,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -386,7 +386,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -407,7 +407,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -425,7 +425,7 @@ jobs:
 
       # create cov statuses
       - name: upload-cov
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cov
           path: cov
@@ -461,7 +461,7 @@ jobs:
             }' | tee status/$(basename $f .csv)-$s.json
           done
       - name: upload-status-cov
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: status-cov
           path: status
@@ -477,7 +477,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, cov]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: ${{github.event_name == 'pull_request'}}
       - name: install
         if: ${{github.event_name == 'pull_request'}}
@@ -486,14 +486,14 @@ jobs:
           sudo apt-get install -qq gcc python3
           gcc --version
           python3 --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{github.event_name == 'pull_request'}}
         continue-on-error: true
         with:
           pattern: '{sizes,sizes-*}'
           merge-multiple: true
           path: sizes
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{github.event_name == 'pull_request'}}
         continue-on-error: true
         with:
@@ -623,7 +623,7 @@ jobs:
             body: $comment,
           }' | tee comment/comment.json
       - name: upload-comment
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: comment
           path: comment
