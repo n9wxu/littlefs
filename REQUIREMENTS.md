@@ -1778,8 +1778,8 @@ and list bad blocks. The suite is `test_badblocks_gbmap`, compiled with
 A failed read is different: it does not prove the media is bad, since reads
 can fail while the supply is low (issue #19). Blocks that fail a read or a
 checksum are recorded as suspect, in RAM only (LFS3-BAD-16), and become bad
-only when a repair finds they no longer erase and program cleanly (issue
-#19).
+only when a repair finds they no longer erase and program cleanly
+(LFS3-BAD-17, LFS3-DEG-10).
 
 #### LFS3-BAD-01
 
@@ -2103,6 +2103,27 @@ blocks through `lfs3_fs_nextsuspect`.
 - **Fail:** a damaged block that was read is missing, an undamaged block is
   listed, or a write.
 - **Verified by:** NEW `badblocks_gbmap::suspect`.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-BAD-17
+
+littlefs shall, after repairing a block by moving its contents (LFS3-DEG-10),
+reuse the old block if it erases and programs cleanly, and record it as bad
+if it does not, or if it needs repairing again in the same mount.
+
+- **Source:** Proposal (issue #19). A block that read wrongly once may hold a
+  weak write; one that fails twice is decaying.
+- **Measure:** BMBAD ranges, suspect lists and allocations after repairs.
+- **Pass:** NEW `repair::reuse`, `repair::twice`: a block repaired once that
+  then erases, programs and reads back cleanly is allocated again and is
+  not bad; a block whose erase or program fails after the repair, and a
+  block repaired twice in one mount, are listed by `lfs3_fs_nextbad` and
+  never written again; both stay listed by `lfs3_fs_nextsuspect` until
+  marked bad.
+- **Fail:** a block that failed twice is reused, or a clean block is marked
+  bad.
+- **Verified by:** NEW `repair::reuse`, `repair::twice`.
 - **Status:** Not implemented.
 - **When:** every CI run.
 
@@ -4396,6 +4417,47 @@ littlefs shall release a traversal handle in `lfs3_trv_close`.
 - **Status:** Tested.
 - **When:** every CI run.
 
+#### LFS3-GC-17
+
+littlefs shall check every metadata and data block `ck_passes` times in
+`lfs3_fs_ck`, and in a mount or format with `LFS3_M_CKMETA`,
+`LFS3_M_CKDATA`, `LFS3_F_CKMETA` or `LFS3_F_CKDATA`, reading the device
+each time; and `lfs3.h` shall recommend a value.
+
+- **Source:** Proposal (issue #19). A bit that reads differently each time,
+  such as one a power loss left metastable, is more likely to be caught by
+  more passes, though no number of passes proves a cell won't drift later.
+- **Measure:** device reads of each block during the call.
+- **Pass:** NEW `repair::passes`: with `ck_passes` 1, 2 and 3,
+  `lfs3_fs_ck(LFS3_CK_CKDATA)` and a mount with `LFS3_M_CKDATA` read every
+  data block at least that many times, and a block that fails only on its
+  second read is found with 2 and 3 passes, in B-YGB and B-BIG.
+- **Fail:** fewer reads, or the second-read failure missed with 2 passes.
+- **Verified by:** NEW `repair::passes`.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
+#### LFS3-GC-18
+
+littlefs shall, when a B-tree node or data block fails its check during a
+check, gc or traversal, read it again up to `ck_retries` times before
+returning `LFS3_ERR_CORRUPT`, and continue as though the check passed if a
+read passes; and `lfs3.h` shall recommend a value.
+
+- **Source:** Proposal (issue #19). Principle 4: reads can fail while the
+  supply is low, so a failed check does not prove the data lost, and how
+  hard to try belongs to the application.
+- **Measure:** results of `lfs3_fs_ck` over blocks whose reads fail some of
+  the time and all of the time.
+- **Pass:** NEW `repair::retries`: over READFLIP blocks, `lfs3_fs_ck` with
+  `ck_retries` 0 returns `LFS3_ERR_CORRUPT` and with 16 returns 0, on
+  read-only and writable mounts; over MANUAL flips it returns
+  `LFS3_ERR_CORRUPT` with any `ck_retries`, in B-YGB and B-BIG.
+- **Fail:** another result.
+- **Verified by:** NEW `repair::retries`.
+- **Status:** Not implemented.
+- **When:** every CI run.
+
 ### 6.15 Format, mount, grow, compatibility and versioning (MOUNT)
 
 #### LFS3-MOUNT-01
@@ -6551,33 +6613,59 @@ wear bounded.
 #### LFS3-DEG-09
 
 littlefs shall report its health so the application can act before it fails:
-the number of bad blocks, suspect blocks, and free good blocks.
+the bad blocks, the suspect blocks, and the number of free good blocks.
 
 - **Source:** Proposal (issues #9, #19). An unattended application can, for
   example, log less or rotate sooner as capacity shrinks.
 - **Measure:** the reported values against the emubd state.
-- **Pass:** `lfs3_fs_stat` or a health call reports them exactly.
+- **Pass:** NEW `repair::health`: with blocks marked bad and blocks that
+  failed reads, `lfs3_fs_nextbad` lists exactly the bad blocks,
+  `lfs3_fs_nextsuspect` exactly the suspect ones, and `block_count` minus
+  `lfs3_fs_usage` (which counts bad blocks as used) equals the free good
+  blocks a traversal finds, in B-YGB and B-BIG.
 - **Fail:** a mismatch.
-- **Verified by:** NEW (`badblocks_gbmap::health`).
-- **Status:** Partly implemented on `v3-integration` (`lfs3_fs_nextbad`).
+- **Verified by:** NEW `repair::health`.
+- **Status:** Not implemented at `b10efaa`. `v3-integration` has
+  `lfs3_fs_nextbad`.
 - **When:** every CI run.
 
 #### LFS3-DEG-10
 
-littlefs shall offer repairs smaller than a reformat: removing a damaged
-file, rebuilding a damaged directory, and rebuilding the gbmap; and its
-documentation shall recommend the smallest repair that applies.
+littlefs shall offer repairs smaller than a reformat: moving the contents of
+a block that reads unreliably to a new block, removing a damaged file, and
+rebuilding the gbmap; `lfs3_fs_ck`, and a mount with `LFS3_M_CKMETA` or
+`LFS3_M_CKDATA`, shall make the first of these on a writable filesystem when
+`ck_retries` allows, and shall return `LFS3_ERR_CORRUPT` only for damage
+they could not read or repair; and the documentation shall recommend the
+smallest repair that applies.
 
-- **Source:** Proposal. A reformat loses every file, which on an unreachable
-  unit is the same as replacing it.
-- **Measure:** the result of each repair on an image with that damage.
-- **Pass:** each repair leaves `lfs3_fs_ck` passing and every undamaged file
-  intact.
-- **Fail:** a repair that loses undamaged data, or damage with no repair
-  short of a reformat.
-- **Verified by:** NEW, with the repairing check of issue #19.
-- **Status:** Partly: `lfs3_fs_rmgbmap`/`lfs3_fs_mkgbmap` rebuild the gbmap.
-- **When:** before v3-beta.
+- **Source:** Proposal (issues #19, #20). A reformat loses every file, which
+  on an unreachable unit is the same as replacing it. A move copies exactly
+  the bytes of a read that passed the checksum the block's parent records,
+  so it never turns a bad read into data with a fresh checksum.
+- **Measure:** the result of each repair on an image with that damage; the
+  blocks that hold the repaired data; file contents.
+- **Pass:** NEW `repair::data`, `repair::btree`, `repair::gbmap`: a data
+  block, a file B-tree node and a gbmap node whose reads fail half the time
+  (READFLIP) are moved by `lfs3_fs_ck(LFS3_CK_CKMETA | LFS3_CK_CKDATA)` and by
+  a mount with `LFS3_M_CKDATA`, with `ck_retries` 16, to new blocks; the
+  call returns 0; the old blocks are no longer referenced; every file
+  reads back as written; a second check finds nothing to move. A block
+  whose reads always fail (MANUAL) makes the call return `LFS3_ERR_CORRUPT`
+  and stays listed by `lfs3_fs_nextsuspect`, and the damaged file can still
+  be removed (LFS3-DEG-02). On a read-only mount nothing is moved and
+  nothing is written. `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap` rebuild the
+  gbmap.
+- **Fail:** a repair that loses undamaged data, writes bytes that did not
+  pass their checksum, reports an error for damage it repaired, or a
+  repairable block left unrepaired on a writable mount.
+- **Verified by:** NEW `repair::data`, `repair::btree`, `repair::gbmap`,
+  `repair::rdonly`; `gbmap::rmmkgbmap`.
+- **Status:** Not implemented at `b10efaa`. mdirs and mtree nodes have no
+  checksum in a parent to copy against, so they are not moved; one that
+  needed a retry stays listed as suspect. Rebuilding a damaged directory
+  needs the degraded mount of LFS3-DEG-03.
+- **When:** every CI run.
 
 ## 7. Summary
 
@@ -6590,7 +6678,7 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Power-loss resilience | PL | 27 | 8 | 4 | 14 | 0 | 1 |
 | Error detection and integrity | INT | 23 | 7 | 11 | 3 | 0 | 2 |
 | Flash failure handling | FAIL | 20 | 4 | 8 | 8 | 0 | 0 |
-| Bad-block tracking | BAD | 16 | 0 | 0 | 0 | 16 | 0 |
+| Bad-block tracking | BAD | 17 | 0 | 0 | 0 | 17 | 0 |
 | Metadata | META | 17 | 7 | 3 | 3 | 0 | 4 |
 | Files and data | FILE | 26 | 14 | 2 | 7 | 0 | 3 |
 | Sync model and stickynotes | SYNC | 19 | 15 | 2 | 1 | 0 | 1 |
@@ -6599,7 +6687,7 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Key-value API | KV | 9 | 5 | 1 | 2 | 0 | 1 |
 | Block allocation | ALLOC | 17 | 4 | 7 | 5 | 0 | 1 |
 | Pre-erase | PRE | 9 | 0 | 2 | 6 | 0 | 1 |
-| Garbage collection and traversals | GC | 16 | 8 | 6 | 1 | 0 | 1 |
+| Garbage collection and traversals | GC | 18 | 8 | 6 | 1 | 2 | 1 |
 | Format, mount, grow, compatibility | MOUNT | 27 | 10 | 4 | 6 | 1 | 6 |
 | Configuration validation | CFG | 17 | 1 | 6 | 8 | 0 | 2 |
 | Resource bounds | RES | 8 | 0 | 0 | 7 | 0 | 1 |
@@ -6608,9 +6696,9 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
 | Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
 | Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **358** | **107** | **63** | **99** | **26** | **63** |
+| **All** | | **361** | **107** | **63** | **99** | **29** | **63** |
 
-By level: 223 stated, 118 derived, 17 proposals. By When: 288 every CI run,
+By level: 223 stated, 118 derived, 20 proposals. By When: 291 every CI run,
 44 nightly, 26 before v3-beta.
 
 107 requirements (30%) are fully checked by a case that runs in the default
@@ -6846,7 +6934,7 @@ branches already add a case, it is named. 9.2 lists the requirements that
 existing cases would check if they ran in another build, schedule or
 geometry. Documentation requirements checked by review are not listed.
 
-182 requirements need a new test (9.1) and 51 need an existing test run in a
+185 requirements need a new test (9.1) and 51 need an existing test run in a
 new environment (9.2).
 
 ### 9.1 New tests
@@ -6908,6 +6996,7 @@ new environment (9.2).
 | LFS3-BAD-14 | Planned | every CI run | `badblocks::gbmap_format` with block 2 bad; `badblocks_gbmap::factory` including block 2 |
 | LFS3-BAD-15 | Planned | every CI run | build check: no tracking symbols or RAM in B-DEF |
 | LFS3-BAD-16 | Planned | every CI run | `badblocks_gbmap::suspect`: blocks failing reads listed by `lfs3_fs_nextsuspect` |
+| LFS3-BAD-17 | Planned | every CI run | `repair::reuse`, `repair::twice`: reuse or mark bad after a repair |
 | LFS3-META-03 | Defect | every CI run | fuzz over block size, name length and attribute size; no assert |
 | LFS3-META-04 | Defect | every CI run | internal fetch-order case; all suites on A-32BE |
 | LFS3-META-10 | Defect | every CI run | failed commit by sync failure and by stuck anchor (`badblocks::mrootanchor_stuck`, `badblocks::badsync` on v3-fix-alloc) |
@@ -6966,6 +7055,8 @@ new environment (9.2).
 | LFS3-GC-06 | Untested | every CI run | no handle left after `lfs3_fs_ck` |
 | LFS3-GC-11 | Partly | every CI run | block types from `LFS3_T_MTREEONLY` |
 | LFS3-GC-14 | Partly | every CI run | `GC_COMPACT_THRESH=-1` |
+| LFS3-GC-17 | Planned | every CI run | `repair::passes`: reads per block with `ck_passes` 1 to 3 |
+| LFS3-GC-18 | Planned | every CI run | `repair::retries`: READFLIP and MANUAL blocks with `ck_retries` 0 and 16 |
 | LFS3-MOUNT-03 | Defect | every CI run | `block_count` 1 (2 with the gbmap) refused before any bd operation |
 | LFS3-MOUNT-09 | Defect | before v3-beta | configuration tags 0x0100, 0x0130, 0x0132, 0x0133 |
 | LFS3-MOUNT-11 | Untested | every CI run | image without a geometry tag |
@@ -7329,7 +7420,7 @@ are mapped at the end of 6.4.
 | `lfs3_fs_usage` | FILE-18, DIR-18, ALLOC-16, ALLOC-17, BAD-13, DEG-06 |
 | `lfs3_fs_cksum` | GEN-02, INT-07, INT-08, INT-09, META-10, DOC-13 |
 | `lfs3_fs_mkconsistent` | GEN-06, META-09, META-14, SYNC-15, SYNC-16, GC-12 |
-| `lfs3_fs_ck` | GEN-04, PL-19, PL-20, INT-10, INT-11, INT-21, INT-22, FAIL-18, BAD-03, META-03, SYNC-09, DIR-05, PRE-05, PRE-06, GC-05, GC-06, MOUNT-17, CFG-05 |
+| `lfs3_fs_ck` | GEN-04, PL-19, PL-20, INT-10, INT-11, INT-21, INT-22, FAIL-18, BAD-03, BAD-17, META-03, SYNC-09, DIR-05, PRE-05, PRE-06, GC-02, GC-05, GC-06, GC-17, GC-18, MOUNT-17, CFG-05, DEG-10 |
 | `lfs3_fs_gc` | PL-20, INT-15, BAD-10, PRE-05, PRE-06, GC-01, GC-02, CFG-06, DOC-17 |
 | `lfs3_fs_unck` | INT-16, DOC-06 |
 | `lfs3_fs_grow` | GEN-06, GEN-08, PL-18, BAD-06, MOUNT-20, MOUNT-21, MOUNT-22, MOUNT-23, DOC-16 |
@@ -7379,6 +7470,8 @@ are mapped at the end of 6.4.
 | `fragment_size` | KV-09, CFG-01, CFG-12 |
 | `crystal_thresh` | KV-09, CFG-01, CFG-10, PERF-11 |
 | `lookgbmap_thresh` | ALLOC-11 |
+| `ck_retries` | GC-18, DEG-10, BAD-17 |
+| `ck_passes` | GC-17 |
 | `lfs3_file_cfg.fcache_buffer` | CFG-08, RES-01 |
 | `lfs3_file_cfg.fcache_size` | CFG-08 |
 | `lfs3_file_cfg.attrs`, `attr_count` | ATTR-08, ATTR-09, ATTR-10, ATTR-12, PL-11 |
@@ -7436,6 +7529,8 @@ are mapped at the end of 6.4.
 | `LFS3_PMUL_CRC32C` | INT-05, BUILD-05 |
 | `LFS3_NAME_MAX` | CFG-09, BUILD-18 |
 | `LFS3_FILE_MAX` | FILE-17, FILE-26, BUILD-18 |
+| `LFS3_BADQ_SIZE` | BAD-07, BAD-08 |
+| `LFS3_SUSPECTS_SIZE` | BAD-07, BAD-16 |
 | `LFS3_DBGRBYDFETCHES` | BUILD-06 |
 | `LFS3_DBGRBYDCOMMITS` | BUILD-06 |
 | `LFS3_DBGRBYDBALANCE` | META-02, BUILD-06 |
