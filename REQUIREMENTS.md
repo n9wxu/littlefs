@@ -6268,6 +6268,33 @@ LFS3-BUILD-01 to BUILD-20.
 - **Status:** Not implemented (planned).
 - **When:** before v3-beta.
 
+#### LFS3-DOC-20
+
+littlefs shall provide debug scripts (`scripts/dbg*.py`) that decode every
+image the driver writes, and that reject every commit, node and image the
+driver rejects.
+
+- **Source:** Derived (issue #13). People debug images with these scripts,
+  and a script that accepts what the driver rejects hides corruption. A
+  decoder written from SPEC.md found the scripts disagreeing with `lfs3.c`,
+  and the C right, on the VERSION encoding, CKSUM phase bits and size,
+  leb128 limits, the low redundancy bits of struct and magic tags, the
+  number of mptr blocks, unvalidated commits when fetching at a trunk, the
+  shrub bit on found leaves, and a BLOCK "e" bit the C doesn't have.
+- **Measure:** `make test-dbg` (`scripts/test_dbg.py`): images written by
+  B-DEF and B-YGB runners, and checksum-valid variants of them that break
+  one rule each.
+- **Pass:** every script decodes every image with `-e` and exits 0; every
+  variant is rejected (`-e` exits 2) or shown the way the driver sees it
+  (a commit the driver drops is not shown); an incompatible VERSION and a
+  one-block mptr are rejected.
+- **Fail:** any check fails.
+- **Verified by:** `make test-dbg` (NEW-132).
+- **Status:** Known defect on `v3-integration` (issue #13): the scripts at
+  3c0afc90 pass 68 of the checker's 387 checks, all of them on valid
+  images.
+- **When:** every CI run.
+
 ### 6.23 Error handling for unattended systems (ERR)
 
 littlefs usually runs without a human to read an error. These requirements
@@ -7009,6 +7036,7 @@ new environment (9.2).
 | LFS3-CI-11 | Untested | nightly | nightly geometry workflow |
 | LFS3-DOC-02 | Planned | before v3-beta | SPEC-based reader cross-check |
 | LFS3-DOC-03 | Planned | before v3-beta | README example compile job |
+| LFS3-DOC-20 | Defect | every CI run | `make test-dbg` |
 
 ### 9.2 Existing tests in a new environment
 
