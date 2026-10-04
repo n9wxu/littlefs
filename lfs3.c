@@ -44,9 +44,11 @@ static inline int lfs3_ckfound(int err) {
 
 /// Simple bd wrappers (asserts go here) ///
 
-// needed in lfs3_bd_prog__ and lfs3_bd_erase__ to remember bad blocks
+// needed in lfs3_bd_prog__ and lfs3_bd_erase__ to remember bad blocks,
+// and in reads to remember suspect blocks
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static void lfs3_alloc_pushbad(lfs3_t *lfs3, lfs3_block_t block);
+static void lfs3_alloc_pushsuspect(lfs3_t *lfs3, lfs3_block_t block);
 #endif
 
 static int lfs3_bd_read__(lfs3_t *lfs3, lfs3_block_t block, lfs3_size_t off,
@@ -64,6 +66,11 @@ static int lfs3_bd_read__(lfs3_t *lfs3, lfs3_block_t block, lfs3_size_t off,
     if (err) {
         LFS3_INFO("Bad read 0x%"PRIx32".%"PRIx32" %"PRIu32" (%d)",
                 block, off, size, err);
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        if (err == LFS3_ERR_CORRUPT) {
+            lfs3_alloc_pushsuspect(lfs3, block);
+        }
+        #endif
         return err;
     }
 
@@ -865,6 +872,9 @@ static int lfs3_bd_cksuffix(lfs3_t *lfs3,
                     block, lfs3_bd_ckoff(cksum, parity),
                     cksize - lfs3_bd_ckoff(cksum, parity),
                     lfs3_parity(cksum__), cksum >> 31);
+            #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+            lfs3_alloc_pushsuspect(lfs3, block);
+            #endif
             return LFS3_ERR_CORRUPT;
         }
 
@@ -875,6 +885,9 @@ static int lfs3_bd_cksuffix(lfs3_t *lfs3,
                     "cksum %08"PRIx32" (!= %08"PRIx32")",
                 block, 0, cksize,
                 cksum__, cksum);
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        lfs3_alloc_pushsuspect(lfs3, block);
+        #endif
         return LFS3_ERR_CORRUPT;
     }
 
@@ -1539,6 +1552,9 @@ static lfs3_ssize_t lfs3_bd_readtag(lfs3_t *lfs3,
                         "parity %01"PRIx32" (!= %01"PRIx32")",
                     block, off, d_,
                     lfs3_parity(cksum_), parity);
+            #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+            lfs3_alloc_pushsuspect(lfs3, block);
+            #endif
             return LFS3_ERR_CORRUPT;
         }
 
@@ -2627,6 +2643,9 @@ static int lfs3_bptr_ck(lfs3_t *lfs3, const lfs3_bptr_t *bptr) {
                 lfs3_bptr_block(bptr), 0,
                 lfs3_bptr_cksize(bptr),
                 cksum, lfs3_bptr_cksum(bptr));
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        lfs3_alloc_pushsuspect(lfs3, lfs3_bptr_block(bptr));
+        #endif
         return LFS3_ERR_CORRUPT;
     }
 
@@ -3276,6 +3295,9 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
             LFS3_ERROR("Found corrupted rbyd 0x%"PRIx32".%"PRIx32", "
                         "cksum %08"PRIx32,
                     block, trunk, cksum);
+            #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+            lfs3_alloc_pushsuspect(lfs3, block);
+            #endif
         }
         return err;
     }
@@ -3290,6 +3312,9 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
                     "cksum %08"PRIx32" (!= %08"PRIx32")",
                 rbyd->blocks[0], lfs3_rbyd_trunk(rbyd),
                 rbyd->cksum, cksum);
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        lfs3_alloc_pushsuspect(lfs3, block);
+        #endif
         return LFS3_ERR_CORRUPT;
     }
 
@@ -11347,6 +11372,11 @@ static void lfs3_alloc_dropbad(lfs3_t *lfs3, lfs3_block_t block) {
 }
 #endif
 
+// needed in lfs3_alloc_pushbad
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static void lfs3_alloc_dropsuspect(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static void lfs3_alloc_pushbad(lfs3_t *lfs3, lfs3_block_t block) {
     // no gbmap? nowhere to mark bad blocks, and the mroot anchor
@@ -11397,6 +11427,64 @@ static void lfs3_alloc_pushbad(lfs3_t *lfs3, lfs3_block_t block) {
 
 done:;
     lfs3->flags |= LFS3_I_BADBLOCKS;
+    // bad is no longer suspect
+    lfs3_alloc_dropsuspect(lfs3, block);
+}
+#endif
+
+// suspect blocks
+//
+// blocks that fail a read or a check, a failed read doesn't prove a block
+// bad, it may just have been read at low supply voltage, so we only list
+// these in RAM, oldest first, forgetting the oldest when full
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static lfs3_ssize_t lfs3_alloc_findsuspect(const lfs3_t *lfs3,
+        lfs3_block_t block) {
+    for (lfs3_size_t i = 0; i < lfs3->gbmap.suspects.count; i++) {
+        if (lfs3->gbmap.suspects.blocks[i] == block) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static void lfs3_alloc_dropsuspect_(lfs3_t *lfs3, lfs3_size_t i) {
+    struct lfs3_suspects *suspects = &lfs3->gbmap.suspects;
+    lfs3_memmove(&suspects->blocks[i], &suspects->blocks[i+1],
+            (suspects->count - (i+1)) * sizeof(lfs3_block_t));
+    suspects->count -= 1;
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static void lfs3_alloc_dropsuspect(lfs3_t *lfs3, lfs3_block_t block) {
+    lfs3_ssize_t i = lfs3_alloc_findsuspect(lfs3, block);
+    if (i >= 0) {
+        lfs3_alloc_dropsuspect_(lfs3, i);
+    }
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static void lfs3_alloc_pushsuspect(lfs3_t *lfs3, lfs3_block_t block) {
+    // already suspect? queued as bad?
+    if (lfs3_alloc_findsuspect(lfs3, block) >= 0
+            || lfs3_alloc_isbad(lfs3, block)) {
+        return;
+    }
+
+    // full? forget the oldest
+    struct lfs3_suspects *suspects = &lfs3->gbmap.suspects;
+    if (suspects->count == LFS3_SUSPECTS_SIZE) {
+        lfs3_alloc_dropsuspect_(lfs3, 0);
+    }
+
+    suspects->blocks[suspects->count] = block;
+    suspects->count += 1;
 }
 #endif
 
@@ -16413,6 +16501,9 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     lfs3_memset(lfs3->gbmap_p, 0, LFS3_GBMAP_DSIZE);
     lfs3_memset(lfs3->gbmap_d, 0, LFS3_GBMAP_DSIZE);
     #endif
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    lfs3->gbmap.suspects.count = 0;
+    #endif
 
     return 0;
 
@@ -18368,6 +18459,22 @@ lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
         lfs3_block_t block_ = lfs3_max(lfs3->gbmap.badq.blocks[i], block);
         if (block_ - lfs3->gbmap.badq.blocks[i]
                     < lfs3->gbmap.badq.weights[i]
+                && (next < 0 || block_ < (lfs3_block_t)next)) {
+            next = block_;
+        }
+    }
+
+    return next;
+}
+#endif
+
+// find the next suspect block
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextsuspect(lfs3_t *lfs3, lfs3_block_t block) {
+    lfs3_sblock_t next = LFS3_ERR_NOENT;
+    for (lfs3_size_t i = 0; i < lfs3->gbmap.suspects.count; i++) {
+        lfs3_block_t block_ = lfs3->gbmap.suspects.blocks[i];
+        if (block_ >= block
                 && (next < 0 || block_ < (lfs3_block_t)next)) {
             next = block_;
         }

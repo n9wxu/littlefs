@@ -85,6 +85,17 @@ typedef uint32_t lfs3_ocompat_t;
 #error "LFS3_BADQ_SIZE must be in 1..32"
 #endif
 
+// Maximum number of suspect blocks kept in RAM, blocks that failed a read
+// or a checksum, see lfs3_fs_nextsuspect. Each costs a block address in
+// lfs3_t. If more fail, the oldest are forgotten. Only used with
+// LFS3_GBMAP. Limited to <= 32.
+#ifndef LFS3_SUSPECTS_SIZE
+#define LFS3_SUSPECTS_SIZE 8
+#endif
+#if LFS3_SUSPECTS_SIZE < 1 || LFS3_SUSPECTS_SIZE > 32
+#error "LFS3_SUSPECTS_SIZE must be in 1..32"
+#endif
+
 
 // Possible error codes, these are negative to allow
 // valid positive return values
@@ -1477,6 +1488,12 @@ typedef struct lfs3 {
             uint8_t commits;
             uint8_t backoff;
         } badq;
+        // blocks that failed a read or check, oldest first, which isn't
+        // proof they're bad
+        struct lfs3_suspects {
+            lfs3_block_t blocks[LFS3_SUSPECTS_SIZE];
+            uint8_t count;
+        } suspects;
         #endif
         lfs3_btree_t b;
         lfs3_btree_t b_p;
@@ -2015,6 +2032,21 @@ int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block);
 // more bad blocks, or a negative error code on failure.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// Find the next suspect block
+//
+// A block is suspect once a read of it fails, with LFS3_ERR_CORRUPT from
+// the read callback or a checksum or parity mismatch. Reads can fail
+// while the supply is low, so a suspect block isn't marked bad. Suspects
+// live in RAM, up to LFS3_SUSPECTS_SIZE of them, and are forgotten on
+// unmount, an application that wants to keep them must store them
+// itself. Finding them never writes, so read-only mounts find them too.
+//
+// Returns the first suspect block >= block, LFS3_ERR_NOENT if there are
+// no more suspect blocks, or a negative error code on failure.
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextsuspect(lfs3_t *lfs3, lfs3_block_t block);
 #endif
 
 

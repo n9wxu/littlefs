@@ -1857,3 +1857,106 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
     free(bad);
 '''
+
+# test that blocks that fail a read or a check are listed as suspect, in
+# RAM only, without writing, and are not marked bad
+[cases.test_badblocks_gbmap_suspect]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+    'LFS3_EMUBD_BADBLOCK_MANUAL',
+]
+defines.RDONLY = [false, true]
+# how many data blocks go bad
+defines.DAMAGED = [1, 'LFS3_SUSPECTS_SIZE', 'LFS3_SUSPECTS_SIZE+2']
+defines.N = 'LFS3_SUSPECTS_SIZE+2'
+defines.SIZE = 'BLOCK_SIZE'
+code = '''
+    struct lfs3_cfg cfg;
+    test_bbg_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // files with one data block each
+    lfs3_block_t blocks[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03d", i);
+        test_bbg_write(&lfs3, name, i, SIZE);
+
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, 0, &bid, &weight, &bptr) => 0;
+        assert(lfs3_bptr_isbptr(&bptr));
+        blocks[i] = lfs3_bptr_block(&bptr);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // damage some of them
+    for (lfs3_size_t i = 0; i < DAMAGED; i++) {
+        lfs3_emubd_mkbad(CFG, blocks[i]) => 0;
+    }
+    if (BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_MANUAL) {
+        lfs3_emubd_flip(CFG) => 0;
+    }
+
+    // check each file, finding the damage shouldn't write anything
+    memset(test_bbg_erases, 0, sizeof(test_bbg_erases));
+    memset(test_bbg_progs, 0, sizeof(test_bbg_progs));
+    lfs3_mount(&lfs3, (RDONLY) ? LFS3_M_RDONLY : LFS3_M_RDWR, &cfg) => 0;
+    lfs3_fs_nextsuspect(&lfs3, 0) => LFS3_ERR_NOENT;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03d", i);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_file_ck(&lfs3, &file, LFS3_CK_CKDATA)
+                => (i < DAMAGED) ? LFS3_ERR_CORRUPT : 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        assert(test_bbg_erases[b] == 0);
+        assert(test_bbg_progs[b] == 0);
+    }
+
+    // we should remember the most recent damaged blocks
+    bool *suspect = calloc(BLOCK_COUNT, 1);
+    for (lfs3_size_t i = 0; i < DAMAGED; i++) {
+        suspect[blocks[i]] = i + LFS3_SUSPECTS_SIZE >= DAMAGED;
+    }
+    lfs3_block_t count = 0;
+    for (lfs3_block_t b = 0;; b++) {
+        lfs3_sblock_t b_ = lfs3_fs_nextsuspect(&lfs3, b);
+        assert(b_ >= 0 || b_ == LFS3_ERR_NOENT);
+        if (b_ == LFS3_ERR_NOENT) {
+            break;
+        }
+        assert(suspect[b_]);
+        count += 1;
+        b = b_;
+    }
+    assert(count == lfs3_min(DAMAGED, LFS3_SUSPECTS_SIZE));
+
+    // suspect isn't bad
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+
+    // and suspects only live in RAM
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, &cfg) => 0;
+    lfs3_fs_nextsuspect(&lfs3, 0) => LFS3_ERR_NOENT;
+    for (lfs3_size_t i = DAMAGED; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03d", i);
+        test_bbg_read(&lfs3, name, i, SIZE);
+    }
+    lfs3_unmount(&lfs3) => 0;
+    free(suspect);
+'''
