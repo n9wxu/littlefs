@@ -1,0 +1,297 @@
+# The logging workload W-LOG (REQUIREMENTS.md Appendix B.1)
+#
+# A flight logger on an 8 MiB partition of a W25Q128JV NOR flash, with
+# 7 other files on it. Rows of 22 bytes are passed to lfs3_file_write
+# every 200 ms, and the log is synced every second. The log is read back
+# and checked after a remount.
+#
+# Divide the log probe's erases, progs (256-byte page programs) and
+# progged bytes by SECONDS/60 for per-minute figures.
+#
+after = ['bench_wt']
+
+defines.DISK_SIZE = '8*1024*1024'
+defines.ERASE_VALUE = 0xff
+defines.BLOCK_RECYCLES = 512
+defines.RCACHE_SIZE = 1024
+defines.PCACHE_SIZE = 1024
+defines.FCACHE_SIZE = 1024
+defines.LOOKAHEAD_SIZE = 16
+defines.SHRUB_SIZE = 1024
+defines.FRAGMENT_SIZE = 256
+defines.CRYSTAL_THRESH = 256
+defines.GC_STEPS = -1
+defines.GC_PREERASE_COUNT = 'PREERASE ? -1 : 0'
+
+defines.PROG_SIZE = [1, 16, 256]
+# rows per second
+defines.RATE = [1, 50]
+defines.GBMAP = [false, true]
+# pre-erase every free block with gc before the log is opened, the time
+# on the launch pad
+defines.PREERASE = [false, true]
+defines.SECONDS = 600
+defines.ROW = 22
+
+code = '''
+    // erases so far, to find the most erases in one call
+    static bench_sio_t bench_wlog_erases(const struct lfs3_cfg *cfg) {
+        return BENCH_IFDEF_KIWIBD(
+                lfs3_kiwibd_erases,
+                lfs3_emubd_erases)(cfg);
+    }
+
+    // a row carries its sequence number and a checksum, so the log can
+    // be checked when it's read back
+    static void bench_wlog_row(uint32_t seq, uint8_t *row) {
+        lfs3_tole32(seq, &row[0]);
+        for (lfs3_size_t i = 4; i < ROW-4; i++) {
+            row[i] = (uint8_t)(seq*31 + i);
+        }
+        lfs3_tole32(lfs3_crc32c(0, row, ROW-4), &row[ROW-4]);
+    }
+
+    // the files a board holds besides the log
+    static const struct {
+        const char *path;
+        lfs3_size_t size;
+    } bench_wlog_seeds[] = {
+        {"config.ini",       226},
+        {"pins.ini",        1024},
+        {"beep.ini",         512},
+        {"serial.txt",        12},
+        {"www/index.html", 14461},
+        {"www/app.js",     59121},
+        {"www/style.css",   2076},
+    };
+
+    static void bench_wlog_seed(lfs3_t *lfs3) {
+        lfs3_mkdir(lfs3, "www") => 0;
+        uint8_t *seed = malloc(65536);
+        for (lfs3_size_t i = 0; i < 65536; i++) {
+            seed[i] = (uint8_t)(i*7);
+        }
+        for (lfs3_size_t i = 0;
+                i < sizeof(bench_wlog_seeds)/sizeof(bench_wlog_seeds[0]);
+                i++) {
+            lfs3_file_t file;
+            lfs3_file_open(lfs3, &file, bench_wlog_seeds[i].path,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+            lfs3_file_write(lfs3, &file, seed, bench_wlog_seeds[i].size)
+                    => bench_wlog_seeds[i].size;
+            lfs3_file_close(lfs3, &file) => 0;
+        }
+        free(seed);
+    }
+
+    typedef struct bench_wlog_calls {
+        uintmax_t calls;
+        uintmax_t erasing_calls;
+        bench_sio_t max_erases;
+        bench_sns_t max_ns;
+    } bench_wlog_calls_t;
+
+    // log for the given seconds, a write every 200 ms and a sync every
+    // second, measured by the log, write and sync probes
+    static void bench_wlog_log(lfs3_t *lfs3, lfs3_file_t *file,
+            const struct lfs3_cfg *cfg, uint32_t seconds,
+            uint32_t *seq, bench_wlog_calls_t *calls) {
+        uint32_t due = 0;
+        for (uint32_t ms = 200; ms <= seconds*1000; ms += 200) {
+            BENCH_START("log");
+            // rows due every 200 ms
+            uint8_t buf[64*ROW];
+            lfs3_size_t n = 0;
+            due += RATE;
+            while (due >= 5 && n < 64) {
+                bench_wlog_row(*seq, &buf[n*ROW]);
+                *seq += 1;
+                n += 1;
+                due -= 5;
+            }
+
+            for (int sync = 0; sync < 2; sync++) {
+                if (!sync && !n) {
+                    continue;
+                }
+                if (sync && ms % 1000 != 0) {
+                    continue;
+                }
+
+                bench_sio_t erases = bench_wlog_erases(cfg);
+                bench_sns_t ns = BENCH_SIMTIME();
+                if (!sync) {
+                    BENCH_START("write");
+                    lfs3_file_write(lfs3, file, buf, n*ROW) => n*ROW;
+                    BENCH_STOP("write", ms/1000);
+                } else {
+                    BENCH_START("sync");
+                    lfs3_file_sync(lfs3, file) => 0;
+                    BENCH_STOP("sync", ms/1000);
+                }
+                erases = bench_wlog_erases(cfg) - erases;
+                ns = BENCH_SIMTIME() - ns;
+
+                calls->calls += 1;
+                if (erases) {
+                    calls->erasing_calls += 1;
+                }
+                calls->max_erases = lfs3_max(calls->max_erases, erases);
+                calls->max_ns = lfs3_max(calls->max_ns, ns);
+            }
+            BENCH_STOP("log", ms/1000);
+        }
+    }
+
+    static void bench_wlog_results(uint32_t seconds, uint32_t seq,
+            const bench_wlog_calls_t *calls) {
+        BENCH_RESULT("rows", seconds, seq);
+        BENCH_RESULT("calls", seconds, calls->calls);
+        BENCH_RESULT("erasing_calls", seconds, calls->erasing_calls);
+        BENCH_RESULT("max_call_erases", seconds, calls->max_erases);
+        BENCH_RESULT("max_call_ns", seconds, calls->max_ns);
+    }
+
+    // check every row
+    static void bench_wlog_ck(lfs3_t *lfs3, uint32_t seconds,
+            uint32_t seq) {
+        BENCH_START("read");
+        lfs3_file_t file;
+        lfs3_file_open(lfs3, &file, "flight_log.bin", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(lfs3, &file) => seq*ROW;
+        for (uint32_t i = 0; i < seq; i++) {
+            uint8_t row[ROW];
+            uint8_t row_[ROW];
+            bench_wlog_row(i, row);
+            lfs3_file_read(lfs3, &file, row_, ROW) => ROW;
+            assert(memcmp(row_, row, ROW) == 0);
+        }
+        lfs3_file_close(lfs3, &file) => 0;
+        BENCH_STOP("read", seconds);
+    }
+'''
+
+[cases.bench_wlog_fresh]
+if = [
+    'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
+    'GBMAP || !PREERASE',
+    'LFS3_IFDEF_GC(LFS3_IFDEF_PREERASE(LFS3_IFDEF_REVPERTURB(true, !PREERASE), !PREERASE), !PREERASE)',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0)
+                | ((PREERASE) ? LFS3_IFDEF_REVPERTURB(LFS3_F_REVPERTURB, -1) : 0),
+            CFG) => 0;
+    uint32_t m_flags = LFS3_M_RDWR
+            | ((PREERASE) ? LFS3_IFDEF_REVPERTURB(LFS3_M_REVPERTURB, -1) : 0);
+    lfs3_mount(&lfs3, m_flags, CFG) => 0;
+    bench_wlog_seed(&lfs3);
+
+    // pre-erase on the pad
+    if (PREERASE) {
+        #ifdef LFS3_GC
+        BENCH_START("pad");
+        lfs3_fs_gc(&lfs3) => 0;
+        BENCH_STOP("pad", 0);
+        #endif
+    }
+
+    // log
+    BENCH_START("log");
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "flight_log.bin",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+    BENCH_STOP("log", 0);
+
+    uint32_t seq = 0;
+    bench_wlog_calls_t calls = {0};
+    bench_wlog_log(&lfs3, &file, CFG, SECONDS, &seq, &calls);
+
+    BENCH_START("log");
+    lfs3_file_close(&lfs3, &file) => 0;
+    BENCH_STOP("log", SECONDS);
+    bench_wlog_results(SECONDS, seq, &calls);
+    lfs3_unmount(&lfs3) => 0;
+
+    // remount and check every row
+    BENCH_START("mount");
+    lfs3_mount(&lfs3, m_flags, CFG) => 0;
+    BENCH_STOP("mount", SECONDS);
+    bench_wlog_ck(&lfs3, SECONDS, seq);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# W-LOG continued on an image written with a smaller pcache_size
+#
+# Erased-state checksums cover pcache_size bytes, so this image's are
+# too narrow to trust, as are those of images written by drivers that
+# covered only prog_size bytes. Logging for SECONDS with
+# NARROW_PCACHE_SIZE, remounting with PCACHE_SIZE, and logging for
+# MORE_SECONDS measures what the first writes cost. NARROW_PCACHE_SIZE
+# equal to PCACHE_SIZE is the same remount with nothing narrow.
+#
+[cases.bench_wlog_narrow]
+defines.NARROW_PCACHE_SIZE = ['PROG_SIZE', 'PCACHE_SIZE']
+defines.SECONDS = 300
+defines.MORE_SECONDS = 60
+if = [
+    'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
+    'GBMAP || !PREERASE',
+    'LFS3_IFDEF_GC(LFS3_IFDEF_PREERASE(LFS3_IFDEF_REVPERTURB(true, !PREERASE), !PREERASE), !PREERASE)',
+]
+code = '''
+    struct lfs3_cfg narrow_cfg = *CFG;
+    narrow_cfg.pcache_size = NARROW_PCACHE_SIZE;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0)
+                | ((PREERASE) ? LFS3_IFDEF_REVPERTURB(LFS3_F_REVPERTURB, -1) : 0),
+            &narrow_cfg) => 0;
+    uint32_t m_flags = LFS3_M_RDWR
+            | ((PREERASE) ? LFS3_IFDEF_REVPERTURB(LFS3_M_REVPERTURB, -1) : 0);
+    lfs3_mount(&lfs3, m_flags, &narrow_cfg) => 0;
+    bench_wlog_seed(&lfs3);
+    if (PREERASE) {
+        #ifdef LFS3_GC
+        lfs3_fs_gc(&lfs3) => 0;
+        #endif
+    }
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "flight_log.bin",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC) => 0;
+    uint32_t seq = 0;
+    bench_wlog_calls_t calls = {0};
+    BENCH_PAUSE();
+    bench_wlog_log(&lfs3, &file, &narrow_cfg, SECONDS, &seq, &calls);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    BENCH_RESUME();
+
+    // remount with the wider pcache and keep logging
+    BENCH_START("mount");
+    lfs3_mount(&lfs3, m_flags, CFG) => 0;
+    BENCH_STOP("mount", SECONDS);
+
+    BENCH_START("log");
+    lfs3_file_open(&lfs3, &file, "flight_log.bin",
+            LFS3_O_WRONLY | LFS3_O_APPEND) => 0;
+    BENCH_STOP("log", 0);
+
+    calls = (bench_wlog_calls_t){0};
+    bench_wlog_log(&lfs3, &file, CFG, MORE_SECONDS, &seq, &calls);
+
+    BENCH_START("log");
+    lfs3_file_close(&lfs3, &file) => 0;
+    BENCH_STOP("log", MORE_SECONDS);
+    bench_wlog_results(MORE_SECONDS, seq, &calls);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, m_flags, CFG) => 0;
+    bench_wlog_ck(&lfs3, MORE_SECONDS, seq);
+    lfs3_unmount(&lfs3) => 0;
+'''

@@ -5445,10 +5445,11 @@ and without the gbmap and pre-erase.
 - **Pass:** every permutation is at or below v2.11.3's figure for its
   `prog_size`: 58.7 for `prog_size` 1 and 16, 62.7 for 256.
 - **Fail:** any permutation is above it.
-- **Verified by:** NEW: `bench_wlog_fresh`. Measured outside the suite
-  (M-1, M-2): v2 about 63 per minute; v3 14.7 (`prog_size` 256) and 4.1
-  (`prog_size` 1).
-- **Status:** Partly tested (measured outside the suite).
+- **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
+  Appendix B.1.
+- **Status:** Partly tested at `b10efaa` (measured outside the suite).
+  Met on `v3-integration` (`fd3157e3`): at most 14.7 erases per minute
+  (`prog_size` 256), against v2's 62.7 (Appendix B.1).
 - **When:** nightly.
 
 #### LFS3-PERF-09
@@ -5466,9 +5467,13 @@ and without the gbmap and pre-erase.
 - **Pass:** every permutation is at or below v2.11.3's figure for its
   `prog_size`: 76.7 for `prog_size` 1 and 16, 80.7 for 256.
 - **Fail:** any permutation is above it.
-- **Verified by:** NEW: `bench_wlog_fresh`.
+- **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
+  Appendix B.1.
 - **Status:** Known defect (measured, M-3: with `prog_size` 256 v3 does
-  89.5 erases per minute against v2's 80.7).
+  89.5 erases per minute against v2's 80.7). On `v3-integration`
+  (`fd3157e3`), `prog_size` 256 without pre-erase does 86.7 erases per
+  minute (86.4 with the gbmap) against v2's 80.7; every other permutation
+  passes, the worst being 40.1 at `prog_size` 16 against 76.7.
 - **When:** nightly.
 
 #### LFS3-PERF-10
@@ -5488,9 +5493,12 @@ logging starts.
   `LFS3_PREERASE` and `LFS3_M_REVPERTURB`, no call performs more than one
   erase.
 - **Fail:** a call performs two or more erases.
-- **Verified by:** NEW: `bench_wlog_fresh`. Measured (M-2): longest call
-  51 ms, one erase.
-- **Status:** Partly tested (measured outside the suite).
+- **Verified by:** `bench_wlog_fresh`. Measured (M-2): longest call 51 ms,
+  one erase.
+- **Status:** Partly tested at `b10efaa` (measured outside the suite).
+  Met on `v3-integration` (`fd3157e3`): every pre-erase permutation, at
+  both rates and every `prog_size`, has at most one erase in a call, and
+  its longest call is 50.1 to 56.9 ms (Appendix B.1).
 - **When:** nightly.
 
 #### LFS3-PERF-11
@@ -5566,7 +5574,7 @@ littlefs shall document, next to `prog_size` and `pcache_size` in
   figures match `bench_wlog_fresh` and `bench_wlog_narrow`.
 - **Fail:** any item is missing or disagrees with the benches by more than
   10%.
-- **Verified by:** review against NEW `bench_wlog_fresh` and
+- **Verified by:** review against `bench_wlog_fresh` and
   `bench_wlog_narrow`.
 - **Status:** Not implemented (planned).
 - **When:** before v3-beta.
@@ -7353,9 +7361,10 @@ upstream yet. Requirement status always describes `b10efaa`.
 ### B.1 The logging workload W-LOG
 
 W-LOG models a flight logger that streams fixed-size records to one file.
-The measurements were made by the authors with their own harness on emubd;
-the in-tree bench that LFS3-PERF-08 to PERF-10 ask for must reproduce them
-within 10% before they are used as gates.
+The first measurements (M-1 to M-3) were made by the authors with their own
+harness on emubd. The in-tree bench `bench_wlog_fresh`
+(`benches/bench_wlog.toml`) reproduces them, and its figures below are the
+ones LFS3-PERF-08 to PERF-10 are judged by.
 
 - **Device.** A simulated Winbond W25Q128JV NOR flash: 4096-byte erase
   sectors, 256-byte pages, of which the filesystem uses 8 MiB: `block_size`
@@ -7366,15 +7375,27 @@ within 10% before they are used as gates.
 - **Workload.** One file. Rows of 22 bytes are produced at r rows per
   second, collected, and passed to `lfs3_file_write` every 200 ms.
   `lfs3_file_sync` runs every second. A run lasts 10 minutes.
-- **Variants.** r = 1 and r = 50. `prog_size` 1 or 256. With or without
-  `LFS3_GBMAP` and `LFS3_PREERASE`; with pre-erase, the filesystem is mounted
-  with `LFS3_M_REVPERTURB` and `lfs3_fs_gc` pre-erases blocks during an idle
-  phase before logging starts (the time on the launch pad).
+- **Variants.** r = 1 and r = 50. `prog_size` 1, 16 or 256. With or
+  without `LFS3_GBMAP` and `LFS3_PREERASE`; with pre-erase, the filesystem
+  is mounted with `LFS3_M_REVPERTURB` and `lfs3_fs_gc` pre-erases every free
+  block during an idle phase before logging starts (the time on the launch
+  pad).
 - **Reference.** littlefs v2.11.3 running the same workload, with
-  `lfs_file_sync` every second.
-- **Metrics.** Erases per minute (emubd erase count over the run, divided
-  by 10). Longest call: the simulated time of the slowest single
-  `lfs3_file_write` or `lfs3_file_sync`.
+  `lfs_file_sync` every second: `bench/bench_v2.c` and `bench/model.h` on
+  the `v3-notes` branch, built against v2.11.3 (`6cb4e865`) with its
+  `prog_size` set to 1, 16 or 256.
+- **Metrics.** Erases per minute (erase count over the run, divided by 10).
+  Page programs per minute: 256-byte pages touched by each program, which
+  is what kiwibd's `bench_progs` counts with the NOR model's `PROG_WIDTH`.
+  Longest call: the simulated time of the slowest single `lfs3_file_write`
+  or `lfs3_file_sync`.
+- **Reproducing.** `make bench-runner BUILDDIR=build LFS3_BIGGEST=1`, then
+  `./scripts/bench.py -R build/runners/bench_runner bench_wlog -o
+  wlog.csv`. The `log` probe's erases, progs and progged bytes, times
+  60/600, are the per-minute figures; `max_call_erases` and `max_call_ns`
+  are the per-call ones. Erases and programs do not depend on the build:
+  the default build runs the permutations without the gbmap and gives the
+  same figures.
 
 | Ref | Rows/s | Driver and configuration | Erases/min | Longest call |
 |---|---|---|---|---|
@@ -7386,10 +7407,43 @@ within 10% before they are used as gates.
 | M-3 | 50 | v3, `prog_size` 256 | 89.5 | |
 | M-3 | 50 | v3, `prog_size` 1, pre-erase | 4.5 | |
 
+`bench_wlog_fresh` on `v3-integration` (`fd3157e3`), B-BIG, per minute:
+
+| Rows/s | `prog_size` | Configuration | Erases | Page programs | Bytes programmed | Longest call | Most erases in a call | v2.11.3 erases (pages) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 1 | | 4.1 | 289.7 | 14612 | 185.1 ms | 4 | 58.7 (558.1) |
+| 1 | 1 | gbmap | 4.0 | 290.2 | 14755 | 185.9 ms | 4 | |
+| 1 | 1 | gbmap, pre-erase | 3.5 | 292.5 | 15249 | 50.6 ms | 1 | |
+| 1 | 16 | | 7.6 | 466.8 | 28859 | 185.9 ms | 4 | 58.7 (551.0) |
+| 1 | 16 | gbmap | 7.7 | 463.8 | 29310 | 185.5 ms | 4 | |
+| 1 | 16 | gbmap, pre-erase | 7.0 | 464.4 | 29280 | 50.6 ms | 1 | |
+| 1 | 256 | | 14.7 | 227.4 | 58214 | 185.0 ms | 4 | 62.7 (562.1) |
+| 1 | 256 | gbmap | 14.7 | 227.5 | 58240 | 185.0 ms | 4 | |
+| 1 | 256 | gbmap, pre-erase | 8.5 | 227.6 | 58266 | 50.1 ms | 1 | |
+| 50 | 1 | | 24.6 | 784.1 | 96563 | 185.0 ms | 4 | 76.7 (838.9) |
+| 50 | 1 | gbmap | 24.9 | 789.1 | 97876 | 185.5 ms | 4 | |
+| 50 | 1 | gbmap, pre-erase | 4.5 | 807.2 | 98707 | 51.8 ms | 1 | |
+| 50 | 16 | | 40.1 | 1468.6 | 158690 | 186.4 ms | 4 | 76.7 (831.6) |
+| 50 | 16 | gbmap | 40.4 | 1463.5 | 159546 | 187.6 ms | 4 | |
+| 50 | 16 | gbmap, pre-erase | 10.8 | 1488.1 | 160862 | 56.9 ms | 1 | |
+| 50 | 256 | | **86.7** | 1357.2 | 347443 | 185.9 ms | 4 | 80.7 (843.6) |
+| 50 | 256 | gbmap | **86.4** | 1352.3 | 346189 | 191.0 ms | 4 | |
+| 50 | 256 | gbmap, pre-erase | 29.6 | 1378.1 | 352794 | 56.0 ms | 1 | |
+
+The pre-erase runs first erase all 2023 or 2024 free blocks on the pad.
+Every run reads back every row intact. v2.11.3's longest call is 96.6 ms
+in every configuration. The bench reproduces M-1 to M-3 within 3%: the
+one difference, 86.7 against M-3's 89.5, comes from `57493587`, after which
+a fetch again trusts an erased-state checksum that ends exactly at the end
+of the block, so a near-full rbyd is appended to rather than compacted.
+
 Observations:
 
 - v3 avoids the sync-padding problem for small `prog_size`: at
   `prog_size` 1 it erases 15 times less than v2 at 1 row per second.
+- Erases grow with `prog_size`: 4.1, 7.6 and 14.7 per minute at 1 row per
+  second, 24.6, 40.1 and 86.7 at 50, for `prog_size` 1, 16 and 256. v2's
+  hardly depend on it.
 - With `prog_size` 256, every metadata commit is padded to a 256-byte
   page. At 50 rows per second this costs more erases than v2 (LFS3-PERF-09).
 - With pre-erase, the slowest call still contained one erase. This is
@@ -7434,6 +7488,70 @@ Under GCC 13 on Ubuntu 24.04 (Docker), the default suite at `b10efaa`
 failed 56 of 634,616 permutations, all in test_badblocks, where glibc's
 FORTIFY checks caught the test sims' own overflow (fixed in `9ec4c44`).
 That run has not yet been repeated on the fixed branches.
+
+### B.4 Cost of the wider erased-state checksums
+
+`57493587` widened erased-state checksums from `prog_size` bytes to
+`pcache_size` bytes (at least 11), rounded up to `prog_size` and clamped to
+the end of the block (Q19, LFS3-PRE-09). The checksum is computed when a
+commit ends and checked when a metadata log is fetched and when a
+pre-erased block is allocated, so a wider one reads more, up to
+`pcache_size - prog_size` more bytes each time; the read cache already holds
+some of them. The on-disk format did not change, but a checksum narrower
+than the mount's is not trusted: the next commit to that log compacts it,
+and a pre-erased block is erased again when it is allocated.
+
+Measured on W-LOG (B.1, `pcache_size` 1024), `v3-integration` (`fd3157e3`)
+against the same commit with `57493587`'s `lfs3.c` changes reverted, B-BIG:
+
+| Rows/s | `prog_size` | Bytes read per minute, before → after | Bytes read at mount, before → after | Erases per minute, before → after |
+|---|---|---|---|---|
+| 1 | 1 | 24424 → 179715 | 4192 → 7363 | 4.1 → 4.1 |
+| 1 | 16 | 53869 → 331277 | 6310 → 9575 | 7.6 → 7.6 |
+| 1 | 256 | 87164 → 205232 | 6306 → 9299 | 14.7 → 14.7 |
+| 50 | 1 | 173908 → 432204 | 8355 → 10529 | 24.6 → 24.6 |
+| 50 | 16 | 544176 → 1217057 | 10410 → 12702 | 40.1 → 40.1 |
+| 50 | 256 | 1006993 → 1582907 | 6328 → 8787 | 89.5 → 86.7 |
+
+The mount fetches four metadata logs here. Page programs change by at
+most 1.2%, and bytes programmed by at most 5%, at `prog_size` 16, where the
+checksum's size field, now two bytes instead of one, sometimes pushes a
+commit into another 16-byte unit. The gbmap and pre-erase permutations
+change the same way. At the bench's 40 ns per byte read (50 MHz quad SPI),
+the largest increase, 657 KiB a minute at 50 rows per second and
+`prog_size` 16, is 27 ms a minute of reads, against 45 ms for each erase. Erases fall at 50 rows per second and
+`prog_size` 256 because `57493587` also lets a fetch trust a checksum that
+ends exactly at the end of the block (B.1).
+
+The in-tree benches with their default configuration (NOR model,
+`prog_size` 1, `pcache_size` 16, 60 simulated seconds) read 0 to 6% more
+(`bench_rt_logging` +6.0%, `bench_wt_logging` +4.9%, `bench_file` +2.1%,
+the others below 2%) and program and erase the same. With `pcache_size`
+equal to `prog_size` and `prog_size` 11 or more, as in the NAND model,
+nothing changes.
+
+The first writes to an older image: `bench_wlog_narrow` logs for 5 minutes
+with `pcache_size` equal to `prog_size`, remounts with 1024, and logs for
+one more minute; the control remounts with the same 1024. An image written
+before `57493587` gives the same figures (checked with a build of each
+driver sharing one image). Erases in that minute, narrow → control:
+
+| Rows/s | `prog_size` | Without pre-erase | Gbmap, pre-erase |
+|---|---|---|---|
+| 1 | 1 | 5 → 5 | 5 → 4 |
+| 1 | 16 | 8 → 7 | 8 → 3 |
+| 1 | 256 | 15 → 14 | 16 → 4 |
+| 50 | 1 | 26 → 24 | 27 → 5 |
+| 50 | 16 | 45 → 44 | 45 → 13 |
+| 50 | 256 | 99 → 97 | 100 → 37 |
+
+Without pre-erase the cost is one compaction of each metadata log the
+first time it is committed to, 0 to 2 erases. With pre-erase, every block
+pre-erased under the narrower checksum is erased again when it is
+allocated, and gc does not re-erase blocks it already recorded as erased,
+so logging runs at the rate without pre-erase until those blocks, about
+2000 here, are used up. A mount with a smaller `pcache_size` than the image
+was written with costs nothing.
 
 ## Appendix C. Coverage index
 
