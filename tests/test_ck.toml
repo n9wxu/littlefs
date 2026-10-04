@@ -5802,3 +5802,272 @@ code = '''
     lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETA, CFG) => 0;
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# deterministic rollback of an mdir
+#
+# Commit X to mdir A, then Y to mdir B, then put back an older copy of an
+# mdir's blocks, as a device that reverts writes might. The gcksum lets
+# mount find a rollback of any mdir but the one committed most recently,
+# that one only an externally stored lfs3_fs_cksum can find
+#
+# ROLLBACK=0 => roll back A before mounting, mount fails
+# ROLLBACK=1 => roll back B before mounting, mount succeeds, but
+#               lfs3_fs_cksum differs and the filesystem stays usable
+# ROLLBACK=2 => roll back A while mounted, the next metadata check fails
+[cases.test_ck_rollback]
+defines.ROLLBACK = [0, 1, 2]
+# MDIRS=0 => A is the mroot, B an mdir in the mtree
+# MDIRS=1 => A is an mdir in the mtree, B the mroot
+# MDIRS=2 => A and B are both mdirs in the mtree
+defines.MDIRS = [0, 1, 2]
+# X appends to A, or compacts A
+defines.COMPACT = [false, true]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // add files until the first and last are in different mdirs, and
+    // neither is in the mroot
+    #define TEST_ROLLBACK_LOOKUP(path, mdir) do { \
+        const char *path_ = (path); \
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(&lfs3, &path_, \
+                (mdir), NULL); \
+        assert(tag_ == LFS3_TAG_REG || tag_ == LFS3_TAG_DIR); \
+    } while (0)
+    lfs3_size_t n = 0;
+    char last[256];
+    while (true) {
+        // a bit hacky, but this catches infinite loops
+        assert(n < BLOCK_COUNT);
+
+        sprintf(last, "file%03x", n);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(n % 26), 32);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, last,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, 32) => 32;
+        lfs3_file_close(&lfs3, &file) => 0;
+        n += 1;
+
+        lfs3_mdir_t first_, last_;
+        TEST_ROLLBACK_LOOKUP("file000", &first_);
+        TEST_ROLLBACK_LOOKUP(last, &last_);
+        if (lfs3_mdir_cmp(&first_, &lfs3.mroot) != 0
+                && lfs3_mdir_cmp(&last_, &lfs3.mroot) != 0
+                && lfs3_mdir_cmp(&first_, &last_) != 0) {
+            break;
+        }
+    }
+    const char *paths[3][2] = {
+        {"/", last},
+        {"file000", "/"},
+        {"file000", last},
+    };
+    const char *path_a = paths[MDIRS][0];
+    const char *path_b = paths[MDIRS][1];
+
+    // save and restore a pair's blocks behind littlefs's back
+    uint8_t *a_old[2], *a_new[2], *b_old[2];
+    for (int j = 0; j < 2; j++) {
+        a_old[j] = malloc(BLOCK_SIZE);
+        a_new[j] = malloc(BLOCK_SIZE);
+        b_old[j] = malloc(BLOCK_SIZE);
+        assert(a_old[j] && a_new[j] && b_old[j]);
+    }
+    #define TEST_ROLLBACK_SAVE(pair, bufs) do { \
+        for (int j_ = 0; j_ < 2; j_++) { \
+            int err_ = CFG->read(CFG, (pair)[j_], 0, \
+                    (bufs)[j_], BLOCK_SIZE); \
+            assert(!err_); \
+        } \
+    } while (0)
+    #define TEST_ROLLBACK_LOAD(pair, bufs) do { \
+        for (int j_ = 0; j_ < 2; j_++) { \
+            int err_ = CFG->erase(CFG, (pair)[j_]); \
+            assert(!err_); \
+            err_ = CFG->prog(CFG, (pair)[j_], 0, \
+                    (bufs)[j_], BLOCK_SIZE); \
+            assert(!err_); \
+        } \
+        lfs3_bd_droprcache(&lfs3); \
+    } while (0)
+
+    // commit an attr, forcing a compaction if asked
+    #define TEST_ROLLBACK_COMMIT(path, type, v, compact) do { \
+        lfs3_mdir_t mdir_; \
+        TEST_ROLLBACK_LOOKUP(path, &mdir_); \
+        if (compact) { \
+            lfs3_mdir_claim(&mdir_); \
+        } \
+        uint32_t v_ = (v); \
+        int err_ = lfs3_mdir_commit(&lfs3, &mdir_, LFS3_RATTRS( \
+                LFS3_RATTR(3, LFS3_TAG_ATTR(type), 0, LFS3_FROM_DATA), \
+                LFS3_RATTR_ARG(sizeof(uint32_t)), \
+                LFS3_RATTR_ARG(&v_), \
+                LFS3_RATTR_NULL)); \
+        assert(!err_); \
+    } while (0)
+
+    lfs3_mdir_t a, b;
+    TEST_ROLLBACK_LOOKUP(path_a, &a);
+    TEST_ROLLBACK_LOOKUP(path_b, &b);
+    assert(lfs3_mdir_cmp(&a, &b) != 0);
+    assert((lfs3_mdir_cmp(&a, &lfs3.mroot) == 0) == (MDIRS == 0));
+    assert((lfs3_mdir_cmp(&b, &lfs3.mroot) == 0) == (MDIRS == 1));
+    lfs3_block_t a_pair[2] = {a.r.blocks[0], a.r.blocks[1]};
+    lfs3_block_t b_pair[2] = {b.r.blocks[0], b.r.blocks[1]};
+
+    // commit X to A, then Y to B
+    uint32_t cksum_0;
+    lfs3_fs_cksum(&lfs3, &cksum_0) => 0;
+    TEST_ROLLBACK_SAVE(a_pair, a_old);
+    TEST_ROLLBACK_COMMIT(path_a, 'x', 0x58, COMPACT);
+    uint32_t cksum_x;
+    lfs3_fs_cksum(&lfs3, &cksum_x) => 0;
+    assert(cksum_x != cksum_0);
+    TEST_ROLLBACK_SAVE(a_pair, a_new);
+    TEST_ROLLBACK_SAVE(b_pair, b_old);
+    TEST_ROLLBACK_COMMIT(path_b, 'y', 0x59, false);
+    uint32_t cksum_y;
+    lfs3_fs_cksum(&lfs3, &cksum_y) => 0;
+    assert(cksum_y != cksum_x);
+    // neither moved
+    TEST_ROLLBACK_LOOKUP(path_a, &a);
+    TEST_ROLLBACK_LOOKUP(path_b, &b);
+    assert(lfs3_mptr_cmp(a.r.blocks, a_pair) == 0);
+    assert(lfs3_mptr_cmp(b.r.blocks, b_pair) == 0);
+
+    uint32_t v;
+    if (ROLLBACK == 0) {
+        // roll back A, which is not the most recent commit
+        lfs3_unmount(&lfs3) => 0;
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+
+        // put X back, and everything is as it was
+        TEST_ROLLBACK_LOAD(a_pair, a_new);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x59);
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        assert(cksum == cksum_y);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    } else if (ROLLBACK == 1) {
+        // roll back B, the most recent commit, mount can't tell
+        lfs3_unmount(&lfs3) => 0;
+        TEST_ROLLBACK_LOAD(b_pair, b_old);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => LFS3_ERR_NOATTR;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+        // but the checksum we stored can
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        assert(cksum != cksum_y);
+        assert(cksum == cksum_x);
+
+        // and the filesystem is usable as of X
+        lfs3_mkdir(&lfs3, "dir") => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "dir/new",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", 4) => 4;
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_rename(&lfs3, "file000", "dir/moved") => 0;
+        lfs3_remove(&lfs3, last) => 0;
+        lfs3_setattr(&lfs3, "/", 'z', &(uint32_t){0x5a}, sizeof(v)) => 0;
+
+        for (int remount = 0; remount < 2; remount++) {
+            if (remount) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            }
+
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, "dir", &info) => 0;
+            assert(info.type == LFS3_TYPE_DIR);
+            uint8_t rbuf[8];
+            lfs3_file_open(&lfs3, &file, "dir/new", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, 8) => 4;
+            assert(memcmp(rbuf, "meow", 4) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+            lfs3_stat(&lfs3, "file000", &info) => LFS3_ERR_NOENT;
+            lfs3_stat(&lfs3, "dir/moved", &info) => 0;
+            assert(info.size == 32);
+            lfs3_stat(&lfs3, last, &info) => LFS3_ERR_NOENT;
+            lfs3_getattr(&lfs3, "/", 'z', &v, sizeof(v)) => sizeof(v);
+            assert(v == 0x5a);
+            if (MDIRS != 1) {
+                lfs3_getattr(&lfs3, "/", 'y', &v, sizeof(v))
+                        => LFS3_ERR_NOATTR;
+            }
+            if (MDIRS == 0) {
+                lfs3_getattr(&lfs3, "/", 'x', &v, sizeof(v))
+                        => sizeof(v);
+                assert(v == 0x58);
+            }
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+    } else if (ROLLBACK == 2) {
+        // roll back A while mounted, the next metadata check finds it
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+
+        // put X back, and everything is as it was
+        TEST_ROLLBACK_LOAD(a_pair, a_new);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x59);
+
+        // roll back again, namespace operations on top of the rollback
+        // may fail but must not assert
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        int err = lfs3_mkdir(&lfs3, "dir");
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_rename(&lfs3, "file000", "moved");
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_remove(&lfs3, last);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_setattr(&lfs3, "/", 'z', &(uint32_t){0x5a}, sizeof(v));
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        lfs3_unmount(&lfs3) => 0;
+        err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (!err) {
+            err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+        } else {
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+            // keep the unmount below happy
+            lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    for (int j = 0; j < 2; j++) {
+        free(a_old[j]);
+        free(a_new[j]);
+        free(b_old[j]);
+    }
+    #undef TEST_ROLLBACK_LOOKUP
+    #undef TEST_ROLLBACK_SAVE
+    #undef TEST_ROLLBACK_LOAD
+    #undef TEST_ROLLBACK_COMMIT
+'''
