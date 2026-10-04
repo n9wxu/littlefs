@@ -1,0 +1,156 @@
+# More tests under powerloss, P1 of TEST_PLAN.md
+#
+# These belong with test_powerloss, they live here to keep merges with
+# test_powerloss clean
+after = ['test_powerloss']
+
+
+# lfs3_set under powerloss
+#
+# After any powerloss each key holds the value of its last completed set,
+# or of the set in flight, in full. Each value starts with the op that
+# wrote it and the rest is a pure function of that op, and the op in
+# flight is kept in a static that survives the powerloss
+[cases.test_powerloss_p1_kv_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.N = [1, 4]
+# values up to SIZE bytes, FRAGMENT_SIZE keeps every set to one commit,
+# larger values need data blocks and more than one commit
+defines.SIZE = ['FRAGMENT_SIZE', '2*BLOCK_SIZE']
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // the op in flight, this survives powerloss
+    static uint32_t inflight;
+    if (TEST_PLS == 0) {
+        inflight = 0;
+    }
+
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // op k sets key x to a value of size bytes
+    #define TEST_KV_PL_OP(k, x, size) do { \
+        uint32_t prng_ = SEED + (k); \
+        TEST_PRNG(&prng_); \
+        (x) = TEST_PRNG(&prng_) % N; \
+        (size) = 8 + (TEST_PRNG(&prng_) % (SIZE-8+1)); \
+    } while (0)
+    #define TEST_KV_PL_VALUE(k, buffer, size) do { \
+        lfs3_tole32((k), (buffer)); \
+        uint32_t prng_ = (SEED << 16) ^ (k); \
+        for (lfs3_size_t j_ = 4; j_ < (size); j_++) { \
+            (buffer)[j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+    } while (0)
+
+    // what each key held before and after the op in flight
+    int32_t before[N];
+    int32_t after[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        before[x] = -1;
+    }
+    for (uint32_t k = 0; k < inflight; k++) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(k, x, size);
+        (void)size;
+        before[x] = k;
+    }
+    memcpy(after, before, sizeof(before));
+    if (inflight < OPS) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(inflight, x, size);
+        (void)size;
+        after[x] = inflight;
+    }
+
+    // each key holds one of them, in full, and which one tells us if
+    // the op in flight completed
+    uint8_t vbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    bool done = true;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "key%03x", x);
+        lfs3_ssize_t d = lfs3_get(&lfs3, name, rbuf, SIZE+1);
+        assert(d >= 0 || d == LFS3_ERR_NOENT);
+        int32_t k = (d == LFS3_ERR_NOENT) ? -1 : (int32_t)lfs3_fromle32(rbuf);
+        assert(k == before[x] || k == after[x]);
+        if (before[x] != after[x] && k == before[x]) {
+            done = false;
+        }
+
+        if (k >= 0) {
+            lfs3_size_t x_;
+            lfs3_size_t size;
+            TEST_KV_PL_OP(k, x_, size);
+            assert(x_ == x);
+            assert(d == (lfs3_ssize_t)size);
+            lfs3_size(&lfs3, name) => size;
+            TEST_KV_PL_VALUE(k, vbuf, size);
+            assert(memcmp(rbuf, vbuf, size) == 0);
+        }
+    }
+    if (done && inflight < OPS) {
+        memcpy(before, after, sizeof(before));
+        inflight += 1;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // continue setting values
+    for (; inflight < OPS; inflight++) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(inflight, x, size);
+        TEST_KV_PL_VALUE(inflight, vbuf, size);
+        char name[256];
+        sprintf(name, "key%03x", x);
+        lfs3_set(&lfs3, name, vbuf, size) => 0;
+        before[x] = inflight;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "key%03x", x);
+            if (before[x] < 0) {
+                lfs3_get(&lfs3, name, rbuf, SIZE+1) => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_size_t x_;
+            lfs3_size_t size;
+            TEST_KV_PL_OP(before[x], x_, size);
+            assert(x_ == x);
+            TEST_KV_PL_VALUE(before[x], vbuf, size);
+            lfs3_get(&lfs3, name, rbuf, SIZE+1) => size;
+            assert(memcmp(rbuf, vbuf, size) == 0);
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_KV_PL_OP
+    #undef TEST_KV_PL_VALUE
+'''
