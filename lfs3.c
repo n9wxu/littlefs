@@ -9276,6 +9276,8 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     lfs3_mdir_t mdir_[2];
     lfs3_srid_t split_rid;
     bool splittable = true;
+    // split siblings whose cksums are in our gcksum
+    bool committed[2] = {false, false};
 commit:;
     int err = lfs3_mdir_commit__(lfs3, &mdir_[0], mdir, -2, -2,
             (splittable) ? &split_rid : NULL,
@@ -9330,29 +9332,8 @@ commit:;
             err = lfs3_mdir_alloc___(lfs3, &mdir_[i^l],
                     lfs3_smax(mdir->mid, 0), relocated);
             if (err) {
-                // no blocks to split into? compact in place instead,
-                // this works as long as we fit in one block, and lets a
-                // full disk still remove things
-                if (err == LFS3_ERR_NOSPC && i == 0 && !relocated) {
-                    // unconsume our gstate, compacting keeps it, note
-                    // this is just an xor
-                    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0) {
-                        err = lfs3_fs_consumegdelta(lfs3, mdir);
-                        if (err) {
-                            goto failed;
-                        }
-                    }
-
-                    // restage any bshrubs
-                    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
-                        if (lfs3_o_type(h->flags) == LFS3_TYPE_REG) {
-                            ((lfs3_bshrub_t*)h)->b_
-                                    = ((lfs3_bshrub_t*)h)->b.r;
-                        }
-                    }
-
-                    splittable = false;
-                    goto commit;
+                if (err == LFS3_ERR_NOSPC && !relocated) {
+                    goto split_nospc;
                 }
                 goto failed;
             }
@@ -9395,6 +9376,8 @@ commit:;
             // empty? set weight to zero
             if (err == LFS3_ERR_NOENT) {
                 mdir_[i^l].r.weight = 0;
+            } else {
+                committed[i^l] = true;
             }
         }
 
@@ -9469,6 +9452,9 @@ commit:;
                         LFS3_RATTR_ARG(mdir_[1].r.blocks),
                         LFS3_RATTR_NULL));
             if (err) {
+                if (err == LFS3_ERR_NOSPC) {
+                    goto split_nospc;
+                }
                 goto failed;
             }
 
@@ -9485,6 +9471,9 @@ commit:;
                         LFS3_RATTR_ARG(mdir_[1].r.blocks),
                         LFS3_RATTR_NULL));
             if (err) {
+                if (err == LFS3_ERR_NOSPC) {
+                    goto split_nospc;
+                }
                 goto failed;
             }
         }
@@ -9848,6 +9837,37 @@ commit:;
             mdir->r.cksum);
     #endif
     return 0;
+
+split_nospc:;
+    // no room to split? compact in place instead, this works as long as
+    // we fit in one block, and lets a full disk still remove things
+    //
+    // nothing references our siblings yet, but their cksums are in our
+    // gcksum
+    for (int j = 0; j < 2; j++) {
+        if (committed[j]) {
+            lfs3->gcksum ^= mdir_[j].r.cksum;
+            committed[j] = false;
+        }
+    }
+
+    // unconsume our gstate, compacting keeps it, note this is just an xor
+    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) != 0) {
+        err = lfs3_fs_consumegdelta(lfs3, mdir);
+        if (err) {
+            goto failed;
+        }
+    }
+
+    // restage any bshrubs
+    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
+        if (lfs3_o_type(h->flags) == LFS3_TYPE_REG) {
+            ((lfs3_bshrub_t*)h)->b_ = ((lfs3_bshrub_t*)h)->b.r;
+        }
+    }
+
+    splittable = false;
+    goto commit;
 
 failed:;
     // revert gstate to on-disk state
