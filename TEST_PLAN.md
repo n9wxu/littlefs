@@ -188,7 +188,8 @@ record reads, programs and erases but assert nothing. This plan adds ratio
 checks for the complexity claims of PR #1111 (NEW-119), the sync-cost and
 logging-workload benches of REQUIREMENTS.md Appendix B (NEW-120, NEW-121), and
 a regression report (NEW-122). Benches are nightly and gate only on large
-regressions.
+regressions, except the W-LOG bench (NEW-121), whose erases per minute are
+compared with v2.11.3's.
 
 ## 3. Feature traceability
 
@@ -271,12 +272,12 @@ documentation requirement checked by review rather than by a test.
 | `lock` | THR-01, THR-02 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89 |
 | `unlock` | THR-01, THR-02 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89 |
 | `read_size` | CFG-01, CFG-02 | `files::*`, `fwrite::*`, `kv::*` | CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115 |
-| `prog_size` | PL-15, INT-04, META-01, FILE-11, FILE-24, PRE-09, CFG-01, CFG-02, CFG-10, CFG-13, PERF-06, PERF-07, PERF-08, PERF-09 | `rbyd::*_permutations`, `rbyd::fuzz_*`, `rbyd::*`, `files::*`, `fwrite::*`, `kv::*` and 1 more | PL-15 (U) → NEW-04; INT-04 (U) → NEW-66; FILE-11 (U) → NEW-20; FILE-24 (U) → NEW-75; PRE-09 (U) → NEW-60; CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; CFG-10 (P) → J-DEFINES; CFG-13 (U) → J-GEO; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-08 (P) → NEW-121; PERF-09 (K) → NEW-121 |
+| `prog_size` | PL-15, INT-04, META-01, FILE-11, FILE-24, PRE-09, CFG-01, CFG-02, CFG-10, CFG-13, PERF-06, PERF-07, PERF-08, PERF-09, PERF-14 | `rbyd::*_permutations`, `rbyd::fuzz_*`, `rbyd::*`, `files::*`, `fwrite::*`, `kv::*` and 1 more | PL-15 (U) → NEW-04; INT-04 (U) → NEW-66; FILE-11 (U) → NEW-20; FILE-24 (U) → NEW-75; PRE-09 (U) → NEW-60; CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; CFG-10 (P) → J-DEFINES; CFG-13 (U) → J-GEO; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-08 (P) → NEW-121; PERF-09 (K) → NEW-121; PERF-14 (N) → review |
 | `block_size` | META-03, ATTR-05, CFG-01, CFG-02, CFG-03, CFG-05, CFG-10, CFG-11, CFG-12, CFG-13 | `attrs::*`, `files::*`, `fwrite::*`, `kv::*`, `fsync::*` | META-03 (K) → NEW-41; ATTR-05 (K) → NEW-41; CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; CFG-03 (U) → NEW-115; CFG-05 (K) → NEW-49; CFG-10 (P) → J-DEFINES; CFG-11 (P) → J-DEFINES; CFG-12 (P) → J-DEFINES; CFG-13 (U) → J-GEO |
 | `block_count` | BAD-11, ALLOC-08, ALLOC-11, PRE-01, GC-02, MOUNT-03, CFG-01, CFG-17 | `gc::preerase_progress`, `gc::preerase_relaxed`, `gc::preerase_decreasing`, `gbmap::gc_files`, `gc::spam_*`, `files::*` and 3 more | BAD-11 (N) → NEW-90; ALLOC-08 (U) → NEW-31; ALLOC-11 (K) → NEW-51; PRE-01 (P) → J-BIG; GC-02 (U) → NEW-82; MOUNT-03 (K) → NEW-44; CFG-01 (K) → NEW-48; CFG-17 (P) → J-BIG |
 | `block_recycles` | PL-21, FAIL-14, CFG-01, CFG-04 | `relocations::spam_f_pl_fuzz`, `relocations::spam_fd_pl_fuzz`, `relocations::*`, `files::*`, `fwrite::*`, `kv::*` | PL-21 (P) → J-PL; FAIL-14 (U) → NEW-61; CFG-01 (K) → NEW-48; CFG-04 (U) → NEW-115 |
 | `rcache_size` | CFG-01, CFG-02 | `files::*`, `fwrite::*`, `kv::*` | CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115 |
-| `pcache_size` | PRE-09, CFG-01, CFG-02 | `files::*`, `fwrite::*`, `kv::*` | PRE-09 (U) → NEW-60; CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115 |
+| `pcache_size` | PRE-09, CFG-01, CFG-02, PERF-14 | `files::*`, `fwrite::*`, `kv::*` | PRE-09 (U) → NEW-60; CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; PERF-14 (N) → review |
 | `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08 | `files::*`, `fwrite::*`, `kv::*`, `fwrite::fuzz_unaligned` | CFG-01 (K) → NEW-48; CFG-07 (U) → NEW-86; CFG-08 (P) → NEW-116; RES-08 (U) → NEW-87 |
 | `lookahead_size` | ALLOC-06, CFG-01 | `alloc::*`, `files::*`, `dirs::*`, `fwrite::*`, `kv::*` | ALLOC-06 (P) → J-DEFINES; CFG-01 (K) → NEW-48 |
 | `gc_flags` | INT-15, GC-03, CFG-06 | `ck::ckmeta_*`, `ck::ckdata_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*`, `gc::compact_*` and 3 more | INT-15 (P) → J-BIG; GC-03 (P) → J-BIG; CFG-06 (U) → NEW-115 |
@@ -392,7 +393,7 @@ documentation requirement checked by review rather than by a test.
 | format, mount and grow | MOUNT-01, MOUNT-02, MOUNT-03, MOUNT-14, MOUNT-15, MOUNT-16, MOUNT-17, MOUNT-18, MOUNT-19, MOUNT-20, MOUNT-21, MOUNT-22, MOUNT-23, MOUNT-27 | `mount::simple`, `mtree::magic`, `mount::t_ckmeta`, `ck::ckmeta_*`, `mount::incompat_*`, `grow::grow` and 3 more | MOUNT-01 (P) → J-GEO; MOUNT-03 (K) → NEW-44; MOUNT-14 (K) → NEW-46; MOUNT-16 (U) → NEW-84; MOUNT-17 (K) → NEW-37; MOUNT-18 (P) → NEW-112; MOUNT-19 (K) → NEW-46; MOUNT-21 (K) → NEW-47; MOUNT-22 (U) → NEW-27; MOUNT-27 (P) → NEW-114 |
 | configuration validation | CFG-01, CFG-02, CFG-03, CFG-04, CFG-05, CFG-06, CFG-07, CFG-08, CFG-09, CFG-10, CFG-11, CFG-12, CFG-13, CFG-14, CFG-15, CFG-16, CFG-17 | `files::*`, `fwrite::*`, `kv::*`, `fwrite::fuzz_unaligned`, `fsync::*`, `gc::lookahead_progress` and 3 more | CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; CFG-03 (U) → NEW-115; CFG-04 (U) → NEW-115; CFG-05 (K) → NEW-49; CFG-06 (U) → NEW-115; CFG-07 (U) → NEW-86; CFG-08 (P) → NEW-116; CFG-09 (U) → NEW-117; CFG-10 (P) → J-DEFINES; CFG-11 (P) → J-DEFINES; CFG-12 (P) → J-DEFINES; CFG-13 (U) → J-GEO; CFG-15 (U) → NEW-12; CFG-16 (P) → J-BIG; CFG-17 (P) → J-BIG |
 | resource bounds | RES-01, RES-02, RES-03, RES-04, RES-05, RES-06, RES-07, RES-08 | none | RES-01 (U) → NEW-87; RES-02 (U) → NEW-118; RES-03 (U) → NEW-118; RES-04 (U) → NEW-118; RES-05 (U) → NEW-118; RES-06 (K) → NEW-50; RES-07 (U) → NEW-88; RES-08 (U) → NEW-87 |
-| performance | PERF-01, PERF-02, PERF-03, PERF-04, PERF-05, PERF-06, PERF-07, PERF-08, PERF-09, PERF-10, PERF-11, PERF-12, PERF-13 | none | PERF-01 (U) → NEW-119; PERF-02 (U) → NEW-119; PERF-03 (U) → NEW-119; PERF-04 (U) → NEW-119; PERF-05 (U) → NEW-119; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-08 (P) → NEW-121; PERF-09 (K) → NEW-121; PERF-10 (P) → NEW-121; PERF-11 (P) → NEW-120; PERF-12 (U) → NEW-122; PERF-13 (U) → NEW-123 |
+| performance | PERF-01, PERF-02, PERF-03, PERF-04, PERF-05, PERF-06, PERF-07, PERF-08, PERF-09, PERF-10, PERF-11, PERF-12, PERF-13, PERF-14 | none | PERF-01 (U) → NEW-119; PERF-02 (U) → NEW-119; PERF-03 (U) → NEW-119; PERF-04 (U) → NEW-119; PERF-05 (U) → NEW-119; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-08 (P) → NEW-121; PERF-09 (K) → NEW-121; PERF-10 (P) → NEW-121; PERF-11 (P) → NEW-120; PERF-12 (U) → NEW-122; PERF-13 (U) → NEW-123; PERF-14 (N) → review |
 | thread safety | THR-01, THR-02, THR-03 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89; THR-03 (U) → NEW-124 |
 | portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*` | GEN-01 (U) → J-ARCH; GEN-02 (U) → NEW-91; GEN-03 (K) → NEW-54; GEN-04 (U) → NEW-92; GEN-05 (P) → NEW-93; GEN-06 (K) → NEW-49; GEN-07 (U) → NEW-68; GEN-08 (K) → NEW-47 |
 | build configurations | BUILD-01, BUILD-02, BUILD-03, BUILD-04, BUILD-05, BUILD-06, BUILD-07, BUILD-08, BUILD-09, BUILD-10, BUILD-11, BUILD-12, BUILD-13, BUILD-14, BUILD-15, BUILD-16, BUILD-17, BUILD-18, BUILD-19, BUILD-20 | `ck::crc32c*`, `paths::*`, `fwrite::*fbig`, `files::*`, `dirs::*`, `attrs::*` | BUILD-01 (P) → NEW-53; BUILD-02 (K) → NEW-53; BUILD-03 (K) → NEW-53; BUILD-04 (K) → NEW-53; BUILD-05 (K) → NEW-53; BUILD-06 (K) → NEW-53; BUILD-07 (U) → NEW-53; BUILD-08 (K) → NEW-53; BUILD-09 (K) → NEW-53; BUILD-10 (K) → NEW-53; BUILD-11 (K) → NEW-53; BUILD-12 (U) → NEW-125; BUILD-13 (K) → J-BIG; BUILD-14 (U) → J-YGB; BUILD-15 (U) → J-YES; BUILD-16 (U) → J-NA; BUILD-17 (U) → J-NBNS; BUILD-18 (U) → NEW-126; BUILD-19 (U) → NEW-46; BUILD-20 (U) → NEW-53 |
@@ -956,7 +957,7 @@ not (3-alloc B17).
 | Operations | Coverage | Tests | Recovered means |
 |---|---|---|---|
 | O1 format, O2 mount, O3 namespace, O5 sync, O6 truncate, O8 btree, O9 relocation, O10 gc, O12 gbmap, O13 grow, O14 check | – | | N/A: outside this combination |
-| O4 write, O7 mdir, O11 pre-erase | N | NEW-60 | A, with the prog-once check |
+| O4 write, O7 mdir, O11 pre-erase | Y | NEW-60 (`powerloss::append_pl`, `powerloss::preerase_pl_fuzz`) | A, with the prog-once check |
 
 #### F27. Transient read error
 
@@ -1646,7 +1647,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-57 | `powerloss::osync_pl` | PL-17 | reentrant; handles opened with `LFS3_O_SYNC`, and a mount with `LFS3_M_SYNC`; each returned write recorded outside the device (in a variable that survives the longjmp) | every returned write is present after remount | – |
 | NEW-58 | `powerloss::flush_pl` | PL-06 | reentrant; write and flush (explicit, `LFS3_O_FLUSH`, `LFS3_M_FLUSH`) without syncing | after remount the file equals its last synced state | – |
 | NEW-59 | `attrs::setattr_pl_fuzz` | PL-11 | reentrant; `lfs3_setattr` and `lfs3_removeattr` on paths and on "/" with values derived from a step | every attribute has a value that some completed call set | – |
-| NEW-60 | `powerloss::tear_tail` | PRE-09 | reentrant; `POWERLOSS_BEHAVIOR` 5 (E-4); `PCACHE_SIZE` 4 × `PROG_SIZE`; workloads of NEW-04 and NEW-11; `CKPROGONCE` true | no prog to an already-programmed region; A. Settle open question Q19 before making this P0 | E-4, E-1 |
+| NEW-60 | `powerloss::append_pl`, `powerloss::preerase_pl_fuzz` (on v3-integration) | PRE-09 | reentrant; `POWERLOSS_BEHAVIOR` 5 (E-4); `PCACHE_SIZE` 4 × `PROG_SIZE` (append) and 16 > `PROG_SIZE` 1 (pre-erase); workloads of NEW-04 and NEW-11; `CKPROGONCE` true | no prog to an already-programmed region; A. Q19 is settled (option (b)) | E-4, E-1 |
 | NEW-61 | `relocations::wear_bound` | FAIL-14 | `BLOCK_RECYCLES` 0, 1, 4, 16, 100; `ERASE_CYCLES` 0xffffffff; commit repeatedly to one mdir; record the pair's blocks after each relocation | no mdir block is erased more than `block_recycles + 1` times between relocations | – |
 | NEW-62 | `ck::readflip_spam` | FAIL-09, INT-19 | `ck::spam_*_fuzz` with `BADBLOCK_BEHAVIOR=6` and `CKMETAPARITY=true`, mounted with `LFS3_M_CKMETAPARITY \| LFS3_M_CKDATACKSUMS` | every read returns the model's data or `LFS3_ERR_CORRUPT` (D) | – |
 | NEW-63 | `ck::launder` | candidate requirement (INT-18 to INT-20, DOC-13) | flip a bit in the source of an mdir compaction, a B-tree relocation and a crystallization, with each of `LFS3_M_CKFETCHES`, `LFS3_M_CKMETAPARITY`, `LFS3_M_CKDATACKSUMS` and none; then compact or relocate; then `lfs3_fs_ck` | with the matching check option the copy is refused with `LFS3_ERR_CORRUPT`; without, `lfs3_fs_ck` before the copy reports the flip. Records whether a flip can be copied into a fresh checksum; propose a requirement from the result | – |
@@ -1713,7 +1714,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-118 | size report job (J-SIZE) | RES-02 to RES-05 | `make lfs3.code.csv lfs3.data.csv lfs3.stack.csv lfs3.ctx.csv lfs3.structs.csv` on thumb for B-DEF, B-RO, B-YGB, B-BIG | the difference is posted; every function has a finite stack | – |
 | NEW-119 | bench ratio checks | PERF-01 to PERF-05 | assertions over `bench_rbyd`, `bench_wt`, `bench_dir` and block-size sweeps | the ratios of REQUIREMENTS.md 6.18 | – |
 | NEW-120 | sync-cost bench | PERF-06, PERF-07, PERF-11 | 100 small appends and syncs at `prog_size` 1, 16, 256; count programmed bytes, erases and `cfg->sync` calls | the bounds of the three requirements | – |
-| NEW-121 | W-LOG bench | PERF-08, PERF-09, PERF-10 | the workload of REQUIREMENTS.md B.1 in `benches/`, with a v2.11.3 reference build | erases per minute ≤ v2; at most one erase per call with pre-erase | – |
+| NEW-121 | W-LOG bench: `bench_wlog_fresh`, `bench_wlog_narrow` (`benches/bench_wlog.toml`) | PERF-08, PERF-09, PERF-10, PERF-14 | the workload of REQUIREMENTS.md B.1 in `benches/`, built with `LFS3_BIGGEST`: `PROG_SIZE` 1, 16, 256, `RATE` 1 and 50, with and without `GBMAP` and `PREERASE`; `bench_wlog_narrow` remounts an image logged with a smaller `pcache_size`; v2.11.3 reference figures from B.1 | erases per minute ≤ v2 for every permutation; at most one erase per call with pre-erase | – |
 | NEW-122 | bench diff job | PERF-12 | `make bench-marks-diff` nightly against the base | no unexplained regression above 10% | – |
 | NEW-123 | gbmap first-allocation bench | PERF-13 | reads of the first allocation after mount on 128 MiB with 10,000 files | with the gbmap ≤ 1% of without | – |
 | NEW-124 | two threads under TSan | THR-03 | two filesystems on two threads, `-fsanitize=thread` | no report | – |
@@ -1750,8 +1751,8 @@ following hold on that commit:
 1. **Tests exist.** Every P0 test of section 6 (54) and every P1 test (37)
    is in the tree, except:
    - P1 tests that wait on an open question in REQUIREMENTS.md section 8
-     while that question is open: NEW-60 (Q19), NEW-68 (Q21), NEW-86 (Q15)
-     and NEW-89 (Q12);
+     while that question is open: NEW-68 (Q21), NEW-86 (Q15) and NEW-89
+     (Q12);
    - NEW-90 until bad-block tracking is merged. Once it is, NEW-90 is P0.
 
    P2 tests are not required, but every P2 test that exists must pass.

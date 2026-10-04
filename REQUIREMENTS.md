@@ -1740,6 +1740,7 @@ The rows follow the flash-failure matrix of the analysis (3-alloc §5).
 | Power loss, ATOMIC | PL-01, PL-04 to PL-22 | PL-25 (bad block), PL-26 (wear-out), PRE-05 (pre-erase), PL-20 (gc), PL-21 (relocation) |
 | Power loss, SOMEBITS / MOSTBITS / OOO | PL-02 | PL-21, PL-22, PL-25, PRE-05 |
 | Power loss, METASTABLE | PL-03 | |
+| Power loss, TORNTAIL | PRE-09 | PRE-05 (pre-erase) |
 | Bad block, PROGERROR | FAIL-01 | FAIL-20 (gbmap), PL-25, FILE-10, FILE-11 |
 | Bad block, ERASEERROR | FAIL-02 | FAIL-20, PL-25, PRE-06 (pre-erase) |
 | Bad block, READERROR | FAIL-03 (write time), FAIL-04 (live data), FAIL-17 (source) | FAIL-20 |
@@ -1754,7 +1755,7 @@ The rows follow the flash-failure matrix of the analysis (3-alloc §5).
 | sync error | FAIL-18, META-10 | |
 | Other bd error (IO) | FAIL-19 | |
 | Rollback | INT-06, INT-09, INT-21 | |
-| Not injectable yet (5.10) | FAIL-18, FAIL-19, PRE-09, DOC-12 | |
+| Not injectable yet (5.10) | FAIL-18, FAIL-19, DOC-12 | |
 
 ### 6.5 Bad-block tracking (BAD)
 
@@ -4137,23 +4138,28 @@ erase silently did nothing.
 
 #### LFS3-PRE-09
 
-littlefs shall not program a pre-erased block without erasing it after a
-torn program that left the first `prog_size` bytes erased but changed bytes
-after them.
+littlefs shall not program a pre-erased block, or append to a metadata
+log, without erasing it first, after a torn program that left the first
+`prog_size` bytes of that program erased but changed bytes after them.
 
-- **Source:** Derived: the erased-state checksum covers only the first
-  `prog_size` bytes (`lfs3.c:2491-2502`), while the first program of a new
-  rbyd can be a `pcache_size` flush (3-alloc B17). Whether littlefs must
-  handle this or can state it as a hardware assumption is open question
-  Q19.
-- **Measure:** programs to already-programmed regions.
-- **Pass:** a NEW emubd power-loss behaviour that tears a prog after its
-  first `prog_size` bytes, used in the LFS3-PRE-05 cases with
-  `PCACHE_SIZE > PROG_SIZE`, finds no prog to an already-programmed region,
-  in B-BIG.
-- **Fail:** such a prog occurs.
-- **Verified by:** NEW: emubd extension.
-- **Status:** Untested.
+- **Source:** Derived: at `b10efaa` the erased-state checksum covers only
+  the first `prog_size` bytes (`lfs3.c:2491-2502`), while the first program
+  into erased space can be a `pcache_size` flush (3-alloc B17). Q19 settles
+  this by widening the checksum to the whole first program.
+- **Measure:** programs to already-programmed regions, with emubd's
+  TORNTAIL power-loss behaviour (`POWERLOSS_BEHAVIOR` 5), which leaves the
+  first `prog_size` bytes of the interrupted program erased and programs
+  part of the rest.
+- **Pass:** `powerloss::preerase_pl_fuzz` (gc pre-erase between writes,
+  `PCACHE_SIZE` 16 > `PROG_SIZE` 1) and `powerloss::append_pl`
+  (`PCACHE_SIZE` 4 × `PROG_SIZE`), both with TORNTAIL and `CKPROGONCE`,
+  pass under `-Plinear` in B-BIG.
+- **Fail:** the prog-once check fires, or any permutation fails.
+- **Verified by:** `powerloss::preerase_pl_fuzz`, `powerloss::append_pl`.
+- **Status:** Untested at `b10efaa` (3-alloc B17). Tested on
+  `v3-integration` (`57493587`); before that commit `test_powerloss`
+  failed 2990 of 2998 permutations at `PROG_SIZE` 1 under TORNTAIL. What
+  the wider checksums cost is in Appendix B.4.
 - **When:** nightly.
 
 ### 6.14 Garbage collection and traversals (GC)
@@ -5308,6 +5314,8 @@ reads, progs and erases but assert nothing. LFS3-PERF-01 to PERF-05 turn the
 stated complexity into ratio checks, which hold for the stated growth and
 fail for the next worse one. LFS3-PERF-06 to PERF-13 are about sync cost and
 the logging workload of Appendix B; their thresholds are our proposals.
+LFS3-PERF-14 asks for the cost of `prog_size` and `pcache_size` to be
+documented where they are configured.
 
 #### LFS3-PERF-01
 
@@ -5424,31 +5432,41 @@ does not compact metadata.
 #### LFS3-PERF-08
 
 littlefs shall perform no more erases than littlefs v2.11.3 on the logging
-workload W-LOG at 1 row per second, for `prog_size` 1 and 256.
+workload W-LOG at 1 row per second, for `prog_size` 1, 16 and 256, with
+and without the gbmap and pre-erase.
 
 - **Source:** Proposal, from #1111 "Better logging: No more sync-padding
   issues" and #1114 (2026-03-12: logging "is arguably the most important
   bench"). The workload is defined in Appendix B.
-- **Measure:** erases per minute over 10 minutes.
-- **Pass:** v3 erases per minute ≤ v2.11.3 erases per minute for each
-  `prog_size`.
-- **Fail:** v3 erases more.
-- **Verified by:** NEW: in-tree bench of W-LOG. Measured (M-1, M-2): v2
-  about 63 per minute; v3 14.7 (`prog_size` 256) and 4.1 (`prog_size` 1).
+- **Measure:** erases per minute: the `bench_erases` of the `log` probe of
+  NEW `bench_wlog_fresh` with `RATE=1`, times 60 and divided by `SECONDS`
+  (600), for every permutation of `PROG_SIZE`, `GBMAP` and `PREERASE`, in
+  B-BIG; v2.11.3's erases per minute on the same workload (Appendix B.1).
+- **Pass:** every permutation is at or below v2.11.3's figure for its
+  `prog_size`: 58.7 for `prog_size` 1 and 16, 62.7 for 256.
+- **Fail:** any permutation is above it.
+- **Verified by:** NEW: `bench_wlog_fresh`. Measured outside the suite
+  (M-1, M-2): v2 about 63 per minute; v3 14.7 (`prog_size` 256) and 4.1
+  (`prog_size` 1).
 - **Status:** Partly tested (measured outside the suite).
 - **When:** nightly.
 
 #### LFS3-PERF-09
 
 littlefs shall perform no more erases than littlefs v2.11.3 on the logging
-workload W-LOG at 50 rows per second, for `prog_size` 1 and 256.
+workload W-LOG at 50 rows per second, for `prog_size` 1, 16 and 256, with
+and without the gbmap and pre-erase.
 
-- **Source:** Proposal, as LFS3-PERF-08.
-- **Measure:** erases per minute over 10 minutes.
-- **Pass:** v3 erases per minute ≤ v2.11.3 erases per minute for each
-  `prog_size`.
-- **Fail:** v3 erases more.
-- **Verified by:** NEW: in-tree bench of W-LOG.
+- **Source:** Proposal, as LFS3-PERF-08. Whether the bound is wanted at
+  `prog_size` 256 is open question Q23.
+- **Measure:** erases per minute: the `bench_erases` of the `log` probe of
+  NEW `bench_wlog_fresh` with `RATE=50`, times 60 and divided by `SECONDS`
+  (600), for every permutation of `PROG_SIZE`, `GBMAP` and `PREERASE`, in
+  B-BIG; v2.11.3's erases per minute on the same workload (Appendix B.1).
+- **Pass:** every permutation is at or below v2.11.3's figure for its
+  `prog_size`: 76.7 for `prog_size` 1 and 16, 80.7 for 256.
+- **Fail:** any permutation is above it.
+- **Verified by:** NEW: `bench_wlog_fresh`.
 - **Status:** Known defect (measured, M-3: with `prog_size` 256 v3 does
   89.5 erases per minute against v2's 80.7).
 - **When:** nightly.
@@ -5463,13 +5481,15 @@ logging starts.
   significantly reduce the latency [of] file writes in the critical path").
   The bound of one is our proposal: an mdir compaction erases its partner
   block, which pre-erase does not cover.
-- **Measure:** erases per call; longest call in simulated time.
+- **Measure:** erases per call: the `max_call_erases` result of NEW
+  `bench_wlog_fresh` with `GBMAP` and `PREERASE`; longest call in simulated
+  time (`max_call_ns`).
 - **Pass:** on W-LOG at 1 row per second with `prog_size` 1, the gbmap,
   `LFS3_PREERASE` and `LFS3_M_REVPERTURB`, no call performs more than one
   erase.
 - **Fail:** a call performs two or more erases.
-- **Verified by:** NEW: in-tree bench. Measured (M-2): longest call 51 ms,
-  one erase.
+- **Verified by:** NEW: `bench_wlog_fresh`. Measured (M-2): longest call
+  51 ms, one erase.
 - **Status:** Partly tested (measured outside the suite).
 - **When:** nightly.
 
@@ -5525,6 +5545,31 @@ without traversing the whole filesystem.
 - **Verified by:** NEW: bench case.
 - **Status:** Untested.
 - **When:** nightly.
+
+#### LFS3-PERF-14
+
+littlefs shall document, next to `prog_size` and `pcache_size` in
+`lfs3.h`, what each costs on W-LOG.
+
+- **Source:** Derived: `prog_size` multiplies v3's erases on a sync-heavy
+  log (LFS3-PERF-09), and the erased-state checksums that Q19 widened to
+  `pcache_size` read more and distrust older images (Appendix B.4). A user
+  choosing these values cannot see either cost from the header at
+  `b10efaa`.
+- **Measure:** `lfs3.h`.
+- **Pass:** next to `prog_size`, the header recommends the smallest
+  program the device supports rather than its page size, with W-LOG's
+  erases per minute at `prog_size` 1, 16 and 256; next to `pcache_size`, it
+  states the extra bytes read per metadata fetch and commit, W-LOG's reads
+  at mount and per minute, and the first-write cost on an image whose
+  checksums are narrower (an older driver or a smaller `pcache_size`). The
+  figures match `bench_wlog_fresh` and `bench_wlog_narrow`.
+- **Fail:** any item is missing or disagrees with the benches by more than
+  10%.
+- **Verified by:** review against NEW `bench_wlog_fresh` and
+  `bench_wlog_narrow`.
+- **Status:** Not implemented (planned).
+- **When:** before v3-beta.
 
 ### 6.19 Thread safety (THR)
 
@@ -6233,8 +6278,9 @@ hardware.
 - **Measure:** DESIGN.md or `lfs3.h`.
 - **Pass:** the documentation states at least: blocks 0 and 1 (and block 2
   when formatting with the gbmap) must remain programmable, because the
-  anchor cannot move; an interrupted prog changes some bit of its first
-  `prog_size` bytes (or the assumption Q19 settles on); progs within a block
+  anchor cannot move; an interrupted prog changes no bytes outside that
+  prog, which is at most `pcache_size` bytes rounded up to `prog_size`
+  (Q19); progs within a block
   are issued in increasing offset order; read errors are persistent; the
   erased value is not assumed; and, without `LFS3_M_CKPROGS`, a prog that
   silently fails is indistinguishable from a power loss.
@@ -6704,15 +6750,15 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Format, mount, grow, compatibility | MOUNT | 27 | 10 | 4 | 6 | 1 | 6 |
 | Configuration validation | CFG | 17 | 1 | 6 | 8 | 0 | 2 |
 | Resource bounds | RES | 8 | 0 | 0 | 7 | 0 | 1 |
-| Performance | PERF | 13 | 0 | 4 | 7 | 0 | 2 |
+| Performance | PERF | 14 | 0 | 4 | 7 | 1 | 2 |
 | Thread safety | THR | 3 | 0 | 0 | 1 | 0 | 2 |
 | Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
 | Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
 | Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **361** | **107** | **63** | **99** | **29** | **63** |
+| **All** | | **362** | **107** | **63** | **99** | **30** | **63** |
 
-By level: 223 stated, 118 derived, 20 proposals. By When: 291 every CI run,
-44 nightly, 26 before v3-beta.
+By level: 223 stated, 119 derived, 20 proposals. By When: 291 every CI run,
+44 nightly, 27 before v3-beta.
 
 107 requirements (30%) are fully checked by a case that runs in the default
 build. 63 are partly checked, most often because the checking case is
@@ -6914,6 +6960,15 @@ the checksummed bytes erased while changing later ones (3-alloc B17). The
 rbyd ECKSUM has the same width. Options: (a) state the hardware assumption
 (LFS3-DOC-12); (b) widen the checksum to the first flush size; (c) flush the
 first `prog_size` bytes of a new rbyd separately, before the rest.
+Answered: `v3-integration` does (b) (`57493587`). Erased-state checksums
+cover `pcache_size` bytes (at least 11, the largest tag littlefs programs
+on its own), rounded up to `prog_size` and clamped to the end of the
+block, for rbyd appends and pre-erased blocks alike. The format is
+unchanged, and a narrower checksum, from an older image or a smaller
+`pcache_size`, is not trusted. The hardware assumption left for
+LFS3-DOC-12 is that an interrupted program changes no bytes outside that
+program. Appendix B.4 measures the cost, which LFS3-PERF-14 asks `lfs3.h`
+to state.
 
 **Q20. gc with no work flags.** `lfs3_fs_gc` with `gc_flags` 0 still
 pre-erases and commits the gbmap when nothing is pending
@@ -6930,7 +6985,8 @@ mount failures (LFS3-MOUNT-11).
 **Q23. Performance gates.** The PERF thresholds are ours. Which workloads
 and bounds does the project want to gate on? In particular, is
 "no more erases than v2 on a sync-heavy log" a goal at large `prog_size`
-(LFS3-PERF-09)?
+(LFS3-PERF-09)? Meeting it at `prog_size` 256 needs a change to how
+littlefs writes an append-only file; Appendix B.5 measures the options.
 
 **Q24. Telling alpha formats apart.** Every alpha image claims version 0.0,
 so images from incompatible alpha commits cannot be told apart (4-api R24).
@@ -7062,7 +7118,7 @@ new environment (9.2).
 | LFS3-PRE-06 | Defect | every CI run | ERASEERROR block in the known window (`badblocks::preerase` on v3-fix-alloc) |
 | LFS3-PRE-07 | Untested | nightly | reentrant data writes into pre-erased blocks, on-disk window check |
 | LFS3-PRE-08 | Untested | every CI run | ERASENOOP with pre-erase and CKPROGS |
-| LFS3-PRE-09 | Untested | nightly | emubd tear after the first `prog_size` bytes, `PCACHE_SIZE > PROG_SIZE` |
+| LFS3-PRE-09 | Untested | nightly | emubd tear after the first `prog_size` bytes, `PCACHE_SIZE > PROG_SIZE` (`powerloss::append_pl`, `powerloss::preerase_pl_fuzz` on v3-integration) |
 | LFS3-GC-01 | Partly | every CI run | per-call work bound |
 | LFS3-GC-02 | Defect | every CI run | `GC_STEPS=-1` through and past NOSPC with every work flag; an mdir that compaction cannot shrink |
 | LFS3-GC-06 | Untested | every CI run | no handle left after `lfs3_fs_ck` |
@@ -7110,9 +7166,9 @@ new environment (9.2).
 | LFS3-PERF-05 | Untested | nightly | ratio check across block sizes |
 | LFS3-PERF-06 | Partly | nightly | bench: bytes per small append and sync at `prog_size` 256 |
 | LFS3-PERF-07 | Defect | nightly | count `cfg->sync` calls per file sync |
-| LFS3-PERF-08 | Partly | nightly | in-tree W-LOG bench with a v2.11.3 reference, 1 row/s |
-| LFS3-PERF-09 | Defect | nightly | in-tree W-LOG bench with a v2.11.3 reference, 50 rows/s |
-| LFS3-PERF-10 | Partly | nightly | in-tree W-LOG bench with pre-erase: erases per call |
+| LFS3-PERF-08 | Partly | nightly | in-tree W-LOG bench with a v2.11.3 reference, 1 row/s (`bench_wlog_fresh`) |
+| LFS3-PERF-09 | Defect | nightly | in-tree W-LOG bench with a v2.11.3 reference, 50 rows/s (`bench_wlog_fresh`) |
+| LFS3-PERF-10 | Partly | nightly | in-tree W-LOG bench with pre-erase: erases per call (`bench_wlog_fresh`) |
 | LFS3-PERF-11 | Partly | every CI run | data-block erases per small synced append |
 | LFS3-PERF-12 | Untested | nightly | CI bench-diff job |
 | LFS3-PERF-13 | Untested | nightly | reads of the first allocation after mount, with the gbmap |
@@ -7269,7 +7325,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | 3-alloc B6 | A failed `lfs3_fs_grow` restores the block count but not the allocation window | `lfs3.c:16985-16997, 10886-10897` | suspected | MOUNT-22 | none |
 | 3-alloc B10 | With the gbmap, every commit checkpoints and may need blocks to repopulate, so a remove on a full disk may fail | `lfs3.c:9480-9493, 10797-10808` | suspected | ALLOC-05 | none |
 | 3-alloc B11 | `lookgbmap_thresh`: the code tests `known < thresh`, the header says "<=" and "0 only repopulates the gbmap when empty" | `lfs3.c:10800-10802`, `lfs3.h:704-716` | code | ALLOC-11 | none |
-| 3-alloc B17 | Pre-erase's erased-state checksum covers only the first `prog_size` bytes, while the first program can be a `pcache_size` flush | `lfs3.c:2491-2502` | code (depends on the hardware model) | PRE-09, Q19 | none |
+| 3-alloc B17 | Pre-erase's erased-state checksum covers only the first `prog_size` bytes, while the first program can be a `pcache_size` flush | `lfs3.c:2491-2502` | code (depends on the hardware model) | PRE-09, Q19 | v3-integration `57493587` (`powerloss::append_pl`, `powerloss::preerase_pl_fuzz`) |
 | 3-alloc R3 | `lfs3_fs_ck` may return with its stack traversal still linked | `lfs3.c:16772-16775, 16824-16825` | suspected | GC-06 | none |
 | 3-alloc R8 | Header drift: `LFS3_M_REVPERTURB` comment, mkgbmap/rmgbmap returns, `gc_lookgbmap_thresh` text, read-callback CORRUPT, `LFS3_T_PREERASE` | `lfs3.h` | code | DOC-05, DOC-07, DOC-09, DOC-11, DOC-17 | none |
 | 4-api R1 | `lfs3_rename` of a directory into its own subtree returns 0 and detaches the subtree | `lfs3.c:11835-12014` | probe | DIR-05 | v3-fix-api `067ebe7` (`dirs::mv_subtree`) |
@@ -7460,12 +7516,12 @@ are mapped at the end of 6.4.
 | `lock` | THR-01, THR-02 |
 | `unlock` | THR-01, THR-02 |
 | `read_size` | CFG-01, CFG-02 |
-| `prog_size` | PL-15, INT-04, META-01, FILE-11, FILE-24, PRE-09, CFG-01, CFG-02, CFG-10, CFG-13, PERF-06, PERF-07, PERF-08, PERF-09 ... |
+| `prog_size` | PL-15, INT-04, META-01, FILE-11, FILE-24, PRE-09, CFG-01, CFG-02, CFG-10, CFG-13, PERF-06, PERF-07, PERF-08, PERF-09, PERF-14 |
 | `block_size` | META-03, ATTR-05, CFG-01, CFG-02, CFG-03, CFG-05, CFG-10, CFG-11, CFG-12, CFG-13 |
 | `block_count` | BAD-11, ALLOC-08, ALLOC-11, PRE-01, GC-02, MOUNT-03, CFG-01, CFG-17 |
 | `block_recycles` | PL-21, FAIL-14, CFG-01, CFG-04 |
 | `rcache_size` | CFG-01, CFG-02 |
-| `pcache_size` | PRE-09, CFG-01, CFG-02 |
+| `pcache_size` | PRE-09, CFG-01, CFG-02, PERF-14 |
 | `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08 |
 | `lookahead_size` | ALLOC-06, CFG-01 |
 | `gc_flags` | INT-15, GC-03, CFG-06 |
