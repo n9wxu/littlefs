@@ -1029,6 +1029,8 @@ before every release.
 | J-BUILD | every build of 5.1, plus the combinations of LFS3-BUILD-04, BUILD-05, BUILD-06, BUILD-20 (NEW-53) | A-64LE, thumb | – | compile only, `-Werror` | – | PR | est. 5 min |
 | J-RO | B-RO and B-YES-RDONLY reading images written by B-DEF and B-YGB (NEW-46) | A-64LE | G-NOR | `-Pnone` | – | PR | est. 1 min |
 | J-SIZE | B-DEF, B-RO, B-YGB, B-BIG with `LFS3_NO_LOG -DLFS3_NO_ASSERT` (NEW-118) | thumb | – | – | – | PR | est. 2 min |
+| J-ERRS | the recordings of J-DEF, J-BIG and J-YGB (NEW-93) | A-64LE | – | – | `scripts/ckerrs.py` | PR | < 1 min after those jobs |
+| J-CHECKS | `make test-compat-gbmap` (NEW-79), `make test-nomalloc` (NEW-90), `make test-progonce` (B-DEF with `CKPROGONCE`) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | emubd prog-once | PR | est. 2, 2 and 263 s |
 | J-TOOLS | `make test`, `make bench`, `test.py -j` on Linux and macOS (LFS3-CI-08) | A-64LE | – | smoke | – | PR | est. 5 min |
 | J-ARCH | B-DEF | A-32LE, A-32BE (mips, powerpc) | G-NOR | `-Pnone` on PR; `-Pnone -Plinear` nightly | – | PR, nightly | est. 22-90 min per target for the full run |
 | J-SAN | B-DEF and B-BIG | A-64LE | G-NOR | `-Pnone -Plinear` (ASan, UBSan, FORTIFY); `-Pnone` (valgrind) | ASan + UBSan, FORTIFY (GCC), valgrind | nightly | 3,202 s for B-BIG ASan; est. 1-3 h valgrind |
@@ -1044,7 +1046,7 @@ before every release.
 | J-ARCH-BIG | B-BIG | A-32LE, A-32BE | G-NOR | `-Pnone -Plinear` | – | release | est. 1.5-6 h per target |
 | J-COMPAT | B-DEF against each earlier v3-beta and v3 release linked as `LFSP` (LFS3-MOUNT-26, NEW-79) | A-64LE | G-NOR | `-Pnone` | – | release (from the first v3-beta) | est. 5 min |
 
-The PR tier has 9 jobs, the nightly tier 8 more (plus the full J-ARCH run),
+The PR tier has 11 jobs, the nightly tier 8 more (plus the full J-ARCH run),
 and the release tier 4 more. Every build appears in at least one job:
 J-BUILD compiles all 21, the suite runs in 18, and B-RO and B-YES-RDONLY are
 exercised through the image harness of J-RO. Every
@@ -1636,6 +1638,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | E-7 | **Allocator hook.** Wrap `malloc` and `free` in the test runner (`-Wl,--wrap=malloc`, as `BENCH_CFLAGS` already does for heap statistics) with counting and fail-the-k-th-call modes | `Makefile`, `runners/test_runner.c` | NEW-50, NEW-72, NEW-86, NEW-87 |
 | E-8 | **Read-only image harness.** The runner sets the write fields of `struct lfs3_cfg`, so it cannot build in B-RO. A small program, `runners/rdonly_runner.c`, mounts disk images written with `test.py -d` by B-DEF and B-YGB runs and compares them with a manifest written next to them | `runners/`, `Makefile` | NEW-46 |
 | E-9 | **Sparse device.** A block device whose memory grows only with the blocks written, for `block_count` near 2^31 (emubd keeps an array of block pointers) | `bd/` | NEW-88 |
+| E-10 | **Error recording.** `runners/test_errs.h` wraps every public function in the code tests run; with `TEST_ERRS=<file>` the runner appends each new (function, error code, case) to the file. `scripts/ckerrs.py` checks them against the codes each function lists in `lfs3.h`. `scripts/test.py` includes the hook after any source it compiles, so internal (`in = 'lfs3.c'`) cases are recorded too | `runners/test_errs.h`, `runners/test_runner.c`, `scripts/test.py`, `scripts/ckerrs.py`, `Makefile` | NEW-93, NEW-131 |
 
 ### 6.5 P1: remaining features and failure modes
 
@@ -1679,13 +1682,16 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-90 | `badblocks_gbmap` suite, `make test-nomalloc` | BAD-01 to BAD-04, BAD-06 to BAD-16 | the cases on `v3-integration`, plus `badblocks_gbmap::suspect` (BAD-16), block 2 in `badblocks_gbmap::factory` (BAD-14), and the suite rebuilt with `LFS3_NO_MALLOC` and static buffers (BAD-07) | as the requirements | E-1 |
 | NEW-130 | `repair` suite | BAD-17, GC-17, GC-18, DEG-09, DEG-10 | B-YGB and B-BIG; a data block, a file B-tree node and a gbmap node made READFLIP (reads fail half the time), or MANUAL-flipped (every read fails); `lfs3_fs_ck` and a mount with the check flags, with `ck_retries` 0 and 16 and `ck_passes` 1 to 3, on writable and read-only mounts; then erase or prog failures on the old block, and a second failure of a repaired block | READFLIP blocks are moved and the call returns 0; MANUAL blocks return `LFS3_ERR_CORRUPT` and stay suspect; read-only mounts write nothing; a clean old block is reused, a failing or twice-repaired one is marked bad; `lfs3_fs_nextbad`, `lfs3_fs_nextsuspect` and `lfs3_fs_usage` report health exactly | – |
 | NEW-91 | cross-endian image round trip | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (`-d` disk files), each read on the other | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
+| NEW-131 | `errs::ioerror` | ERR-04, ERR-05 | every class of call (format, mount, reads, metadata operations, file writes, janitorial calls, gbmap calls), each read, prog, erase and sync of the call failing in turn with `LFS3_ERR_IO` (`lfs3_emubd_mkioerror`); bd wrappers count device operations after the failure; then the state in the same mount, after a remount, and on a second call | the call returns IO (remove and rename may return 0 once committed); no device operation after a failed read, prog or erase; nothing bad or suspect; the state of ERRORS.md for the class | – |
+| NEW-132 | `badblocks::graft_torn` | ERR-03, ERR-07 | the existing case, plus every file call on each torn handle | sync, read, write, flush, truncate, fruncate, seek, size and ck return `LFS3_ERR_BADFD` and write nothing; tell, rewind, desync work; resync recovers; close writes nothing | – |
+| NEW-133 | `mount::no_geometry` | ERR-03 | internal; an mroot committed without its geometry tag | mount returns `LFS3_ERR_CORRUPT`, read-write and read-only | – |
 
 ### 6.6 P2: lower-value checks, benches and reports
 
 | ID | Case or job | Covers | Procedure | Pass | Ext |
 |---|---|---|---|---|---|
 | NEW-92 | `mount::two_fs` | GEN-04 | two filesystems on two emubd instances, interleaved fuzz | both match their models and pass `lfs3_fs_ck` | – |
-| NEW-93 | runner error-domain check | GEN-05 | a wrapper around every public call in the runner checks each negative result | every negative result is an `lfs3_err` or the bd's | – |
+| NEW-93 | runner error-domain check, error-code check | GEN-05, ERR-01, ERR-06 | extension E-10 over `make test` in B-DEF, B-BIG and B-YGB (CI jobs test, test-biggest, test-yes-gbmap; `make test-errs` locally) | every recorded code is in `enum lfs3_err`, is not RANGE or UNKNOWN, and is listed by its function in `lfs3.h`; every function has a "Returns" paragraph | E-10 |
 | NEW-94 | `ck::cksum_changes` | INT-08 | record `lfs3_fs_cksum` after each model-changing call over 10,000 operations | no repeated consecutive value | – |
 | NEW-95 | estimate check build | META-17 | a debug option that asserts compacted size ≤ estimate, run over `mtree::*_fuzz` and `btree::*_fuzz` | the assertion holds | – |
 | NEW-96 | `fwrite::zero` | FILE-02 | write with size 0 | returns 0; size, position, sync state and prog count unchanged | – |
