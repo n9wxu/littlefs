@@ -50,6 +50,8 @@ LFS3-DOC-02).
    - [6.20 Build configurations (BUILD)](#620-build-configurations-build)
    - [6.21 Continuous integration (CI)](#621-continuous-integration-ci)
    - [6.22 Documentation (DOC)](#622-documentation-doc)
+   - [6.23 Error handling for unattended systems (ERR)](#623-error-handling-for-unattended-systems-err)
+   - [6.24 Graceful degradation (DEG)](#624-graceful-degradation-deg)
 7. [Summary](#7-summary)
 8. [Open questions](#8-open-questions)
 9. [Requirements that need new tests](#9-requirements-that-need-new-tests)
@@ -6169,6 +6171,297 @@ LFS3-BUILD-01 to BUILD-20.
 - **Fail:** any option is undocumented.
 - **Verified by:** review.
 - **Status:** Not implemented (planned).
+- **When:** before v3-beta.
+
+### 6.23 Error handling for unattended systems (ERR)
+
+littlefs usually runs without a human to read an error. These requirements
+make every error actionable by firmware: each code maps to one recommended
+action (Retry, Rebuild or Fail), and the state after the error is stated, so
+the action is safe. Tracked in issue #20 of the fork.
+
+#### LFS3-ERR-01
+
+littlefs shall document, for every public function, every error code the
+function can return.
+
+- **Source:** Proposal. Unattended firmware must handle every code it can
+  receive; lfs3.h documents only "a negative error code" for most functions.
+- **Measure:** lfs3.h text against the codes seen across the test suites
+  with fault injection (`lfs3_emubd_mkioerror`, bad blocks, NOSPC, power
+  loss).
+- **Pass:** every code any test observes from a function is listed in that
+  function's documentation.
+- **Fail:** a function returns a code its documentation doesn't list.
+- **Verified by:** NEW: a runner hook that records (function, code) pairs
+  across the PR tier and checks them against a list generated from lfs3.h.
+- **Status:** Not implemented.
+- **When:** before v3-beta.
+
+#### LFS3-ERR-02
+
+littlefs shall document one recommended application action for every error
+code: Retry, Rebuild or Fail.
+
+- **Source:** Proposal (issue #20). Retry: the same call can succeed later.
+  Rebuild: repair or reclaim something, then retry. Fail: stop using this
+  path and take the application's contingency.
+- **Measure:** the documentation.
+- **Pass:** a table maps each `LFS3_ERR_*` to one action, with the conditions
+  (e.g. a bound on retries) and the contingencies for Fail.
+- **Fail:** a code without an action, or with an action that depends on
+  which call returned it.
+- **Verified by:** review.
+- **Status:** Not implemented (draft in issue #20).
+- **When:** before v3-beta.
+
+#### LFS3-ERR-03
+
+littlefs shall give each error code one meaning, independent of the call that
+returned it.
+
+- **Source:** Proposal. Firmware dispatches on the code; a code whose meaning
+  depends on context needs per-call handling and invites mistakes.
+- **Measure:** the documented meaning of each code.
+- **Pass:** no function documents a meaning for a code that differs from the
+  table of LFS3-ERR-02.
+- **Fail:** a code with two meanings.
+- **Verified by:** review.
+- **Status:** Known defect on `v3-integration`: `lfs3_file_sync` returns
+  `LFS3_ERR_INVAL` for a handle torn by a failed multi-commit write (until
+  `lfs3_file_resync`), while `LFS3_ERR_INVAL` otherwise means a caller bug.
+- **When:** before v3-beta.
+
+#### LFS3-ERR-04
+
+littlefs shall document the state on disk and in RAM after each error.
+
+- **Source:** Proposal. A retry or rebuild is only safe if the caller knows
+  what happened. At least: metadata operations are atomic, except that a
+  failed device sync after a commit keeps the commit and returns the error
+  once; a file write error desynchronizes the handle and leaves storage as
+  of the last successful sync; mount and format write nothing on error.
+- **Measure:** for each error class, the state after the error.
+- **Pass:** a test per documented state: the observed state after the
+  injected error matches the documentation, in B-DEF and B-BIG.
+- **Fail:** an observed state the documentation doesn't describe.
+- **Verified by:** `badblocks::ioerror`, `badblocks::badsync`,
+  `badblocks::truncate_desync`, `badblocks::graft_torn`; NEW: one test per
+  remaining documented state.
+- **Status:** Partly tested. The states are documented for sync and close
+  only.
+- **When:** every CI run.
+
+#### LFS3-ERR-05
+
+littlefs shall return `LFS3_ERR_IO` for device failures that may be
+transient, and `LFS3_ERR_CORRUPT` only for data that failed a check or that
+the device reported bad.
+
+- **Source:** Proposal. IO maps to Retry and CORRUPT to Rebuild. Reads can
+  fail while the supply is low, so the block device must be able to say
+  "try later" without littlefs treating the data as bad (issues #6, #19).
+- **Measure:** the code returned for an injected `LFS3_ERR_IO` and an
+  injected `LFS3_ERR_CORRUPT` from each callback.
+- **Pass:** an injected IO always surfaces as IO and never causes a
+  fallback, relocation or bad-block mark; an injected CORRUPT surfaces as
+  CORRUPT or is handled by relocation.
+- **Fail:** IO turned into CORRUPT, or into a silent fallback to older data.
+- **Verified by:** `mount::readerror` (IO only); NEW: the same for every
+  operation, and with CORRUPT (issue #6).
+- **Status:** Partly tested.
+- **When:** every CI run.
+
+#### LFS3-ERR-06
+
+littlefs shall never return `LFS3_ERR_RANGE`, `LFS3_ERR_UNKNOWN` or any
+internal code from a public function.
+
+- **Source:** Derived. These codes have no recommended action.
+- **Measure:** codes returned under fault injection.
+- **Pass:** no test in the PR and nightly tiers observes them.
+- **Fail:** any observation.
+- **Verified by:** the hook of LFS3-ERR-01.
+- **Status:** Known defect at `b10efaa` (RANGE reached the API from
+  oversized commits; fixed on `v3-integration`, d428d7b8, 42e26e7e).
+  Untested as a general property.
+- **When:** every CI run.
+
+### 6.24 Graceful degradation (DEG)
+
+The flash is usually soldered into the product. Replacing it means replacing
+the unit, and the data on it is lost with the old unit; units can also be
+hard to reach. So littlefs must lose as little as possible as the flash
+wears out or fails in places, keep the rest usable, and tell the application
+enough to keep operating on a best-effort basis.
+
+#### LFS3-DEG-01
+
+littlefs shall keep every file whose last sync completed as it was at that
+sync, after any power loss, and shall not build new committed state on the
+last writes of a file that was incomplete when power was lost.
+
+- **Source:** Proposal (issue #1). Data in flight at a power loss may be lost;
+  synced data may not. Today a commit interrupted by a power loss can read as
+  whole once, littlefs appends synced commits after it, and a later read of
+  the interrupted commit as torn drops them.
+- **Measure:** synced content after power loss, under every emubd power-loss
+  behaviour, METASTABLE included.
+- **Pass:** `powerloss::metastable` and the pending
+  `powerloss::metastable_builton` lose no completed sync.
+- **Fail:** a completed sync missing after a remount, with or without an
+  error.
+- **Verified by:** NEW-08 and the patch in issue #1.
+- **Status:** Known defect (issue #1).
+- **When:** every CI run (behaviours 0-5), nightly with permute(1).
+
+#### LFS3-DEG-02
+
+littlefs shall confine damage to a file's data to that file: other files stay
+readable and writable, and the damaged file can be removed.
+
+- **Source:** Proposal. A bad block in one file must not cost the others.
+- **Measure:** operations on other files, and `lfs3_remove` of the damaged
+  file, after its data block becomes unreadable.
+- **Pass:** reads of the damaged range return `LFS3_ERR_CORRUPT`; every other
+  file reads and writes correctly; the remove returns 0 and frees the file's
+  good blocks.
+- **Fail:** an error on another file, or the damaged file can't be removed.
+- **Verified by:** NEW (`badblocks::confined_data`).
+- **Status:** Partly tested (reads return CORRUPT; removal of a damaged file
+  is untested).
+- **When:** every CI run.
+
+#### LFS3-DEG-03
+
+littlefs shall mount a filesystem with a damaged metadata pair in a degraded
+mode that gives read access to everything stored in undamaged pairs.
+
+- **Source:** Proposal. At `b10efaa` one unreadable mdir or a global checksum
+  mismatch makes the whole volume unmountable (4-integrity R11; the mount code
+  has TODOs for a degraded mode). For an unreachable unit that is total loss.
+- **Measure:** mount result and reads after corrupting one non-root mdir.
+- **Pass:** a degraded mount (a mount flag, or automatic with an
+  `LFS3_I_*` flag reporting it) succeeds read-only; every file outside the
+  damaged pair reads correctly; operations on the damaged pair return
+  `LFS3_ERR_CORRUPT`.
+- **Fail:** mount fails, or a file outside the damaged pair is unreadable.
+- **Verified by:** NEW (`mount::degraded`).
+- **Status:** Not implemented.
+- **When:** before v3-beta.
+
+#### LFS3-DEG-04
+
+littlefs shall keep allocating for undamaged parts of the filesystem when one
+metadata block is unreadable.
+
+- **Source:** Proposal. At `b10efaa` a lookahead scan or gbmap repopulation
+  traverses the whole tree, so one unreadable mdir makes every write that
+  needs a scan fail (3-alloc R7).
+- **Measure:** writes to files in undamaged directories after an mdir becomes
+  unreadable.
+- **Pass:** the writes succeed while free good blocks remain; blocks the
+  damaged pair may reference are not reused.
+- **Fail:** `LFS3_ERR_CORRUPT` from writes that don't touch the damaged pair.
+- **Verified by:** NEW (`badblocks::alloc_with_damage`).
+- **Status:** Known defect (3-alloc R7).
+- **When:** every CI run.
+
+#### LFS3-DEG-05
+
+littlefs shall let the application remove files and attributes on a full or
+worn filesystem.
+
+- **Source:** Proposal. Reclaiming space is the application's main way to
+  keep operating.
+- **Measure:** `lfs3_remove` and `lfs3_removeattr` results on a full disk,
+  with and without the gbmap, and with a full mroot.
+- **Pass:** they return 0, and space is freed.
+- **Fail:** `LFS3_ERR_NOSPC` from a removal.
+- **Verified by:** `mtree::commit_too_big`, `gbmap::nospc_remove`,
+  `alloc::nospc_recover`.
+- **Status:** Known defect at `b10efaa`; fixed and tested on
+  `v3-integration` (eba40790, 60026203, f29b8985, 0535a265, 501eda31).
+- **When:** every CI run.
+
+#### LFS3-DEG-06
+
+littlefs shall shrink its capacity as blocks go bad, returning
+`LFS3_ERR_NOSPC` only when no good free block remains.
+
+- **Source:** Proposal, building on bad-block tracking (LFS3-BAD-*).
+- **Measure:** operation results and `lfs3_fs_usage` as blocks fail.
+- **Pass:** writes succeed while good free blocks remain; `lfs3_fs_usage`
+  and `lfs3_fs_nextbad` account for every bad block.
+- **Fail:** an error other than NOSPC while good free blocks remain, or a bad
+  block missing from the count.
+- **Verified by:** `badblocks_gbmap::*`, `exhaustion::spam_file_pl_fuzz`.
+- **Status:** Not implemented at `b10efaa`; implemented with the gbmap on
+  `v3-integration` (94ecb238..9d6b2fd1).
+- **When:** every CI run.
+
+#### LFS3-DEG-07
+
+littlefs shall stay readable after it can no longer write.
+
+- **Source:** Proposal. At end of life the data is what's worth saving.
+- **Measure:** a read-only mount and reads after a write-to-exhaustion run.
+- **Pass:** `lfs3_mount(LFS3_M_RDONLY)` succeeds and every synced file reads
+  correctly, in B-DEF, B-YGB and B-BIG.
+- **Fail:** the mount or a read fails.
+- **Verified by:** `exhaustion::readback`.
+- **Status:** Tested on `v3-integration` (NEW-15).
+- **When:** every CI run.
+
+#### LFS3-DEG-08
+
+littlefs shall have no single block, other than the mroot anchor pair, whose
+failure makes the filesystem unwritable, and shall keep the anchor pair's
+wear bounded.
+
+- **Source:** Proposal. At `b10efaa` a corrupt gbmap root makes every gbmap
+  lookup fail, and bad anchor blocks give NOSPC once the anchor must change
+  (3-alloc R9).
+- **Measure:** behaviour with the gbmap root, then each anchor block, made
+  bad; anchor erase counts over a long run.
+- **Pass:** a bad gbmap root falls back to lookahead allocation and the gbmap
+  is rebuilt elsewhere; anchor erases stay below a documented fraction of all
+  erases.
+- **Fail:** the filesystem becomes unwritable because of one non-anchor
+  block.
+- **Verified by:** NEW (`badblocks::gbmap_root`, `relocations::anchor_wear`).
+- **Status:** Known defect (3-alloc R9).
+- **When:** every CI run.
+
+#### LFS3-DEG-09
+
+littlefs shall report its health so the application can act before it fails:
+the number of bad blocks, suspect blocks, and free good blocks.
+
+- **Source:** Proposal (issues #9, #19). An unattended application can, for
+  example, log less or rotate sooner as capacity shrinks.
+- **Measure:** the reported values against the emubd state.
+- **Pass:** `lfs3_fs_stat` or a health call reports them exactly.
+- **Fail:** a mismatch.
+- **Verified by:** NEW (`badblocks_gbmap::health`).
+- **Status:** Partly implemented on `v3-integration` (`lfs3_fs_nextbad`).
+- **When:** every CI run.
+
+#### LFS3-DEG-10
+
+littlefs shall offer repairs smaller than a reformat: removing a damaged
+file, rebuilding a damaged directory, and rebuilding the gbmap; and its
+documentation shall recommend the smallest repair that applies.
+
+- **Source:** Proposal. A reformat loses every file, which on an unreachable
+  unit is the same as replacing it.
+- **Measure:** the result of each repair on an image with that damage.
+- **Pass:** each repair leaves `lfs3_fs_ck` passing and every undamaged file
+  intact.
+- **Fail:** a repair that loses undamaged data, or damage with no repair
+  short of a reformat.
+- **Verified by:** NEW, with the repairing check of issue #19.
+- **Status:** Partly: `lfs3_fs_rmgbmap`/`lfs3_fs_mkgbmap` rebuild the gbmap.
 - **When:** before v3-beta.
 
 ## 7. Summary
