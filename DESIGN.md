@@ -1439,7 +1439,7 @@ blocks costs one entry:
 | free   | not in use; erase before using                                  |
 | in use | referenced by the filesystem, or not known to be free           |
 | erased | not in use and already erased; carries an ecksum of the erased state |
-| bad    | reserved for bad-block tracking; nothing writes it yet          |
+| bad    | must never be erased or programmed, see [Bad blocks](#bad-blocks) |
 
 The gbmap's root, and the window into it described below, are stored in
 gstate, so they're updated atomically with whatever commit allocates blocks.
@@ -1638,7 +1638,7 @@ time an mdir is relocated.
 ## Bad blocks
 
 Flash wears out. Eventually a block fails to erase, or fails to hold what was
-programmed into it. Here's what v3 does about it today.
+programmed into it. Here's what v3 does about it.
 
 The block device reports a bad block by returning `LFS3_ERR_CORRUPT` from
 `prog` or `erase`. littlefs then treats the block the way v2 did: as a reason
@@ -1658,40 +1658,20 @@ to relocate.
    `LFS3_ERR_NOSPC`. An mdir that can't be relocated is compacted in place
    anyway ("overrecycled"), trading wear leveling for a little more life.
 
+A failed read of the block being copied is not a bad destination. littlefs
+keeps the two apart, and returns `LFS3_ERR_CORRUPT` instead of relocating
+again, so an unreadable source can't make it allocate and erase new blocks
+until the disk is exhausted.
+
 Read errors are different. There's no copy of the data in RAM to rewrite, so
 littlefs can only detect them. littlefs itself doesn't do error correction,
 though a block device can, and littlefs honors any error the block device
 reports.
 
-There are a few things v3 does not handle yet, and it's worth being explicit
-about them:
+### Remembering bad blocks
 
-1. **Bad blocks aren't remembered.** A block that failed is retried when the
-   allocator comes back around to it, and after every mount. Each retry costs
-   another failed erase or prog on a block we already know is bad.
-
-2. **littlefs can't tell which block failed.** `LFS3_ERR_CORRUPT` from reading
-   the block being copied looks the same as `LFS3_ERR_CORRUPT` from
-   programming the block being copied to. A read error on the source of a
-   compaction is treated like a bad destination, so littlefs can relocate,
-   read the source again, fail again, and keep allocating (and erasing) new
-   blocks until the disk is exhausted.
-
-3. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
-   goes bad, the filesystem keeps working until littlefs next has to rewrite
-   that block, and from then on writes fail with `LFS3_ERR_NOSPC`. Format
-   also needs blocks 0 and 1 to be good, plus block 2 when formatting with a
-   gbmap.
-
-4. **An unreadable metadata block stops allocation.** Repopulating the
-   lookahead buffer or rebuilding the gbmap traverses the whole filesystem,
-   so a metadata block that can't be read makes every write that needs a
-   traversal fail.
-
----
-
-Bad-block tracking is planned, and is one of the two items the maintainer
-lists as blocking the release of v3, alongside this document:
+Bad-block tracking is one of the two items the maintainer lists as blocking
+the release of v3, alongside this document:
 
 > Bad-block tracking - This should be a relatively easy addition to the gbmap,
 > and would be significantly valuable by making bd-level error-correction
@@ -1701,107 +1681,83 @@ lists as blocking the release of v3, alongside this document:
 > questions around the API and how to handle bad blocks detected in rdonly
 > contexts. ([#1111])
 
-The gbmap already reserves a state for it, and current drivers already behave
-sensibly when they find it: the allocator treats a bad run as in use,
-pre-erasing skips it, and rebuilding the gbmap keeps it. Nothing writes it yet.
+With the gbmap (`LFS3_GBMAP`), littlefs remembers bad blocks. There is no
+separate option: without a gbmap there is nowhere to keep the marks, and
+littlefs relocates as described above, retrying a bad block each time the
+allocator comes back around to it.
 
-### Proposal: remembering bad blocks in the gbmap
+**On disk**, a bad block is a range in the gbmap's bad state, with the run
+length as its weight and no payload. Unlike free and erased ranges, bad ranges
+are trusted everywhere, not only inside the known window: allocation from the
+lookahead buffer marks them as in use before adopting a window, pre-erasing
+skips them, and rebuilding the gbmap keeps them, even for a block it finds
+still referenced.
 
-**This is a proposal for discussion. Nothing in it is implemented in
-v3-alpha.** It's included here because the remaining design questions are
-the ones the maintainer raised: what the API looks like, and what to do in
-read-only contexts.
+**In RAM**, a block that fails an erase, a prog or a `LFS3_M_CKPROGS`
+read-back joins a small queue of runs, `LFS3_BADQ_SIZE` (4), and the
+allocator skips queued blocks. If more runs go bad at once than the queue
+holds, the smallest is forgotten, which is safe because marks are advisory: a
+forgotten block fails again the next time it's tried, and is queued then.
 
-**Goals:**
+**Marking** happens at an allocator checkpoint, as a gc step, or in
+`lfs3_fs_mkbad`, when every block is accounted for. littlefs traverses the
+filesystem, and writes the queued blocks that nothing references into the
+in-RAM gbmap, which the next mdir commit persists. A mark is never written
+for a block the committed filesystem references, so it can never hide data.
+A bad block still in use, usually a data block that's released by the next
+sync, or an mdir block that's released when the mdir next compacts, is
+checked again after 1, 2, 4, ... commits, and whenever the gbmap is rebuilt.
+Power loss can lose a mark, which only costs another failed erase or prog.
 
-1. A block that fails an erase, a prog, or a CKPROGS read-back is never erased
-   or programmed again, across remounts, once the mark is committed.
-2. Marks are advisory and power-loss safe. Losing a mark only costs a retry. A
-   mark can never make a block that is in use allocatable, or a block that
-   holds data unreadable.
-3. Read-only builds and read-only mounts never write. Read paths never need to
-   allocate.
-4. No new compat flag: drivers that already understand the gbmap already treat
-   bad runs as in use.
-5. Bounded RAM, no allocation.
+**Read-only** builds and mounts never write a mark.
 
-**On disk**, a bad run is the gbmap's existing bad state, with the run length
-as its weight and no payload (an optional payload, such as a reason, could be
-added later, as long as an empty payload stays valid). Unlike free and erased
-entries, bad entries are trusted everywhere, not only inside the known window.
-Without a gbmap there's nowhere to persist marks, so the feature would require
-`LFS3_GBMAP`. One existing behavior has to change: rebuilding the gbmap marks
-every referenced block as in use, which would overwrite a bad mark on a block
-that still holds data. That update should leave bad entries alone.
+**Format** writes the gbmap's root to the first block from 2 on that erases
+and programs, and marks any it skipped as bad. Blocks 0 and 1 can't be
+marked, since the anchor can't move; they stay a hardware requirement. A NAND
+factory bad-block table can be honored by a block device that refuses to
+erase those blocks, which keeps format off them, and by `lfs3_fs_mkbad` right
+after format, before anything else is written.
 
-**In RAM**, a small fixed-size queue of bad blocks waiting to be committed,
-say four. If it overflows, the oldest entry is dropped, which is safe because
-marks are advisory.
+**The API** is three calls: `lfs3_fs_mkbad` marks a block known to be bad,
+refusing blocks in use with `LFS3_ERR_BUSY`; `lfs3_fs_mkgood` clears a mark,
+say after a bench test; and `lfs3_fs_nextbad` lists bad blocks, including
+those still queued. `LFS3_I_BADBLOCKS` says some are queued but not yet on
+disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap` drops
+every mark, and `lfs3_fs_mkgbmap` starts without any.
 
-**Detection** needs to know which block failed. The block device wrappers
-would record the block that a failing prog, erase or read-back was aimed at,
-and the relocation paths would only relocate (and enqueue the block) when the
-failing block is the destination. A failed read of the source would be
-returned as `LFS3_ERR_CORRUPT`, after at most one relocation, which also fixes
-the relocation storm described above. The places that enqueue are the places
-that relocate today: allocation, mdir allocation, compaction and splits,
-B-tree node relocation, and data block crystallization. Pre-erasing would mark
-a block that fails to erase and move on.
+**No compat flag** guards the bad state. Drivers that understand the gbmap
+already treat a bad range as in use when allocating from it, and an older
+driver that allocates a marked block from a traversal treats it as it would an
+unmarked bad block: one failed erase or prog, then relocation. A flag would
+instead stop every such driver from writing the filesystem at all.
 
-**Before a mark is committed**, the allocator skips blocks in the queue, and
-traversals that repopulate the lookahead buffer mark them as in use, the same
-way they already mark data that's in the middle of being written.
+### Suspect blocks
 
-**Committing a mark** writes it into the in-RAM gbmap at a point where every
-block is accounted for: at an allocator checkpoint, as a gc step before
-pre-erasing, or during a gbmap rebuild. The mark is then persisted by the next
-mdir commit, like any other gbmap change. If writing the mark itself hits a
-bad block, that block joins the queue; the queue size and the allocator's
-checkpoint bound how long this can go on.
+A read that fails, with `LFS3_ERR_CORRUPT` from the block device or a
+checksum that doesn't match, doesn't prove the block is bad. The supply may
+have been low, or a bit left metastable by a power loss may read differently
+next time. So littlefs doesn't mark these blocks bad. It lists them as
+suspect, in RAM, up to `LFS3_SUSPECTS_SIZE` (8), forgetting the oldest, and
+`lfs3_fs_nextsuspect` returns them, so an application can see where its flash
+is going wrong and decide what to do. Finding suspects never writes, so
+read-only mounts find them too. Keeping them across mounts would need a new
+gbmap state and a compat flag, so it's left to the application.
 
-**Blocks that hold data** and fail a read, or a CKDATA check, can't be marked
-until their data has been moved somewhere else. A first version would only
-mark blocks that fail as a destination, and leave read-side marking to a later
-feature that relocates the owner first.
+### What v3 still doesn't handle
 
-**API sketch:**
+1. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
+   goes bad, the filesystem keeps working until littlefs next has to rewrite
+   that block, and from then on writes fail with `LFS3_ERR_NOSPC`. Format
+   also needs blocks 0 and 1 to be good.
 
-1. A compile-time option, `LFS3_BADBLOCKS`, which requires `LFS3_GBMAP`.
-2. `lfs3_fs_mkbad(lfs3, block)` to mark a block known to be bad, such as one
-   from a NAND factory bad-block table. It fails with `LFS3_ERR_INVAL` for
-   blocks out of range or for blocks 0 and 1, and with `LFS3_ERR_BUSY` if the
-   block is in use (a later version could relocate its owner instead).
-3. `lfs3_fs_mkgood(lfs3, block)` to clear a mark, say after a bench test.
-4. A count of bad blocks in `lfs3_fs_stat`, or traversals that report bad
-   blocks with a new block type.
-5. An info flag, set while marks are queued but not yet committed.
-6. A way to give format a factory bad-block list, or a callback, so bad blocks
-   are honored before their first erase. Format would then place the gbmap
-   root in the first good block after the anchor, instead of always block 2.
+2. **An unreadable metadata block stops allocation.** Repopulating the
+   lookahead buffer or rebuilding the gbmap traverses the whole filesystem,
+   so a metadata block that can't be read makes every write that needs a
+   traversal fail.
 
-Blocks 0 and 1 can't be marked, since they can't move. They stay a hardware
-requirement: the anchor blocks must be reliable.
-
-**Read-only contexts** never queue or commit marks. Detection still returns
-`LFS3_ERR_CORRUPT`, and a read-only mount needs nothing else, since it never
-allocates.
-
-**Interactions:** `lfs3_fs_rmgbmap` would lose every mark, so it should
-either refuse while bad blocks are marked or document the loss.
-`lfs3_fs_mkgbmap` starts with no marks. Growing the filesystem adds free runs,
-which a factory list may mark bad. Pre-erasing and gbmap rebuilds already
-skip and keep bad runs. Running out of good blocks still ends in
-`LFS3_ERR_NOSPC`, but with no more erases spent on known-bad blocks.
-
-**Tests** would need to show, for each kind of failure the test block device
-can inject, with and without CKPROGS: that a bad block's erase count stops
-growing after its first failure and stays frozen across remounts and gbmap
-rebuilds; that power loss while marking leaves the filesystem consistent and
-the mark either present or absent, never on a block in use; that queue
-overflow is harmless; that read-only mounts don't write; that pre-erasing
-continues past a block that fails to erase; and that a read error on the
-source of a compaction is reported as `LFS3_ERR_CORRUPT` after at most one
-relocation.
+3. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
+   retried when the allocator comes back around to it, and after every
+   mount.
 
 ## Costs
 
@@ -2063,8 +2019,9 @@ details of every one of these.
 v3 is not finished. Here's where the remaining pieces stand, according to the
 maintainer ([#1111], [#1114]):
 
-1. **Bad-block tracking** in the gbmap, described above. Planned, and one of
-   the two things blocking release.
+1. **Bad-block tracking** in the gbmap, described above, and one of the two
+   things blocking release. Blocks that fail reads are listed as suspect in
+   RAM only; keeping them across mounts would be a format addition.
 
 2. **This document and SPEC.md.** The other blocker, followed by a period of
    review, since "it would be foolish to commit to a disk format without at
