@@ -3534,8 +3534,11 @@ static int lfs3_rbyd_appendtag(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_tag_t tag, lfs3_rid_t weight, lfs3_size_t size) {
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_tag_isinternal(tag));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(tag & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (tag & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // do we fit?
     if (lfs3_rbyd_eoff(rbyd) + LFS3_TAG_DSIZE
@@ -3588,8 +3591,11 @@ static int lfs3_rbyd_appendrattr_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_from_t from, lfs3_count_t count, const lfs3_rattr_t *args) {
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_tag_isinternal(tag));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(tag & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (tag & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // encode lazy tags?
     //
@@ -3974,8 +3980,11 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     LFS3_ASSERT(lfs3_rbyd_isfetched(rbyd));
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_rattr_isinternal(rattr));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(lfs3_rattr_tag(rattr) & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (lfs3_rattr_tag(rattr) & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // rids and weights out of our rbyd's range mean our caller found
     // them in on-disk state that has since read differently
@@ -9233,6 +9242,12 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         // push a new grm, this tag lets us push grms atomically when
         // creating new mids
         if (lfs3_rattr_tag(r) == LFS3_tag_GRMPUSH) {
+            // mid=0 is the root bookmark, nothing goes before it, our
+            // lookup must have read something corrupt
+            if (mid_ == 0) {
+                lfs3_fs_revertgdelta(lfs3);
+                return LFS3_ERR_CORRUPT;
+            }
             lfs3_grm_push(lfs3, mid_);
 
         // adjust pending grms?
@@ -13771,8 +13786,10 @@ static int lfs3_file_lookupnext(lfs3_t *lfs3, LFS3_BCONST lfs3_file_t *file,
     if (tag < 0) {
         return tag;
     }
-    LFS3_ASSERT(tag == LFS3_TAG_DATA
-            || tag == LFS3_TAG_BLOCK);
+    // anything else means the disk reads differently than it did
+    if (tag != LFS3_TAG_DATA && tag != LFS3_TAG_BLOCK) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // fetch the bptr/data fragment
     int err = lfs3_bptr_fetch(lfs3, bptr_, tag, weight, data);
