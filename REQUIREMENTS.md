@@ -464,7 +464,9 @@ the same results as on the host that wrote it.
 - **Verified by:** `compat::endian_exchange` through
   `make test-compat-endian` (job `test-compat-endian`, mips and powerpc
   under qemu-user).
-- **Status:** Untested. Expected to fail until LFS3-META-04 is fixed.
+- **Status:** Tested on v3-integration (d91ce6d6). Run for arm64 against
+  mips and powerpc with GCC and `-Werror` under Docker; the images were
+  byte-identical.
 - **When:** every CI run.
 
 #### LFS3-GEN-03
@@ -687,7 +689,7 @@ littlefs shall not make data written by `lfs3_file_write` or
 - **Verified by:** implied by `powerloss::spam_f_pl_fuzz`;
   `powerloss_p1::flush_pl` (explicit flush, `LFS3_O_FLUSH`, `LFS3_M_FLUSH`;
   files of more than one block with `-DNIGHTLY=1`).
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (9cb7377f).
 - **When:** every CI run.
 
 #### LFS3-PL-07
@@ -767,7 +769,7 @@ written by a file sync atomic under power loss.
 - **Fail:** an attribute is torn, or has a value that was never set.
 - **Verified by:** `attrs::fattr_pl_fuzz_fuzz` (file-attached attributes);
   `attrs::setattr_pl_fuzz` (path attributes and "/").
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (b686c1da).
 - **When:** every CI run.
 
 #### LFS3-PL-12
@@ -784,7 +786,7 @@ littlefs shall make `lfs3_set` atomic under power loss: after remount
 - **Fail:** any other value or size.
 - **Verified by:** `powerloss_p1::kv_pl_fuzz`. Each value starts with the op
   that wrote it, since `lfs3_set` cannot commit an attribute with the value.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (f05ccd38).
 - **When:** every CI run.
 
 #### LFS3-PL-13
@@ -848,7 +850,7 @@ resynced handles write it.
   file, with desyncs, resyncs and syncs) passes under `-Plinear` in B-DEF.
 - **Fail:** the file matches no handle's synced state.
 - **Verified by:** `powerloss_p1::fsync_pl_fuzz`.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (5e8c3080).
 - **When:** every CI run.
 
 #### LFS3-PL-17
@@ -862,7 +864,7 @@ with `LFS3_O_SYNC` durable when the write returns.
   `LFS3_O_SYNC` and with `LFS3_M_SYNC`.
 - **Fail:** data from a returned write is missing after remount.
 - **Verified by:** `powerloss_p1::osync_pl`.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (cba1a7d5).
 - **When:** every CI run.
 
 #### LFS3-PL-18
@@ -1073,7 +1075,7 @@ valid tag, whatever the erased value.
 - **Fail:** fetch accepts bytes that were never written as part of a
   commit.
 - **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`.
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (f6e23134).
 - **When:** every CI run.
 
 #### LFS3-INT-04
@@ -1092,7 +1094,7 @@ erased-state checksum (ecksum).
   commit appends.
 - **Fail:** the commit is appended to the disturbed block.
 - **Verified by:** `mtree::ecksum_disturb`.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (f6e23134).
 - **When:** every CI run.
 
 #### LFS3-INT-05
@@ -1129,7 +1131,7 @@ filesystem was built on.
 - **Fail:** the mount succeeds.
 - **Verified by:** `ck::ckmeta_hard` with `METHOD=3` (indirect, via bit
   flips); `ck::rollback`.
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (6d53943f).
 - **When:** every CI run.
 
 #### LFS3-INT-07
@@ -1181,7 +1183,7 @@ rollback.
 - **Fail:** the checksums are equal.
 - **Verified by:** `ck::ckmeta_hard` comments and `METHOD=3` (indirect);
   `ck::rollback`.
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (6d53943f).
 - **When:** every CI run.
 
 #### LFS3-INT-10
@@ -1250,8 +1252,8 @@ its trunk. No checksum covers the padding after a commit's checksum.
   B-BIG.
 - **Fail:** 0 is returned for a corrupted file.
 - **Verified by:** as listed; `ck::file_ckdata_blocks`.
-- **Status:** Partly tested (the cases flip bits only in B-tree blocks,
-  `tests/test_ck.toml:1231-1233`). The scope question is open question Q13.
+- **Status:** Tested on v3-integration (23b617c1). The file's own mdir entry
+  and inline data are open question Q13.
 - **When:** every CI run.
 
 #### LFS3-INT-14
@@ -1347,7 +1349,16 @@ differently from when it was fetched.
   in B-BIG.
 - **Fail:** the flipped value is returned without the error.
 - **Verified by:** as listed; NEW-62 `ck::readflip_spam`.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Known defect (D-5; NEW-62 is pending as
+  `ck_readflip_spam.patch`): with READFLIP, 29 of 180 permutations of
+  `ck::readflip_spam` read wrong data without an error. A flipped
+  continuation bit in a tag's weight or size leb128 shifts the tag's
+  framing, so the single parity bit is compared against an unrelated bit and
+  passes half the time; a name lookup then returned `LFS3_ERR_NOENT` for an
+  existing entry. And a re-fetch of an mdir while mounted stops at the first
+  commit whose checksum fails, as after a power loss, and silently returns
+  the older commit. Detecting either needs a stronger on-disk check; see
+  open question Q11.
 - **When:** every CI run.
 
 #### LFS3-INT-20
@@ -1382,7 +1393,7 @@ any mdir changes on disk while mounted.
   `LFS3_ERR_CORRUPT` and never assert, in B-DEF.
 - **Fail:** the check returns 0.
 - **Verified by:** `ck::ckmeta_hard` (indirect); `ck::rollback`.
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (6d53943f).
 - **When:** every CI run.
 
 #### LFS3-INT-22
@@ -1400,7 +1411,8 @@ littlefs shall return `LFS3_ERR_CORRUPT` from `lfs3_fs_ck` with
   B-YGB and B-BIG.
 - **Fail:** the check returns 0.
 - **Verified by:** `ck::ckmeta_gbmap`.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (36762484). Compiled out of B-DEF;
+  runs in B-YGB and B-BIG.
 - **When:** every CI run.
 
 #### LFS3-INT-23
@@ -1447,7 +1459,8 @@ B-tree node compaction and crystallization from a data block;
 - **Fail:** the copy succeeds with the covering option, or a check before
   the copy misses the flip.
 - **Verified by:** `ck::launder`.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (69ce4c06). Without the covering
+  option every copy tried laundered the flip.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -1598,8 +1611,7 @@ littlefs shall return `LFS3_ERR_CORRUPT`, with `LFS3_M_CKMETAPARITY` and
   bad blocks under a directory and a file workload) passes in B-BIG.
 - **Fail:** flipped data is returned without an error.
 - **Verified by:** as listed; NEW-62 `ck::readflip_spam`, see LFS3-INT-19.
-- **Status:** Partly tested (compiled out of B-DEF; `ckdatacksums_data`
-  could not build at `b10efaa`, F-2).
+- **Status:** Known defect, see LFS3-INT-19.
 - **When:** every CI run.
 
 #### LFS3-FAIL-10
@@ -2094,7 +2106,7 @@ total height of at most 2 × black height + 2.
   `mtree::*` in a build with `LFS3_DBGRBYDBALANCE`, passes.
 - **Fail:** the check fires.
 - **Verified by:** `make test-balance` (nightly job `test-balance`).
-- **Status:** Untested (the option is never built).
+- **Status:** Tested on v3-integration (35d965ef). Runs nightly.
 - **When:** nightly.
 
 #### LFS3-META-03
@@ -2261,7 +2273,7 @@ revision count wraps around 2^32.
   mroot and for an mdir in the mtree, in B-DEF.
 - **Fail:** the older block is fetched.
 - **Verified by:** all suites (incidental); `mtree::rev_wrap`.
-- **Status:** Partly tested.
+- **Status:** Tested on v3-integration (ef18a87f).
 - **When:** every CI run.
 
 #### LFS3-META-13
@@ -2894,7 +2906,10 @@ handle torn, `lfs3_file_sync` refuses it with `LFS3_ERR_INVAL` and
   failed range match the model, in B-DEF and B-BIG with the prog-once check.
 - **Fail:** the check fails, or bytes outside the range differ.
 - **Verified by:** `badblocks::error_then_sync`.
-- **Status:** Untested (suspected, 2-files B5).
+- **Status:** Tested on v3-integration (75eeba26). The case found D-3 and
+  D-4, fixed in `4968164e` (a retried crystallization progged over its own
+  progs after `LFS3_ERR_IO`) and `ce2a68d6` (a remove failed with
+  `LFS3_ERR_NOSPC` on a nearly full disk when an mdir had to split).
 - **When:** every CI run.
 
 #### LFS3-SYNC-10
@@ -3434,7 +3449,7 @@ littlefs shall support attributes on the root directory ("/").
   without a file in the mroot, in B-DEF.
 - **Fail:** any error or wrong value.
 - **Verified by:** `attrs::root` (a probe passed at `b10efaa`).
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (d3ccde9a).
 - **When:** every CI run.
 
 #### LFS3-ATTR-07
@@ -4094,7 +4109,8 @@ after them.
 - **Fail:** such a prog occurs.
 - **Verified by:** `powerloss_p1::tear_tail`; every `powerloss::*` case also
   runs with torn tails.
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (c9511dfe). The pre-erase workload
+  runs in B-BIG only.
 - **When:** every CI run.
 
 ### 6.14 Garbage collection and traversals (GC)
@@ -7073,6 +7089,9 @@ upstream yet. Requirement status always describes `b10efaa`.
 |---|---|---|---|---|---|
 | D-1 | The `gc_preerase_count` comment does not say that pre-erase needs `LFS3_REVPERTURB` and a mount with `LFS3_M_REVPERTURB` | `lfs3.h:608-620` | code | DOC-04 | none |
 | D-2 | With `LFS3_M_CKMETAPARITY` and without `LFS3_M_CKFETCHES`, `lfs3_bd_readtag` parity-checks CKSUM tags during quick fetches. The byte after a CKSUM tag is the next commit's valid bit, or erased state that the perturb bit makes intentionally invalid, so every B-tree commit to an rbyd not fetched since mount returns `LFS3_ERR_CORRUPT`. Appends to B-tree files fail after a remount, and mounts with `LFS3_M_PREERASE` fail: 1275 permutations of `mount::flags` and `mount::format_flags` in B-BIG | `lfs3.c:1368-1376` | run | INT-23, GC-13, BUILD-13 | v3-fix-parity `f90e132` (`ck::ckparity_btree_append`) |
+| D-3 | After a prog fails with something other than `LFS3_ERR_CORRUPT` partway through a crystallization that resumes a file's leaf block, the leaf still claims the block is erased from where the crystallization started, and the next sync progs those bytes again | `lfs3_file_crystallize_` | run (`badblocks::error_then_sync`, `LFS3_ERR_IO` on the 146th prog) | SYNC-09, CFG-15 | `4968164e` |
+| D-4 | An mdir split that finds blocks for its first sibling but not for the second, or not for the mtree node, fails with `LFS3_ERR_NOSPC` instead of compacting in place, so `lfs3_remove` fails on a nearly full disk | `lfs3_mdir_commit_` | run (`badblocks::error_then_sync` with `PROG_SIZE=16`) | ALLOC-04, SYNC-09 | `ce2a68d6` |
+| D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | none, needs an on-disk change or a restated requirement |
 
 ### A.3 From the analyses
 
