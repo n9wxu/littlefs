@@ -5473,7 +5473,8 @@ and without the gbmap and pre-erase.
   89.5 erases per minute against v2's 80.7). On `v3-integration`
   (`fd3157e3`), `prog_size` 256 without pre-erase does 86.7 erases per
   minute (86.4 with the gbmap) against v2's 80.7; every other permutation
-  passes, the worst being 40.1 at `prog_size` 16 against 76.7.
+  passes, the worst being 40.1 at `prog_size` 16 against 76.7. Appendix
+  B.5 measures changes to the write path that would meet it.
 - **When:** nightly.
 
 #### LFS3-PERF-10
@@ -6812,7 +6813,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-CFG-05 | 1-meta 7.14 | none |
 | LFS3-RES-06 | 4-api R8 | none |
 | LFS3-PERF-07 | measured | none |
-| LFS3-PERF-09 | measured, M-3 | none |
+| LFS3-PERF-09 | measured, M-3, `bench_wlog_fresh` | none; Appendix B.5 measures options |
 | LFS3-THR-01 | 4-api R19 | none |
 | LFS3-THR-02 | 4-api R19 | none |
 | LFS3-BUILD-02 | F-2 | v3-fixes `e4c046b` |
@@ -7554,6 +7555,72 @@ allocated, and gc does not re-erase blocks it already recorded as erased,
 so logging runs at the rate without pre-erase until those blocks, about
 2000 here, are used up. A mount with a smaller `pcache_size` than the image
 was written with costs nothing.
+
+### B.5 Large `prog_size` on fast logs: measured options
+
+At 50 rows per second with `prog_size` 256, W-LOG erases more than v2.11.3
+(LFS3-PERF-09). Traced on `fd3157e3`, the log is a B-tree whose root is
+kept in the mdir. Each second, the flush of the full file cache and the
+sync each graft the longer block pointer, which takes two commits because
+it carves both the old pointer and the old fragment, and then the bytes
+left over, fewer than 256, as a new fragment. At the sync,
+crystallization finds nothing new to write into the data block but still
+marks it ungrafted, so the unchanged pointer is grafted again. That is
+about seven commits a second to the B-tree leaf, each padded to 256 bytes
+and each followed by a commit to the root in the mdir, also padded: the
+leaf is relocated every 1.4 seconds and the mdir compacted every 2.1
+seconds.
+
+Changing how littlefs writes an append-only file is a design decision left
+to the fork's maintainer (Q23). Four changes were prototyped in a copy of
+`lfs3.c`, none committed. `bench_wlog_fresh`, erases per minute, without
+the gbmap unless marked:
+
+| Change | 1 row/s, `prog_size` 1 / 16 / 256 | 1 row/s, 256, pre-erase | 50 rows/s, `prog_size` 1 / 16 / 256 | 50 rows/s, 256, pre-erase |
+|---|---|---|---|---|
+| none (`fd3157e3`) | 4.1 / 7.6 / 14.7 | 8.5 | 24.6 / 40.1 / 86.7 | 29.6 |
+| A. evict a B-shrub at `shrub_size` instead of `shrub_size/2` | 4.1 / 7.6 / 16.4 | 16.2 | 24.7 / 40.2 / 87.7 | 31.5 |
+| B. don't graft a block pointer that crystallization didn't change | 4.1 / 6.3 / 14.5 | 8.6 | 24.6 / 37.3 / 79.3 | 26.7 |
+| C. carve a file's last entry and append past it in one commit | 3.5 / 7.0 / 10.8 | 6.4 | 23.1 / 37.1 / 71.1 | 23.1 |
+| D. keep an append's unaligned tail in the file cache until the sync | 4.1 / 7.6 / 14.7 | 8.5 | 24.6 / 32.3 / 63.1 | 19.3 |
+| B, C and D | 3.5 / 5.7 / 10.6 | 6.2 | 23.1 / 27.8 / 48.5 | 15.4 |
+| v2.11.3 | 58.7 / 58.7 / 62.7 | | 76.7 / 76.7 / 80.7 | |
+
+- **A** keeps fragments in the shrub longer. The 1 row per second log
+  stays a B-shrub, but its commits then go to the mdir, whose compactions
+  pre-erasing can't remove, and the 50 rows per second log outgrows the
+  shrub anyway. It costs more than it saves.
+- **B** saves a leaf commit and an mdir commit at each sync that wrote a
+  fragment. What a sync leaves on disk is unchanged.
+- **C** applies where a graft spans entries. Each entry is committed
+  separately because entries can be in different leaves, but when the
+  carved entry is the file's last, the append that follows goes to the
+  same leaf. It helps every `prog_size`, `prog_size` 1 included. What a
+  sync leaves on disk is unchanged.
+- **D** avoids padded commits that more appends in the same sync will
+  replace. When `lfs3_file_write` flushes a full file cache in the middle
+  of an append to a data block whose erased state is known, it flushes up
+  to the block's last `prog_size` boundary and keeps the rest, fewer than
+  `prog_size` bytes, cached, so no fragment is written between syncs.
+  `lfs3_file_flush`, `lfs3_file_sync` and close still write everything.
+  The kept bytes are unsynced and so not durable either way.
+
+With B, C and D together, every permutation of LFS3-PERF-09 passes, the
+worst being 48.5 erases per minute against 80.7, and LFS3-PERF-10 still
+holds: at most one erase in any call with pre-erase. They pass the full
+default suite (660,860 permutations) and all but one of B-BIG's 1,123,797:
+in `repair::reuse` with `ERASEFAIL` false, the block the test frees is
+reused as the unwritten half of a new metadata pair, in use but not yet
+erased when the disk fills, and the test counts its erases. With C there
+are fewer commits before the disk fills; the test, not the change, would
+need adjusting. On the other
+benches, at their default configuration and with `PROG_SIZE` 16 and 256 for
+60 simulated seconds, per byte written: `bench_wt_logging` erases 13 to 16%
+less and `bench_wt_seq` 5 to 21% less; `bench_wt_random`, `bench_file` and
+`bench_dir` change by at most 1.4%; `bench_wt_many` doesn't change. The read
+probe of `bench_rt_logging`, a second handle's fruncate and sync, erases
+11.5% more per byte at `prog_size` 256, but its writer, outside the probes,
+erases less, and the bench as a whole 11.6% less per byte.
 
 ## Appendix C. Coverage index
 

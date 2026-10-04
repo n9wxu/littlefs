@@ -2044,7 +2044,8 @@ to the same conclusion:
 Devices that really do need large programs, NAND with per-page ECC or NOR with
 on-die ECC, have to use their real program size. For them the
 `prog_size=256` rows above are what to expect: a big improvement over v2 for
-slow logs, but not for fast ones.
+slow logs, but not for fast ones. REQUIREMENTS.md, Appendix B.5, measures
+changes to how littlefs appends that would close the gap.
 
 ## Compatibility
 
