@@ -566,6 +566,19 @@ struct lfs3_cfg {
 
     // Minimum size of a program in bytes. All program operations will be a
     // multiple of this value.
+    //
+    // Use the smallest program the device supports, not its page size.
+    // Most SPI NOR flash programs anything from 1 byte to a page, and
+    // littlefs never programs a byte twice between erases. Every metadata
+    // commit is padded to prog_size, and appended data that doesn't fill
+    // a prog_size unit waits in the file's tree until it does, so small
+    // synced appends cost more erases as prog_size grows. On the flight
+    // log of benches/bench_wlog.toml (4 KiB blocks, a sync every second),
+    // prog_size 1, 16 and 256 cost 4.1, 7.6 and 14.7 erases a minute at
+    // 22 bytes a second, and 24.6, 40.1 and 86.7 at 1100 bytes a second,
+    // where littlefs v2.11 costs 59 to 63 and 77 to 81. Devices that
+    // must program whole pages, such as NAND or NOR with per-page ECC,
+    // need their page size here.
     #ifndef LFS3_RDONLY
     lfs3_size_t prog_size;
     #endif
@@ -600,9 +613,24 @@ struct lfs3_cfg {
     // performance by storing more data and reducing the number of disk
     // accesses. Must be a multiple of the program size.
     //
-    // Erased-state checksums cover the most littlefs progs at once, which
-    // is pcache_size bytes, so a larger pcache also reads more when
-    // fetching metadata and before each commit.
+    // Erased-state checksums cover the most littlefs progs at once,
+    // which is pcache_size bytes (at least 11, rounded up to prog_size),
+    // so a larger pcache also reads more: up to pcache_size-prog_size
+    // more bytes each time a metadata log is fetched and each time a
+    // commit ends. On the flight log of benches/bench_wlog.toml
+    // (prog_size 1, pcache_size 1024), mount reads 7.2 KiB and logging
+    // 176 KiB a minute, where checksums of prog_size bytes read 4.1 KiB
+    // and 24 KiB; the difference is about 6 ms a minute at 50 MHz quad
+    // SPI. Programs and erases don't change.
+    //
+    // Checksums narrower than this, written with a smaller pcache_size or
+    // by an alpha driver that covered only prog_size bytes, aren't
+    // trusted. The first commit to each metadata log compacts it, and
+    // each block pre-erased under a narrower checksum is erased again
+    // when it is allocated, so pre-erasing gains nothing until those
+    // blocks are used up: on that log at 1100 bytes a second, 27 erases in
+    // the first minute instead of 5. A smaller pcache_size than the
+    // image was written with costs nothing.
     #ifndef LFS3_RDONLY
     lfs3_size_t pcache_size;
     #endif

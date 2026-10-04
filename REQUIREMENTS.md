@@ -5576,7 +5576,9 @@ littlefs shall document, next to `prog_size` and `pcache_size` in
   10%.
 - **Verified by:** review against `bench_wlog_fresh` and
   `bench_wlog_narrow`.
-- **Status:** Not implemented (planned).
+- **Status:** Not implemented at `b10efaa`. Met on `v3-integration`: the
+  comments on `prog_size` and `pcache_size` give the figures of Appendix
+  B.1 and B.4, and DESIGN.md's worked example repeats them.
 - **When:** before v3-beta.
 
 ### 6.19 Thread safety (THR)
