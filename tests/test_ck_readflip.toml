@@ -1,0 +1,546 @@
+# READFLIP bad blocks, bits that read differently on each read
+#
+# Each round makes one bit of one block metastable, does one random
+# operation, and reads everything back. We choose the bit, so a miss,
+# wrong data without LFS3_ERR_CORRUPT, can be put down to its cause:
+#
+# CLASS=0 => a bit whose flip leaves a tag's framing intact, in the
+#            mroot or a B-tree node, or a bit of a data block, the
+#            checks must find every flip
+# CLASS=1 => a bit whose flip changes where a tag or its data ends, in
+#            the mroot or a B-tree node, LFS3_M_CKMETAPARITY can miss
+#            these
+# CLASS=2 => a bit of an mdir in the mtree, which is fetched again on
+#            every lookup and falls back to an older commit if a newer
+#            one fails its checksum (issue #6)
+#
+# This lives in its own suite for its helpers, and to keep merges with
+# test_ck clean
+after = ['test_ck']
+
+code = '''
+// reads that returned a flipped bit, every read goes through here
+static uint32_t test_readflip_flips;
+
+__attribute__((unused))
+static int test_readflip_read(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        void *buffer, lfs3_size_t size) {
+    int err = lfs3_emubd_read(cfg, block, off, buffer, size);
+    if (err) {
+        return err;
+    }
+
+    const lfs3_emubd_t *bd = cfg->context;
+    const lfs3_emubd_block_t *b = bd->blocks[block];
+    if (b && b->metastable && memcmp(buffer, &b->data[off], size) != 0) {
+        test_readflip_flips += 1;
+    }
+    return 0;
+}
+
+// parse a raw tag with rem bytes left in its block, returns the size of
+// the tag, or -1 where lfs3_bd_readtag would return LFS3_ERR_CORRUPT
+__attribute__((unused))
+static lfs3_ssize_t test_readflip_parsetag(const uint8_t *p, lfs3_size_t rem,
+        lfs3_tag_t *tag_, lfs3_size_t *dsize_) {
+    if (rem < 4) {
+        return -1;
+    }
+    lfs3_size_t tag_dsize = lfs3_min(LFS3_TAG_DSIZE, rem);
+    lfs3_tag_t tag = (((lfs3_tag_t)p[0] << 8) | p[1]) & 0x7fff;
+    lfs3_ssize_t d = 2;
+    uint32_t weight;
+    lfs3_ssize_t d_ = lfs3_fromleb128(&weight, &p[d], tag_dsize-d);
+    if (d_ < 0 || weight > 0x7fffffff) {
+        return -1;
+    }
+    d += d_;
+    uint32_t size;
+    d_ = lfs3_fromleb128(&size, &p[d], tag_dsize-d);
+    if (d_ < 0 || size > 0x0fffffff) {
+        return -1;
+    }
+    d += d_;
+    lfs3_size_t dsize = (tag & LFS3_TAG_ALT) ? 0 : size;
+    if (d + dsize > rem) {
+        return -1;
+    }
+    *tag_ = tag;
+    *dsize_ = dsize;
+    return d;
+}
+
+// pick, by reservoir sampling, one bit of a raw rbyd block that lookups
+// read, in any of its commits: with framing, one whose flip changes
+// where its tag or the tag's data ends, without, one whose flip
+// doesn't, returns how many there are
+__attribute__((unused))
+static lfs3_size_t test_readflip_rbydbits(const uint8_t *buf,
+        lfs3_size_t block_size, bool framing,
+        uint32_t *prng, lfs3_size_t *bit_, lfs3_size_t *end_) {
+    lfs3_size_t count = 0;
+    lfs3_size_t off = 4;
+    *end_ = off;
+    while (true) {
+        lfs3_tag_t tag;
+        lfs3_size_t dsize;
+        lfs3_ssize_t d = test_readflip_parsetag(&buf[off], block_size-off,
+                &tag, &dsize);
+        if (d < 0) {
+            break;
+        }
+
+        // lookups don't read checksums and the like
+        if ((tag & 0xf000) != LFS3_TAG_CKSUM) {
+            for (lfs3_size_t i = 0; i < 8*(lfs3_size_t)d; i++) {
+                uint8_t tmp[LFS3_TAG_DSIZE];
+                lfs3_size_t n = lfs3_min(LFS3_TAG_DSIZE, block_size-off);
+                memcpy(tmp, &buf[off], n);
+                tmp[i/8] ^= 1 << (i%8);
+                lfs3_tag_t tag_;
+                lfs3_size_t dsize_;
+                lfs3_ssize_t d_ = test_readflip_parsetag(tmp, block_size-off,
+                        &tag_, &dsize_);
+                bool framing_ = d_ >= 0 && (d_ != d || dsize_ != dsize);
+                if (framing_ == framing) {
+                    count += 1;
+                    if (TEST_PRNG(prng) % count == 0) {
+                        *bit_ = 8*off + i;
+                    }
+                }
+            }
+            for (lfs3_size_t i = 0; !framing && i < 8*dsize; i++) {
+                count += 1;
+                if (TEST_PRNG(prng) % count == 0) {
+                    *bit_ = 8*(off+d) + i;
+                }
+            }
+        }
+
+        off += d + dsize;
+        *end_ = off;
+    }
+    return count;
+}
+'''
+
+
+# READFLIP bad blocks under dirs and files, with metadata parity, data
+# checksums, and optionally fetch checks
+#
+# A miss stops a run, a detected flip in a write stops a run, a flip
+# detected while reading back is cleared and the reads repeated. A block
+# rewritten in a round changes what its bit is, so it stops the run too.
+# Misses are counted and printed, and fail the case only in class 0,
+# where the checks promise to find every flip (LFS3-INT-19)
+[cases.test_ck_readflip_spam]
+# CK=0 => LFS3_M_CKMETAPARITY | LFS3_M_CKDATACKSUMS
+# CK=1 => as CK=0, and LFS3_M_CKFETCHES
+defines.CK = [0, 1]
+defines.CLASS = [0, 1, 2]
+# LAYOUT=0 => directories
+# LAYOUT=1 => inline files
+# LAYOUT=2 => files of data blocks
+# LAYOUT=3 => files of fragments in B-tree nodes
+defines.LAYOUT = [0, 1, 2, 3]
+defines.BLOCK_SIZE = 512
+defines.SIZE = '(const lfs3_size_t[]){0, 8, 2*BLOCK_SIZE, BLOCK_SIZE/2}[LAYOUT]'
+defines.FRAGMENT_SIZE = '(LAYOUT == 3) ? 16 : LFS3_MIN(BLOCK_SIZE/16, 512)'
+defines.CRYSTAL_THRESH = '(LAYOUT == 3) ? BLOCK_SIZE+1 : BLOCK_SIZE/16'
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READFLIP'
+defines.N = [8, 32]
+defines.ROUNDS = 64
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+if = 'LFS3_IFDEF_CKFETCHES(true, CK != 1)'
+ifdef = ['LFS3_CKMETAPARITY', 'LFS3_CKDATACKSUMS']
+code = '''
+    // count flips through our own read
+    struct lfs3_cfg cfg = *CFG;
+    cfg.read = test_readflip_read;
+    lfs3_emubd_t *bd = CFG->context;
+    test_readflip_flips = 0;
+
+    uint32_t prng = SEED;
+    lfs3_emubd_seed(CFG, TEST_PRNG(&prng));
+
+    uint32_t mflags = LFS3_M_RDWR
+            | LFS3_M_CKMETAPARITY
+            | LFS3_M_CKDATACKSUMS
+            | ((CK == 1) ? LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, -1) : 0);
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, mflags, &cfg) => 0;
+
+    // our model, which names exist, and the seed of each file's data
+    bool exists[N];
+    uint32_t seeds[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        exists[x] = false;
+        seeds[x] = 0;
+    }
+    uint8_t *wbuf = malloc(lfs3_max(SIZE, 1));
+    uint8_t *rbuf = malloc(SIZE+1);
+    uint8_t *snapshot = malloc(BLOCK_SIZE);
+    assert(wbuf && rbuf && snapshot);
+    #define TEST_READFLIP_NAME(name, x) \
+        sprintf(name, "%s%03x", (LAYOUT == 0) ? "dir" : "file", (unsigned)(x))
+    #define TEST_READFLIP_DATA(seed, buffer) do { \
+        uint32_t prng_ = (seed); \
+        for (lfs3_size_t j_ = 0; j_ < SIZE; j_++) { \
+            (buffer)[j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+    } while (0)
+
+    // read everything back, status is 0 if it matches, 1 if a read
+    // returned LFS3_ERR_CORRUPT, 2 for a miss
+    #define TEST_READFLIP_VERIFY(status) do { \
+        (status) = 0; \
+        for (lfs3_size_t x_ = 0; x_ < N && !(status); x_++) { \
+            char name_[256]; \
+            TEST_READFLIP_NAME(name_, x_); \
+            struct lfs3_info info_; \
+            int err_ = lfs3_stat(&lfs3, name_, &info_); \
+            if (err_ == LFS3_ERR_CORRUPT) { \
+                (status) = 1; \
+                break; \
+            } \
+            if (!exists[x_]) { \
+                if (err_ != LFS3_ERR_NOENT) { \
+                    printf("miss: stat %s -> %d, expected noent\n", \
+                            name_, err_); \
+                    (status) = 2; \
+                } \
+                continue; \
+            } \
+            if (err_ \
+                    || info_.type != ((LAYOUT == 0) \
+                        ? LFS3_TYPE_DIR \
+                        : LFS3_TYPE_REG) \
+                    || (LAYOUT != 0 && info_.size != SIZE)) { \
+                printf("miss: stat %s -> %d, type %d size %d\n", \
+                        name_, err_, info_.type, (int)info_.size); \
+                (status) = 2; \
+                break; \
+            } \
+            if (LAYOUT == 0) { \
+                continue; \
+            } \
+            lfs3_file_t file_; \
+            err_ = lfs3_file_open(&lfs3, &file_, name_, LFS3_O_RDONLY); \
+            if (err_ == LFS3_ERR_CORRUPT) { \
+                (status) = 1; \
+                break; \
+            } \
+            if (err_) { \
+                printf("miss: open %s -> %d\n", name_, err_); \
+                (status) = 2; \
+                break; \
+            } \
+            lfs3_ssize_t d_ = lfs3_file_read(&lfs3, &file_, rbuf, SIZE+1); \
+            TEST_READFLIP_DATA(seeds[x_], wbuf); \
+            if (d_ == LFS3_ERR_CORRUPT) { \
+                (status) = 1; \
+            } else if (d_ != (lfs3_ssize_t)SIZE \
+                    || memcmp(rbuf, wbuf, SIZE) != 0) { \
+                printf("miss: read %s -> %d, wrong data\n", \
+                        name_, (int)d_); \
+                (status) = 2; \
+            } \
+            err_ = lfs3_file_close(&lfs3, &file_); \
+            assert(!err_); \
+        } \
+        if ((status)) { \
+            break; \
+        } \
+        lfs3_dir_t dir_; \
+        int err_ = lfs3_dir_open(&lfs3, &dir_, "/"); \
+        if (err_ == LFS3_ERR_CORRUPT) { \
+            (status) = 1; \
+            break; \
+        } \
+        assert(!err_); \
+        lfs3_size_t x_ = 0; \
+        for (lfs3_size_t i_ = 0;; i_++) { \
+            assert(i_ < N+3); \
+            struct lfs3_info info_; \
+            err_ = lfs3_dir_read(&lfs3, &dir_, &info_); \
+            if (err_ == LFS3_ERR_CORRUPT) { \
+                (status) = 1; \
+                break; \
+            } \
+            if (i_ < 2) { \
+                if (err_) { \
+                    printf("miss: dir_read %d -> %d\n", (int)i_, err_); \
+                    (status) = 2; \
+                    break; \
+                } \
+                continue; \
+            } \
+            while (x_ < N && !exists[x_]) { \
+                x_ += 1; \
+            } \
+            if (x_ == N) { \
+                if (err_ != LFS3_ERR_NOENT) { \
+                    printf("miss: dir_read %s, expected noent\n", \
+                            info_.name); \
+                    (status) = 2; \
+                } \
+                break; \
+            } \
+            char name_[256]; \
+            TEST_READFLIP_NAME(name_, x_); \
+            if (err_ || strcmp(info_.name, name_) != 0) { \
+                printf("miss: dir_read -> %d %s, expected %s\n", \
+                        err_, (err_) ? "" : info_.name, name_); \
+                (status) = 2; \
+                break; \
+            } \
+            x_ += 1; \
+        } \
+        err_ = lfs3_dir_close(&lfs3, &dir_); \
+        assert(!err_); \
+    } while (0)
+
+    lfs3_size_t rounds = 0;
+    lfs3_size_t flipped = 0;
+    lfs3_size_t detected = 0;
+    lfs3_size_t misses = 0;
+    bool rewritten = false;
+    lfs3_size_t r = 0;
+    for (; r < ROUNDS; r++) {
+        // find the bits of our class, nothing is metastable here
+        lfs3_block_t picks[3] = {-1, -1, -1};
+        lfs3_size_t bits[3];
+        lfs3_size_t ends[3];
+        lfs3_size_t counts[3] = {0, 0, 0};
+        #define TEST_READFLIP_RBYD(k, block) do { \
+            const lfs3_emubd_block_t *b_ = bd->blocks[(block)]; \
+            if (!b_) { \
+                break; \
+            } \
+            lfs3_size_t bit_, end_; \
+            lfs3_size_t count_ = test_readflip_rbydbits(b_->data, \
+                    BLOCK_SIZE, CLASS == 1, \
+                    &prng, &bit_, &end_); \
+            if (count_ == 0) { \
+                break; \
+            } \
+            counts[(k)] += count_; \
+            if (TEST_PRNG(&prng) % counts[(k)] < count_) { \
+                picks[(k)] = (block); \
+                bits[(k)] = bit_; \
+                ends[(k)] = end_; \
+            } \
+        } while (0)
+        if (CLASS != 2) {
+            TEST_READFLIP_RBYD(0, lfs3.mroot.r.blocks[0]);
+        }
+        lfs3_trv_t trv;
+        lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+        while (true) {
+            struct lfs3_tinfo tinfo;
+            int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            // mdirs in the mtree, not the mroot or its chain
+            if (tinfo.btype == LFS3_BTYPE_MDIR && CLASS == 2) {
+                if (tinfo.block > 1
+                        && tinfo.block != lfs3.mroot.r.blocks[0]
+                        && tinfo.block != lfs3.mroot.r.blocks[1]) {
+                    TEST_READFLIP_RBYD(0, tinfo.block);
+                }
+            } else if (tinfo.btype == LFS3_BTYPE_BTREE && CLASS != 2) {
+                TEST_READFLIP_RBYD(1, tinfo.block);
+            } else if (tinfo.btype == LFS3_BTYPE_DATA && CLASS == 0) {
+                lfs3_size_t count = 8*BLOCK_SIZE;
+                counts[2] += count;
+                if (TEST_PRNG(&prng) % counts[2] < count) {
+                    picks[2] = tinfo.block;
+                    bits[2] = TEST_PRNG(&prng) % count;
+                    ends[2] = BLOCK_SIZE;
+                }
+            }
+        }
+        lfs3_trv_close(&lfs3, &trv) => 0;
+        #undef TEST_READFLIP_RBYD
+
+        // pick a kind of block, then our bit
+        lfs3_size_t kinds = 0;
+        lfs3_size_t k = -1;
+        for (lfs3_size_t k_ = 0; k_ < 3; k_++) {
+            if (counts[k_]) {
+                kinds += 1;
+                if (TEST_PRNG(&prng) % kinds == 0) {
+                    k = k_;
+                }
+            }
+        }
+        lfs3_block_t badblock = (kinds) ? picks[k] : (lfs3_block_t)-1;
+        if (kinds) {
+            memcpy(snapshot, bd->blocks[badblock]->data, ends[k]);
+            lfs3_emubd_mkbadbit(CFG, badblock, bits[k]) => 0;
+            bd->blocks[badblock]->metastable = true;
+            rounds += 1;
+        }
+        uint32_t flips = test_readflip_flips;
+
+        // one operation
+        int status = 0;
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 3;
+        char name[256];
+        TEST_READFLIP_NAME(name, x);
+        int err;
+        if (!exists[x] || op == 0) {
+            // create, or rewrite a file
+            uint32_t seed = TEST_PRNG(&prng);
+            if (LAYOUT == 0) {
+                err = lfs3_mkdir(&lfs3, name);
+                if (!err && exists[x]) {
+                    printf("miss: mkdir %s -> 0, expected exist\n", name);
+                    status = 2;
+                } else if (err == LFS3_ERR_EXIST && !exists[x]) {
+                    printf("miss: mkdir %s -> exist\n", name);
+                    status = 2;
+                } else if (err && err != LFS3_ERR_EXIST) {
+                    status = (err == LFS3_ERR_CORRUPT) ? 1 : 3;
+                }
+            } else {
+                TEST_READFLIP_DATA(seed, wbuf);
+                lfs3_file_t file;
+                err = lfs3_file_open(&lfs3, &file, name,
+                        LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC);
+                if (!err) {
+                    lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                            wbuf, SIZE);
+                    err = lfs3_file_close(&lfs3, &file);
+                    if (d < 0) {
+                        err = d;
+                    }
+                }
+                if (err) {
+                    status = (err == LFS3_ERR_CORRUPT) ? 1 : 3;
+                }
+            }
+            if (!status) {
+                exists[x] = true;
+                seeds[x] = seed;
+            }
+
+        } else if (op == 1) {
+            err = lfs3_remove(&lfs3, name);
+            if (err == LFS3_ERR_NOENT) {
+                printf("miss: remove %s -> noent\n", name);
+                status = 2;
+            } else if (err) {
+                status = (err == LFS3_ERR_CORRUPT) ? 1 : 3;
+            } else {
+                exists[x] = false;
+            }
+
+        } else {
+            lfs3_size_t y = TEST_PRNG(&prng) % N;
+            char new_name[256];
+            TEST_READFLIP_NAME(new_name, y);
+            err = lfs3_rename(&lfs3, name, new_name);
+            if (err == LFS3_ERR_NOENT) {
+                printf("miss: rename %s -> noent\n", name);
+                status = 2;
+            } else if (err) {
+                status = (err == LFS3_ERR_CORRUPT) ? 1 : 3;
+            } else if (y != x) {
+                exists[x] = false;
+                exists[y] = true;
+                seeds[y] = seeds[x];
+            }
+        }
+
+        // read everything back, clearing any flip we found and reading
+        // again
+        bool found = (status == 1);
+        if (!status) {
+            TEST_READFLIP_VERIFY(status);
+            if (status == 1) {
+                found = true;
+                assert(kinds);
+                lfs3_emubd_mkgood(CFG, badblock) => 0;
+                bd->blocks[badblock]->metastable = false;
+                lfs3.rcache.size = 0;
+                TEST_READFLIP_VERIFY(status);
+                // a flip found and cleared must leave nothing behind
+                assert(status != 1);
+            }
+        }
+
+        // was our block rewritten?
+        if (kinds && memcmp(snapshot, bd->blocks[badblock]->data, ends[k])
+                != 0) {
+            rewritten = true;
+        }
+
+        // and clear our bit
+        if (kinds) {
+            lfs3_emubd_mkgood(CFG, badblock) => 0;
+            bd->blocks[badblock]->metastable = false;
+        }
+        lfs3.rcache.size = 0;
+        flipped += (test_readflip_flips != flips);
+        detected += found;
+
+        if (status == 2) {
+            misses += 1;
+            if (kinds) {
+                printf("miss in class %d, %s bit 0x%"PRIx32".%"PRIx32
+                            "+%"PRIx32"%s\n",
+                        (int)CLASS,
+                        (CLASS == 2) ? "mdir"
+                            : (k == 0) ? "mroot"
+                            : (k == 1) ? "btree"
+                            : "data",
+                        badblock, bits[k]/8, bits[k]%8,
+                        (rewritten) ? ", rewritten" : "");
+            } else {
+                printf("miss in class %d with no bit flipping\n",
+                        (int)CLASS);
+            }
+        }
+        if (status != 0 || rewritten) {
+            break;
+        }
+    }
+
+    printf("class %d, ck %d: %d rounds, %d flipped, %d detected, "
+                "%d missed%s\n",
+            (int)CLASS, (int)CK, (int)rounds, (int)flipped, (int)detected,
+            (int)misses, (rewritten) ? ", ended by a rewrite" : "");
+
+    // the checks must find every flip of class 0
+    //
+    // fetch checks verify a B-tree node when it is fetched, and lookups
+    // read it again, so they don't find flips of class 1 either
+    if (!rewritten && CLASS == 0) {
+        assert(misses == 0);
+    }
+
+    // a run that ended cleanly must leave a clean filesystem
+    if (r == ROUNDS) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, mflags, &cfg) => 0;
+        int status;
+        TEST_READFLIP_VERIFY(status);
+        assert(status == 0);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    free(wbuf);
+    free(rbuf);
+    free(snapshot);
+    #undef TEST_READFLIP_NAME
+    #undef TEST_READFLIP_DATA
+    #undef TEST_READFLIP_VERIFY
+'''
