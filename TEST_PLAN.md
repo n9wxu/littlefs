@@ -1619,6 +1619,7 @@ already written on the fork's branches are listed first.
 | NEW-52 | `dirs::rm_many_2layers` | PL-27 | existing case | remove the `TEST_PLS && N==4` exclusion (`tests/test_dirs.toml:3442`) once the "did in the wrong mdir" bug is fixed; the case passes under `-Plinear` with PLB-TORN |
 | NEW-53 | build matrix (J-BUILD) | BUILD-01 to BUILD-11, BUILD-20, INT-05 | new job | every build of 5.1 and the combinations of BUILD-04, BUILD-05, BUILD-06 and BUILD-20 compile with `-Werror` under GCC and clang (and arm-none-eabi for BUILD-11); `ck::crc32c*` pass with each crc32c option; `nm` finds no undeclared external symbol (BUILD-10) |
 | NEW-54 | sanitizer job (J-SAN) | GEN-03, CI-04, CI-09 | new job | ASan and UBSan in B-DEF and B-BIG with `-Pnone -Plinear`, valgrind with `-Pnone`, GCC FORTIFY: zero reports, test code included. Fix the zero-length arrays in `alloc::nospc_*` that B.3 found |
+| NEW-130 | `badblocks::crystal_ioerror` | CFG-15 | new | `BLOCK_SIZE` 512; a file of 16-byte fragments, then an overwrite of its middle half that crystallizes data blocks, with the n-th read, prog or erase failing with `LFS3_ERR_IO`, for every n the write reaches; then sync (resync if refused), close and remount. `CKPROGONCE` true. No byte is programmed twice, the file is old data with a prefix of the write, and `lfs3_fs_ck(CKMETA \| CKDATA)` returns 0, in B-DEF, B-YGB and B-BIG |
 
 ### 6.4 Extensions to emubd and the runner
 

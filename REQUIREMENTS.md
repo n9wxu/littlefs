@@ -4951,18 +4951,32 @@ device callback.
 #### LFS3-CFG-15
 
 littlefs shall never program a byte of a block twice without erasing the
-block in between.
+block in between, including when it writes again after a write that failed
+part way, and shall never program bytes a failed write left in its caches.
 
 - **Source:** Stated: `lfs3.h:473-474` ("The block must have previously been
   erased"); #1111 "Pre-erased block tracking" ("littlefs has a very
   conservative model of flash, and avoids progging unless it is sure a prog
-  has not been attempted").
+  has not been attempted"). A write can fail after programming part of a
+  block (a read, prog or erase error, or a bad source block); the bytes it
+  programmed are no longer erased, and what it left in the prog cache
+  belongs to no commit (issue #3).
 - **Measure:** an emubd check that fails any prog to a byte programmed since
-  the block's last erase.
-- **Pass:** every suite passes in B-DEF and B-BIG with the check enabled.
-- **Fail:** the check fires.
-- **Verified by:** NEW: emubd check.
-- **Status:** Untested.
+  the block's last erase; data checksums after the retry.
+- **Pass:** every suite passes in B-DEF and B-BIG with the check enabled;
+  `badblocks::crystal_ioerror`, which fails the n-th read, prog or erase of
+  a write that rewrites data blocks, then syncs, for every n, passes with
+  the check enabled and `lfs3_fs_ck(LFS3_CK_CKMETA | LFS3_CK_CKDATA)`
+  returning 0, and `badblocks::graft_torn` passes, in B-DEF, B-YGB and
+  B-BIG.
+- **Fail:** the check fires, a data checksum mismatches, or an assert.
+- **Verified by:** NEW-12 (emubd check, all suites);
+  `badblocks::crystal_ioerror` (NEW-130); `badblocks::graft_torn`.
+- **Status:** Known defect on `v3-integration` (issue #3): after a failed
+  crystallization the file still treated its data block as erased past the
+  bytes the failed attempt programmed, and the next crystallization flushed
+  the failed attempt's prog cache into its own checksum. `graft_torn` asserts
+  (`off >= pcache.off`) in B-YGB.
 - **When:** every CI run.
 
 #### LFS3-CFG-16
