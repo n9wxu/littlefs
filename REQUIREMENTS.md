@@ -369,7 +369,7 @@ Selected with `-DPOWERLOSS_BEHAVIOR=n` (`bd/lfs3_emubd.h:45-51`).
 | 1 | SOMEBITS | prog: one bit in the first `prog_size` bytes is programmed; erase: the old data stays and one bit flips |
 | 2 | MOSTBITS | is applied, then one bit in the first `prog_size` bytes (or, for an erase, anywhere) flips |
 | 3 | OOO | every block written since the last `sync` reverts, except the one being written |
-| 4 | METASTABLE | is applied, then one bit of the block becomes metastable and reads of it return random values until the next prog or erase |
+| 4 | METASTABLE | is applied, then one bit that it wrote (for an erase, one bit of the block) becomes metastable and reads of it return random values until the block's next prog or erase. Bits outside the interrupted operation never change: a flip there is bit rot (F12 to F14), not power loss |
 
 **PLB-TORN** means the set {0, 1, 2, 3}. **PLB-ALL** means {0, 1, 2, 3, 4}.
 

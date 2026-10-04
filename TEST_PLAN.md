@@ -437,7 +437,7 @@ table (end of 6.4) lists the same classes.
 | F2 | Power loss, SOMEBITS | `POWERLOSS_BEHAVIOR=1`: one bit of the interrupted prog lands; an interrupted erase leaves old data with one bit flipped |
 | F3 | Power loss, MOSTBITS | `POWERLOSS_BEHAVIOR=2`: the interrupted write lands with one bit wrong |
 | F4 | Power loss, OOO | `POWERLOSS_BEHAVIOR=3`: every block written since the last sync reverts, except the one being written |
-| F5 | Power loss, METASTABLE | `POWERLOSS_BEHAVIOR=4`: the write lands and one bit of the block then reads randomly |
+| F5 | Power loss, METASTABLE | `POWERLOSS_BEHAVIOR=4`: the write lands and one bit it wrote (for an erase, one bit of the block) then reads randomly |
 | F6 | Bad block, PROGERROR | `BADBLOCK_BEHAVIOR=0` with `lfs3_emubd_mkbad`: prog returns `LFS3_ERR_CORRUPT` |
 | F7 | Bad block, ERASEERROR | `BADBLOCK_BEHAVIOR=1`: erase returns `LFS3_ERR_CORRUPT` |
 | F8 | Bad block, READERROR | `BADBLOCK_BEHAVIOR=2`: reads return `LFS3_ERR_CORRUPT`; at write time only `LFS3_M_CKPROGS` reads back |
@@ -626,8 +626,10 @@ reverts, except the one being written.
 
 #### F5. Power loss, METASTABLE
 
-Injection: `POWERLOSS_BEHAVIOR=4`: the write lands and one bit of the block
-then reads randomly.
+Injection: `POWERLOSS_BEHAVIOR=4`: the write lands, and one bit it wrote (for
+an erase, one bit of the block) then reads randomly until the block is next
+programmed or erased. Bytes outside the interrupted operation never change;
+`bd::metastable` checks this.
 
 | Operations | Coverage | Tests | Recovered means |
 |---|---|---|---|
