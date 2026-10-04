@@ -32,7 +32,7 @@ LFS3-DOC-02).
    - [6.2 Power-loss resilience (PL)](#62-power-loss-resilience-pl)
    - [6.3 Error detection and integrity (INT)](#63-error-detection-and-integrity-int)
    - [6.4 Flash failure handling (FAIL)](#64-flash-failure-handling-fail)
-   - [6.5 Bad-block tracking, planned (BAD)](#65-bad-block-tracking-planned-bad)
+   - [6.5 Bad-block tracking (BAD)](#65-bad-block-tracking-bad)
    - [6.6 Metadata (META)](#66-metadata-meta)
    - [6.7 Files and data (FILE)](#67-files-and-data-file)
    - [6.8 Sync model and stickynotes (SYNC)](#68-sync-model-and-stickynotes-sync)
@@ -1756,7 +1756,7 @@ The rows follow the flash-failure matrix of the analysis (3-alloc §5).
 | Rollback | INT-06, INT-09, INT-21 | |
 | Not injectable yet (5.10) | FAIL-18, FAIL-19, PRE-09, DOC-12 | |
 
-### 6.5 Bad-block tracking, planned (BAD)
+### 6.5 Bad-block tracking (BAD)
 
 Bad-block tracking is release blocker #1 (#1114, 2026-04-22): "This should be
 a relatively easy addition to the gbmap, and would be significantly valuable
@@ -1764,15 +1764,22 @@ by making bd-level error-correction practical." #1111 ("Bad block tracking")
 adds that "there are a few unanswered questions around the API and how to
 handle bad blocks detected in rdonly contexts".
 
-The requirements below follow the design sketch in the analysis (3-alloc §8):
-bad blocks are recorded as the existing `LFS3_TAG_BMBAD` range entry
-(`lfs3.h:865`, never written at `b10efaa`) in the gbmap; detection sites
-queue the block in a small in-RAM queue; the queue is flushed into the gbmap
-at a checkpoint and persisted with the next mdir commit. Requirements
-LFS3-BAD-01 to BAD-10 describe the behaviour the maintainer has asked for.
-LFS3-BAD-11 to BAD-15 are an API proposal and are marked as such. All are
-verified by a NEW suite, `test_badblocks_gbmap`, built with `LFS3_GBMAP` and
-the new option (called `LFS3_BADBLOCKS` here).
+None of this exists at `b10efaa`, where the gbmap reserves `LFS3_TAG_BMBAD`
+(`lfs3.h:865`) but nothing writes it. On `v3-integration` (94ecb238..9d6b2fd1,
+4f6d5ef8) it is part of `LFS3_GBMAP`, with no separate option: a block whose
+erase or prog returns `LFS3_ERR_CORRUPT`, or whose `LFS3_M_CKPROGS` read-back
+fails, waits in a RAM queue of `LFS3_BADQ_SIZE` runs; the allocator skips
+queued blocks; once a traversal shows a queued block is no longer referenced,
+it is written into the gbmap as a BMBAD range, which the next mdir commit
+persists. `lfs3_fs_mkbad`, `lfs3_fs_mkgood` and `lfs3_fs_nextbad` mark, clear
+and list bad blocks. The suite is `test_badblocks_gbmap`, compiled with
+`LFS3_GBMAP` (B-YGB and B-BIG).
+
+A failed read is different: it does not prove the media is bad, since reads
+can fail while the supply is low (issue #19). Blocks that fail a read or a
+checksum are recorded as suspect, in RAM only (LFS3-BAD-16), and become bad
+only when a repair finds they no longer erase and program cleanly (issue
+#19).
 
 #### LFS3-BAD-01
 
@@ -1783,13 +1790,15 @@ failed an `LFS3_M_CKPROGS` read-back.
 - **Source:** Stated: #1111 "Bad block tracking" ("avoiding reuse of blocks
   that are unreliable"). Design: 3-alloc §8.1 G1.
 - **Measure:** emubd per-block erase and prog counts.
-- **Pass:** in NEW `badblocks_gbmap::*`, after a block's first failure its
+- **Pass:** in `badblocks_gbmap::recording`, after a block's first failure its
   erase and prog counts do not change until unmount, for `BADBLOCK_BEHAVIOR`
-  0 and 1, and for 2 to 5 with `CKPROGS=true`.
+  0 and 1, and for 2 to 5 with `CKPROGS=true`, in B-YGB and B-BIG.
 - **Fail:** any later erase or prog of the block.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::recording`,
+  `badblocks_gbmap::recording_mdir`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (2e8ae492). The mroot anchor (blocks 0 and 1) cannot move and is exempt.
+- **When:** every CI run.
 
 #### LFS3-BAD-02
 
@@ -1798,13 +1807,16 @@ littlefs shall keep a recorded bad block out of use across remounts.
 - **Source:** Stated: #1111 "Efficient block allocation" (the gbmap enables
   "bad-block tracking"). Design: 3-alloc §8.1 G1, §8.2.
 - **Measure:** emubd per-block erase and prog counts after remount.
-- **Pass:** in NEW `badblocks_gbmap::*`, after the mark is persisted
-  (`LFS3_I_BADBLOCKS` clear), the block's counts do not change over 10
-  remount cycles of continued writes.
+- **Pass:** in `badblocks_gbmap::recording` and `badblocks_gbmap::reading`,
+  after the mark is persisted (`LFS3_I_BADBLOCKS` clear), the block's counts
+  do not change over remount cycles of continued writes, with allocation
+  from the gbmap and from the lookahead buffer.
 - **Fail:** any erase or prog of the block after remount.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::recording`, `badblocks_gbmap::reading`,
+  `badblocks_gbmap::alloc_skip`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (94ecb238, 2e8ae492, 4f6d5ef8).
+- **When:** every CI run.
 
 #### LFS3-BAD-03
 
@@ -1817,13 +1829,17 @@ recording.
   costs only a retry).
 - **Measure:** gbmap content against a traversal of referenced blocks, after
   every power loss.
-- **Pass:** NEW reentrant cases pass under `-Plinear` with PLB-TORN; after
-  every remount no BMBAD range contains a block the traversal reports, and
+- **Pass:** `badblocks_gbmap::pl_fuzz` passes under `-Plinear` with PLB-TORN
+  and `BADBLOCK_BEHAVIOR` 0 to 4; after every remount no BMBAD range
+  contains a block the traversal reports, and
   `lfs3_fs_ck(LFS3_CK_CKMETA | LFS3_CK_CKDATA)` returns 0.
 - **Fail:** a referenced block is marked bad, or the check fails.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::pl_fuzz`,
+  `badblocks_gbmap::reading_inuse`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (9d6b2fd1) for PLB-TORN. METASTABLE (behaviour 4) runs fail like the other
+  reentrant bad-block cases (issue #1).
+- **When:** every CI run.
 
 #### LFS3-BAD-04
 
@@ -1831,33 +1847,46 @@ littlefs shall not write to the block device to record a bad block in an
 `LFS3_RDONLY` build or on an `LFS3_M_RDONLY` mount.
 
 - **Source:** Stated: #1111 "Bad block tracking" raises the rdonly question.
-  Design: 3-alloc §8.1 G3, §8.5. The choice of what else to do is open
-  question Q18.
+  Design: 3-alloc §8.1 G3, §8.5. Read-only contexts report the error and
+  record suspects in RAM only (LFS3-BAD-16); open question Q18.
 - **Measure:** emubd prog and erase counters.
-- **Pass:** NEW: read-only mounts over images with bad blocks (READERROR,
-  READFLIP) issue no prog or erase, in B-BIG and B-RO.
+- **Pass:** `badblocks_gbmap::rdonly`: read-only mounts over images with bad
+  blocks (READERROR, READFLIP, MANUAL) issue no prog or erase, and leave
+  nothing queued, in B-YGB and B-BIG. `LFS3_RDONLY` builds have no queue.
 - **Fail:** any prog or erase.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::rdonly`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (9d6b2fd1) for read-only mounts; B-RO cannot run the suite (LFS3-BUILD-19).
+- **When:** every CI run.
 
 #### LFS3-BAD-05
 
 littlefs shall treat a block in a BMBAD range as in use when reading an
-image written by a driver that records bad blocks, without a new compat
-flag.
+image written by a driver that records bad blocks, including when it
+allocates from the lookahead buffer, without a new compat flag.
 
-- **Source:** Derived: `b10efaa` already treats BMBAD as in use
-  (`lfs3.c:11069-11083`), skips it in pre-erase (`11406-11412`) and keeps it
-  through repopulation (`10741`). Design: 3-alloc §8.1 G4.
-- **Measure:** allocation and mount results of a `b10efaa`-equivalent
-  gbmap driver on an image with BMBAD ranges.
-- **Pass:** NEW: the image mounts RDWR, and the older driver never erases or
-  programs a BMBAD block while filling the disk.
+- **Source:** Derived: the gbmap reserved BMBAD from the start, to be treated
+  as in use (SPEC.md). Design: 3-alloc §8.1 G4. The decision not to add a
+  wcompat flag follows principle 2 (issue #9): marks are advisory, so a
+  driver that ignores one treats the block as it would an unmarked bad block
+  (a failed erase or prog, then relocation), while a wcompat flag would make
+  every such driver refuse to write the filesystem at all.
+- **Measure:** erase and prog counts of BMBAD blocks, and mount results, when
+  one build fills a disk written by another.
+- **Pass:** `compat::gbmap_exchange` (`make test-compat-gbmap`): images with
+  BMBAD ranges written by the default, `LFS3_GBMAP` and `LFS3_YES_GBMAP`
+  builds mount RDWR in every gbmap build, which fill the disk four times
+  without erasing or programming a BMBAD block, and keep the marks.
 - **Fail:** a mount error, or a write to a BMBAD block.
-- **Verified by:** NEW (`test_compat` with an `LFSP` build).
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `compat::gbmap_exchange`.
+- **Status:** Partly met. Drivers from `v3-integration` 4f6d5ef8 on keep BMBAD
+  blocks out of use. Earlier gbmap drivers, `b10efaa` included, allocate
+  them from their lookahead fallback (53 erases of one BMBAD block in
+  `compat::gbmap_exchange` without 4f6d5ef8), which costs them a failed
+  erase or prog per use, as an unmarked bad block would. v0.0 promises no
+  compatibility between alpha drivers (SPEC.md), so no flag guards this.
+- **When:** every CI run (`compat::gbmap_exchange` in B-YGB and B-BIG);
+  release (`make test-compat-gbmap`).
 
 #### LFS3-BAD-06
 
@@ -1868,44 +1897,53 @@ gbmap.
   At `b10efaa`, `lfs3_gbmap_setbptr` would overwrite BMBAD with BMINUSE for a
   referenced block (3-alloc §8.1 G4).
 - **Measure:** BMBAD ranges before and after each operation.
-- **Pass:** NEW: BMBAD ranges are unchanged after `lfs3_alloc_lookgbmap`,
+- **Pass:** BMBAD ranges are unchanged after `lfs3_alloc_lookgbmap`,
   incremental gc repopulation, `lfs3_fs_grow`, and a traversal that visits a
   block marked bad while still referenced.
 - **Fail:** any mark disappears.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::reading`, `badblocks_gbmap::reading_inuse`,
+  `badblocks_gbmap::grow`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (94ecb238, 9c0769c3).
+- **When:** every CI run.
 
 #### LFS3-BAD-07
 
-littlefs shall hold pending bad-block marks in RAM of a size fixed at
-compile time, without `lfs3_malloc`.
+littlefs shall hold pending bad-block marks and suspect blocks in RAM of a
+size fixed at compile time, without `lfs3_malloc`.
 
 - **Source:** Derived: littlefs's bounded-RAM design (LFS3-RES-01). Design:
   3-alloc §8.1 G5, §8.3.
 - **Measure:** `sizeof(lfs3_t)` and malloc calls.
-- **Pass:** a B-NM build with static buffers passes `badblocks_gbmap::*`.
+- **Pass:** `make test-nomalloc` builds the runner with `LFS3_NO_MALLOC` and
+  `LFS3_GBMAP`, static cache buffers and per-file cache buffers, and
+  `badblocks_gbmap::*` pass in it.
 - **Fail:** any `lfs3_malloc` call, or a failure.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `make test-nomalloc` (`badblocks_gbmap::*`).
+- **Status:** Not implemented at `b10efaa`. On `v3-integration` the queue is
+  a fixed array of `LFS3_BADQ_SIZE` runs in `lfs3_t`, but the runner cannot
+  build `LFS3_NO_MALLOC`.
+- **When:** every CI run.
 
 #### LFS3-BAD-08
 
 littlefs shall continue correctly when more blocks go bad at once than the
-pending-mark queue holds.
+pending-mark queue holds, and shall record each bad block it forgets at that
+block's next failure.
 
 - **Source:** Derived: marks are advisory (3-alloc §8.3); overflow may lose a
-  mark but not correctness.
-- **Measure:** results and final gbmap content.
-- **Pass:** NEW: with more simultaneous bad blocks than the queue size, the
-  workload passes, and within 3 checkpoints after the failures stop every bad
-  block is recorded.
-- **Fail:** a crash, an error while good blocks remain, or a mark never
-  recorded.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+  mark but not correctness. The queue forgets its smallest runs.
+- **Measure:** results, final gbmap content, and attempts per bad block.
+- **Pass:** `badblocks_gbmap::overflow`: with `LFS3_BADQ_SIZE+1` and
+  `4*LFS3_BADQ_SIZE` blocks going bad at once, the workload passes, every
+  bad block is marked once the workload ends, and no bad block is tried
+  more than ⌈bad / `LFS3_BADQ_SIZE`⌉ times.
+- **Fail:** a crash, an error while good blocks remain, a mark never
+  recorded, or more attempts.
+- **Verified by:** `badblocks_gbmap::overflow`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (9d6b2fd1).
+- **When:** every CI run.
 
 #### LFS3-BAD-09
 
@@ -1915,13 +1953,14 @@ failure that made it bad, over the whole life of the device.
 - **Source:** Derived from BAD-01 and BAD-02 over a device's life
   (3-alloc §8.7 item 10).
 - **Measure:** emubd per-block erase counts to end of life.
-- **Pass:** NEW variants of `exhaustion::*` with bad-block tracking find at
-  most one erase per block after its first failure, and a lifetime ratio no
-  worse than without tracking.
+- **Pass:** `badblocks_gbmap::exhaustion` finds at most one erase per block
+  after its first failure, outside the mroot anchor, and a lifetime ratio
+  for 2x the blocks above 1.8.
 - **Fail:** a dead block is erased twice, or lifetime drops.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::exhaustion`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (9d6b2fd1).
+- **When:** every CI run.
 
 #### LFS3-BAD-10
 
@@ -1931,86 +1970,141 @@ fails.
 - **Source:** Derived: pre-erase meets bad blocks first; see LFS3-PRE-06.
   Design: 3-alloc §8.3.
 - **Measure:** gc return value and gbmap content.
-- **Pass:** NEW: `lfs3_fs_gc` with `LFS3_GC_PREERASE` over a free ERASEERROR
-  block returns 0, and the block is recorded bad after the next checkpoint.
+- **Pass:** `badblocks_gbmap::preerase`: `lfs3_fs_gc` with `LFS3_GC_PREERASE`
+  and a mount with `LFS3_M_PREERASE` over free ERASEERROR (and, with
+  CKPROGS, READERROR) blocks return 0, and the blocks are recorded bad.
 - **Fail:** gc returns an error, or the block is not recorded.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::preerase`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (9c0769c3), in B-BIG.
+- **When:** every CI run.
 
 #### LFS3-BAD-11
 
 littlefs shall provide a call that records a given block as bad, returning
 `LFS3_ERR_INVAL` for a block at or beyond `block_count` and for blocks 0 and
-1.
+1, `LFS3_ERR_NOTSUP` without a gbmap, and `LFS3_ERR_BUSY` for a block in use.
 
-- **Source:** Proposal (3-alloc §8.4, `lfs3_fs_mkbad`). The maintainer has
-  not fixed the API (#1111 "Bad block tracking").
+- **Source:** Proposal (3-alloc §8.4), implemented as `lfs3_fs_mkbad`. The
+  maintainer has not fixed the API (#1111 "Bad block tracking").
 - **Measure:** return values; later allocation behaviour.
-- **Pass:** NEW: the listed blocks give `LFS3_ERR_INVAL`; a free block, once
-  recorded, is never allocated; a referenced block gives `LFS3_ERR_BUSY` or
-  is relocated first (whichever the API chooses).
+- **Pass:** `badblocks_gbmap::api`: the listed blocks give `LFS3_ERR_INVAL`;
+  a free block, once recorded, is never allocated; a referenced block gives
+  `LFS3_ERR_BUSY`.
 - **Fail:** any other result.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned; API is a proposal).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::api`, `badblocks_gbmap::factory`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (1e27e318).
+- **When:** every CI run.
 
 #### LFS3-BAD-12
 
 littlefs shall provide a call that clears a bad-block record.
 
-- **Source:** Proposal (3-alloc §8.4, `lfs3_fs_mkgood`), for bench testing
-  and for recovering from a false detection.
+- **Source:** Proposal (3-alloc §8.4), implemented as `lfs3_fs_mkgood`, for
+  bench testing and for recovering from a false detection.
 - **Measure:** allocation of the block after clearing.
-- **Pass:** NEW: after clearing, the block is allocated again when free.
+- **Pass:** `badblocks_gbmap::api`: after clearing, the block is allocated
+  again when free.
 - **Fail:** the block stays out of use.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned; API is a proposal).
-- **When:** before v3-beta.
+- **Verified by:** `badblocks_gbmap::api`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (1e27e318).
+- **When:** every CI run.
 
 #### LFS3-BAD-13
 
-littlefs shall report the number of recorded bad blocks.
+littlefs shall report every recorded bad block, including bad blocks not yet
+written to disk.
 
-- **Source:** Proposal (3-alloc §8.4: a `struct lfs3_fsinfo` field or
-  `LFS3_BTYPE_BAD` entries from `lfs3_trv_read`).
-- **Measure:** the reported count against the emubd bad-block set.
-- **Pass:** NEW: after recording k bad blocks and syncing, the count is k.
-- **Fail:** any other count.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned; API is a proposal).
-- **When:** before v3-beta.
+- **Source:** Proposal (3-alloc §8.4), implemented as `lfs3_fs_nextbad`;
+  `lfs3_fs_usage` counts bad blocks as used. `LFS3_I_BADBLOCKS` says some are
+  not yet on disk.
+- **Measure:** the reported blocks against the emubd bad-block set.
+- **Pass:** `badblocks_gbmap::api` and `badblocks_gbmap::api_ibadblocks`:
+  after recording k bad blocks, `lfs3_fs_nextbad` lists exactly those k,
+  before and after they are written to disk.
+- **Fail:** any other set.
+- **Verified by:** `badblocks_gbmap::api`, `badblocks_gbmap::api_ibadblocks`,
+  `badblocks_gbmap::reading`.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (1e27e318).
+- **When:** every CI run.
 
 #### LFS3-BAD-14
 
-littlefs shall accept a list of known-bad blocks at format and shall not
-erase or program them, including when choosing the block for the gbmap
-root.
+littlefs shall format with the gbmap when blocks after the mroot anchor are
+bad, placing the gbmap root on the first block from 2 on that erases and
+programs, recording each block it skipped as bad, and returning
+`LFS3_ERR_NOSPC` if no such block exists.
 
 - **Source:** Proposal (3-alloc §8.4). NAND parts ship with factory bad
-  blocks. The gbmap root is fixed at block 2 at `b10efaa` ("TODO should we
-  try multiple blocks?", `lfs3.c:16130-16133`).
-- **Measure:** emubd per-block counts during and after format.
-- **Pass:** NEW: a format with blocks 2 and 7 listed bad leaves both with zero
-  erases and progs, and the gbmap root is on another block.
-- **Fail:** any erase or prog of a listed block.
-- **Verified by:** NEW.
-- **Status:** Not implemented (planned; API is a proposal).
-- **When:** before v3-beta.
+  blocks. At `b10efaa` the gbmap root is fixed at block 2 ("TODO should we
+  try multiple blocks?", `lfs3.c:16130-16133`). A block device that knows a
+  block is bad (a factory table) returns `LFS3_ERR_CORRUPT` from its erase
+  without erasing it; other known-bad blocks are given to `lfs3_fs_mkbad`
+  after format, before anything else is written, which keeps them from ever
+  being erased.
+- **Measure:** format result, the gbmap root's block, BMBAD ranges, and emubd
+  per-block counts during and after format.
+- **Pass:** `badblocks::gbmap_format`: with block 2 bad (PROGERROR,
+  ERASEERROR, and READERROR, PROGNOOP, ERASENOOP with `LFS3_F_CKPROGS`),
+  format with `LFS3_F_GBMAP` returns 0, the root is on another block, block 2
+  is listed by `lfs3_fs_nextbad`, and block 2 sees one failed erase or prog
+  at most. Without `LFS3_F_CKPROGS` a silent failure is found by
+  `LFS3_F_CKMETA`, and format returns `LFS3_ERR_CORRUPT`. With every block
+  from 2 on bad, format returns `LFS3_ERR_NOSPC`.
+  `badblocks_gbmap::factory`: a factory list including blocks 2 and 7, with
+  the device refusing to erase them, leaves block 2 with one refused erase or
+  prog and block 7 with none, over 32 remount cycles.
+- **Fail:** format fails while a good block remains, or a listed block is
+  written.
+- **Verified by:** `badblocks::gbmap_format`, `badblocks_gbmap::factory`.
+- **Status:** Not implemented at `b10efaa`; blocks 3 and up are covered by
+  `lfs3_fs_mkbad` after format on `v3-integration` (1e27e318).
+- **When:** every CI run.
 
 #### LFS3-BAD-15
 
-littlefs shall fail to compile when bad-block tracking is enabled without
-`LFS3_GBMAP`.
+littlefs shall include bad-block tracking only with `LFS3_GBMAP`, which
+holds the marks, and leave builds without it unchanged.
 
-- **Source:** Proposal (3-alloc §8.4), matching the `#error` for
-  `LFS3_PREERASE` (`lfs3_util.h:111-114`).
-- **Measure:** compiler result.
-- **Pass:** the build without `LFS3_GBMAP` stops with an `#error`.
-- **Fail:** it compiles.
-- **Verified by:** NEW: build check.
-- **Status:** Not implemented (planned; API is a proposal).
-- **When:** before v3-beta.
+- **Source:** Derived: without a gbmap there is nowhere to persist a mark.
+  This replaces the proposed `LFS3_BADBLOCKS` option and its `#error`
+  (3-alloc §8.4), which tracking without a separate option makes moot.
+- **Measure:** symbols and `sizeof(lfs3_t)` in B-DEF.
+- **Pass:** B-DEF declares none of `lfs3_fs_mkbad`, `lfs3_fs_mkgood`,
+  `lfs3_fs_nextbad` and `lfs3_fs_nextsuspect`, and its `lfs3_t` has no
+  queue.
+- **Fail:** tracking code or RAM in B-DEF.
+- **Verified by:** build (B-DEF, `#if` guards).
+- **Status:** Not implemented at `b10efaa`; met on `v3-integration`.
+- **When:** every CI run.
+
+#### LFS3-BAD-16
+
+littlefs shall record as suspect, in RAM and without writing, each block
+that fails a check while being read: a read that returns `LFS3_ERR_CORRUPT`,
+a B-tree node or data block whose checksum differs from the one its parent
+records, or a tag parity or data checksum mismatch; and shall list suspect
+blocks through `lfs3_fs_nextsuspect`.
+
+- **Source:** Proposal (issues #9, #19): a failed read does not prove a
+  block bad (principle 4), but the application needs to know where reads
+  fail. Persisting suspects across mounts would need a new gbmap tag and a
+  wcompat flag; that is left to the user (issue #19).
+- **Measure:** `lfs3_fs_nextsuspect` against the blocks the test damaged;
+  emubd counters.
+- **Pass:** NEW `badblocks_gbmap::suspect`: after reads of a file, a check,
+  and a read-only mount over blocks with flipped bits (MANUAL) and READERROR
+  blocks, `lfs3_fs_nextsuspect` lists each damaged block that was read and
+  no other, no prog or erase happens on a read-only mount, the list survives
+  `LFS3_BADQ_SIZE` damaged blocks, and is empty after a remount.
+- **Fail:** a damaged block that was read is missing, an undamaged block is
+  listed, or a write.
+- **Verified by:** NEW `badblocks_gbmap::suspect`.
+- **Status:** Not implemented.
+- **When:** every CI run.
 
 ### 6.6 Metadata (META)
 
@@ -6409,12 +6503,16 @@ littlefs shall shrink its capacity as blocks go bad, returning
 - **Source:** Proposal, building on bad-block tracking (LFS3-BAD-*).
 - **Measure:** operation results and `lfs3_fs_usage` as blocks fail.
 - **Pass:** writes succeed while good free blocks remain; `lfs3_fs_usage`
-  and `lfs3_fs_nextbad` account for every bad block.
+  and `lfs3_fs_nextbad` account for every bad block; at end of life the
+  error is `LFS3_ERR_NOSPC`, in B-YGB and B-BIG.
 - **Fail:** an error other than NOSPC while good free blocks remain, or a bad
   block missing from the count.
-- **Verified by:** `badblocks_gbmap::*`, `exhaustion::spam_file_pl_fuzz`.
-- **Status:** Not implemented at `b10efaa`; implemented with the gbmap on
-  `v3-integration` (94ecb238..9d6b2fd1).
+- **Verified by:** `badblocks_gbmap::exhaustion`, `badblocks_gbmap::reading`,
+  `badblocks_gbmap::overflow`, `exhaustion::spam_file_pl_fuzz`.
+- **Status:** Not implemented at `b10efaa`; tested with the gbmap on
+  `v3-integration` (9d6b2fd1). Without the gbmap a bad block is retried each
+  time the allocator reaches it (LFS3-BAD-15), and capacity still ends in
+  NOSPC (LFS3-FAIL-11).
 - **When:** every CI run.
 
 #### LFS3-DEG-07
@@ -6492,7 +6590,7 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Power-loss resilience | PL | 27 | 8 | 4 | 14 | 0 | 1 |
 | Error detection and integrity | INT | 23 | 7 | 11 | 3 | 0 | 2 |
 | Flash failure handling | FAIL | 20 | 4 | 8 | 8 | 0 | 0 |
-| Bad-block tracking (planned) | BAD | 15 | 0 | 0 | 0 | 15 | 0 |
+| Bad-block tracking | BAD | 16 | 0 | 0 | 0 | 16 | 0 |
 | Metadata | META | 17 | 7 | 3 | 3 | 0 | 4 |
 | Files and data | FILE | 26 | 14 | 2 | 7 | 0 | 3 |
 | Sync model and stickynotes | SYNC | 19 | 15 | 2 | 1 | 0 | 1 |
@@ -6510,10 +6608,10 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
 | Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
 | Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **357** | **107** | **63** | **99** | **25** | **63** |
+| **All** | | **358** | **107** | **63** | **99** | **26** | **63** |
 
-By level: 223 stated, 117 derived, 17 proposals. By When: 272 every CI run,
-44 nightly, 41 before v3-beta.
+By level: 223 stated, 118 derived, 17 proposals. By When: 288 every CI run,
+44 nightly, 26 before v3-beta.
 
 107 requirements (30%) are fully checked by a case that runs in the default
 build. 63 are partly checked, most often because the checking case is
@@ -6692,15 +6790,21 @@ Options: (a) "no file cache", as `lfs3_get` already uses internally
 on read-only mounts; (b) keep them, as "work the image needs", and document
 it.
 
-**Q17. Disabling the gbmap while bad blocks are recorded.** Planned bad-block
-records live in the gbmap, so `lfs3_fs_rmgbmap` would drop them. Options:
+**Q17. Disabling the gbmap while bad blocks are recorded.** Bad-block
+records live in the gbmap, so `lfs3_fs_rmgbmap` drops them. Options:
 (a) refuse with `LFS3_ERR_BUSY`; (b) drop them and document it.
+`v3-integration` does (b): `lfs3.h` documents the loss, and
+`badblocks_gbmap::rmgbmap` tests it.
 
 **Q18. Bad blocks detected in read-only contexts, and the bad-block API.**
 The maintainer's own open question (#1111 "Bad block tracking"). Options for
 read-only contexts: (a) report the error only; (b) also count detections in
 RAM and report them in `lfs3_fs_stat`. API options: the calls proposed in
-LFS3-BAD-11 to BAD-14, or none beyond automatic tracking.
+LFS3-BAD-11 to BAD-14, or none beyond automatic tracking. `v3-integration`
+does (a), and records blocks that fail reads as suspect in RAM, writable or
+not, listed by `lfs3_fs_nextsuspect` (LFS3-BAD-16); its API is
+`lfs3_fs_mkbad`, `lfs3_fs_mkgood` and `lfs3_fs_nextbad`, and format takes
+known-bad blocks from the block device's errors (LFS3-BAD-14).
 
 **Q19. Torn programs beyond the first prog unit.** Pre-erase trusts an
 erased-state checksum of the first `prog_size` bytes, but the first program
@@ -6742,7 +6846,7 @@ branches already add a case, it is named. 9.2 lists the requirements that
 existing cases would check if they ran in another build, schedule or
 geometry. Documentation requirements checked by review are not listed.
 
-181 requirements need a new test (9.1) and 51 need an existing test run in a
+182 requirements need a new test (9.1) and 51 need an existing test run in a
 new environment (9.2).
 
 ### 9.1 New tests
@@ -6788,21 +6892,22 @@ new environment (9.2).
 | LFS3-FAIL-17 | Untested | every CI run | READERROR on the source of a compaction, relocation and rewrite |
 | LFS3-FAIL-18 | Untested | every CI run | emubd fails the n-th sync (emubd `mkbadsync` exists on v3-fix-alloc) |
 | LFS3-FAIL-19 | Untested | every CI run | emubd returns `LFS3_ERR_IO` from the n-th operation |
-| LFS3-BAD-01 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen after the first failure |
-| LFS3-BAD-02 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen across 10 remounts |
-| LFS3-BAD-03 | Planned | before v3-beta | `badblocks_gbmap`: reentrant marking; no mark on a referenced block |
-| LFS3-BAD-04 | Planned | before v3-beta | `badblocks_gbmap`: read-only mounts over bad blocks do not write |
-| LFS3-BAD-05 | Planned | before v3-beta | `compat`: an older gbmap driver on an image with BMBAD ranges |
-| LFS3-BAD-06 | Planned | before v3-beta | `badblocks_gbmap`: marks survive repopulation, grow, setbptr |
-| LFS3-BAD-07 | Planned | before v3-beta | `badblocks_gbmap` in a B-NM build with static buffers |
-| LFS3-BAD-08 | Planned | before v3-beta | `badblocks_gbmap`: more bad blocks than the queue holds |
-| LFS3-BAD-09 | Planned | before v3-beta | `exhaustion` with tracking: at most one erase per dead block |
-| LFS3-BAD-10 | Planned | before v3-beta | pre-erase over an ERASEERROR block records it and returns 0 |
-| LFS3-BAD-11 | Planned | before v3-beta | mark-bad API: range and anchor checks |
-| LFS3-BAD-12 | Planned | before v3-beta | clear-mark API |
-| LFS3-BAD-13 | Planned | before v3-beta | bad-block count reporting |
-| LFS3-BAD-14 | Planned | before v3-beta | format with a factory bad-block list including block 2 |
-| LFS3-BAD-15 | Planned | before v3-beta | build check: tracking without `LFS3_GBMAP` |
+| LFS3-BAD-01 | Planned | every CI run | `badblocks_gbmap::recording`, `recording_mdir` (on `v3-integration`) |
+| LFS3-BAD-02 | Planned | every CI run | `badblocks_gbmap::recording`, `reading`, `alloc_skip` (on `v3-integration`) |
+| LFS3-BAD-03 | Planned | every CI run | `badblocks_gbmap::pl_fuzz`, `reading_inuse` (on `v3-integration`) |
+| LFS3-BAD-04 | Planned | every CI run | `badblocks_gbmap::rdonly` (on `v3-integration`) |
+| LFS3-BAD-05 | Planned | every CI run | `compat::gbmap_exchange` and `make test-compat-gbmap` (on `v3-integration`) |
+| LFS3-BAD-06 | Planned | every CI run | `badblocks_gbmap::reading`, `reading_inuse`, `grow` (on `v3-integration`) |
+| LFS3-BAD-07 | Planned | every CI run | `make test-nomalloc`: `badblocks_gbmap::*` with `LFS3_NO_MALLOC` |
+| LFS3-BAD-08 | Planned | every CI run | `badblocks_gbmap::overflow` (on `v3-integration`) |
+| LFS3-BAD-09 | Planned | every CI run | `badblocks_gbmap::exhaustion` (on `v3-integration`) |
+| LFS3-BAD-10 | Planned | every CI run | `badblocks_gbmap::preerase` (on `v3-integration`) |
+| LFS3-BAD-11 | Planned | every CI run | `badblocks_gbmap::api`, `factory` (on `v3-integration`) |
+| LFS3-BAD-12 | Planned | every CI run | `badblocks_gbmap::api` (on `v3-integration`) |
+| LFS3-BAD-13 | Planned | every CI run | `badblocks_gbmap::api`, `api_ibadblocks` (on `v3-integration`) |
+| LFS3-BAD-14 | Planned | every CI run | `badblocks::gbmap_format` with block 2 bad; `badblocks_gbmap::factory` including block 2 |
+| LFS3-BAD-15 | Planned | every CI run | build check: no tracking symbols or RAM in B-DEF |
+| LFS3-BAD-16 | Planned | every CI run | `badblocks_gbmap::suspect`: blocks failing reads listed by `lfs3_fs_nextsuspect` |
 | LFS3-META-03 | Defect | every CI run | fuzz over block size, name length and attribute size; no assert |
 | LFS3-META-04 | Defect | every CI run | internal fetch-order case; all suites on A-32BE |
 | LFS3-META-10 | Defect | every CI run | failed commit by sync failure and by stuck anchor (`badblocks::mrootanchor_stuck`, `badblocks::badsync` on v3-fix-alloc) |
@@ -7221,7 +7326,7 @@ are mapped at the end of 6.4.
 | `lfs3_trv_read` | INT-14, BAD-13, ALLOC-17, GC-07, GC-08 |
 | `lfs3_trv_rewind` | GC-15 |
 | `lfs3_fs_stat` | PL-18, PL-19, INT-16, GC-03, MOUNT-10, MOUNT-12, MOUNT-13, MOUNT-19, MOUNT-20, MOUNT-21, BUILD-12 |
-| `lfs3_fs_usage` | FILE-18, DIR-18, ALLOC-16, ALLOC-17 |
+| `lfs3_fs_usage` | FILE-18, DIR-18, ALLOC-16, ALLOC-17, BAD-13, DEG-06 |
 | `lfs3_fs_cksum` | GEN-02, INT-07, INT-08, INT-09, META-10, DOC-13 |
 | `lfs3_fs_mkconsistent` | GEN-06, META-09, META-14, SYNC-15, SYNC-16, GC-12 |
 | `lfs3_fs_ck` | GEN-04, PL-19, PL-20, INT-10, INT-11, INT-21, INT-22, FAIL-18, BAD-03, META-03, SYNC-09, DIR-05, PRE-05, PRE-06, GC-05, GC-06, MOUNT-17, CFG-05 |
@@ -7230,6 +7335,10 @@ are mapped at the end of 6.4.
 | `lfs3_fs_grow` | GEN-06, GEN-08, PL-18, BAD-06, MOUNT-20, MOUNT-21, MOUNT-22, MOUNT-23, DOC-16 |
 | `lfs3_fs_mkgbmap` | PL-19, ALLOC-13, DOC-07 |
 | `lfs3_fs_rmgbmap` | PL-19, ALLOC-05, ALLOC-14, DOC-07 |
+| `lfs3_fs_mkbad` | BAD-11, BAD-14 |
+| `lfs3_fs_mkgood` | BAD-12 |
+| `lfs3_fs_nextbad` | BAD-13, BAD-14, DEG-06 |
+| `lfs3_fs_nextsuspect` | BAD-16 |
 | `lfs3_crc32c` | INT-05 |
 | `lfs3_crc32c_mul` | INT-05 |
 | `lfs3_toleb128` | GEN-02, DOC-02 |
@@ -7281,7 +7390,7 @@ are mapped at the end of 6.4.
 |---|---|
 | `LFS3_RDONLY` | BAD-04, MOUNT-14, MOUNT-19, BUILD-03, BUILD-04, BUILD-19 |
 | `LFS3_YES_RDONLY` | BUILD-12, BUILD-15, BUILD-19 |
-| `LFS3_GBMAP` | ALLOC-09, ALLOC-10, ALLOC-11, ALLOC-12, ALLOC-13, ALLOC-14, ALLOC-15, ALLOC-16, BAD-15, BUILD-04, BUILD-14 |
+| `LFS3_GBMAP` | ALLOC-09, ALLOC-10, ALLOC-11, ALLOC-12, ALLOC-13, ALLOC-14, ALLOC-15, ALLOC-16, BAD-01 to BAD-16, BUILD-04, BUILD-14 |
 | `LFS3_YES_GBMAP` | PL-18, FAIL-20, ALLOC-13, ALLOC-14, BUILD-14 |
 | `LFS3_PREERASE` | PRE-01, PRE-02, PRE-03, PRE-04, PRE-05, PRE-06, PRE-07, PRE-08, PRE-09, PERF-10, BUILD-07 |
 | `LFS3_REVPERTURB` | PRE-04, BUILD-07, DOC-04, DOC-05 |

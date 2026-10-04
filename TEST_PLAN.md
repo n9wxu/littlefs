@@ -1369,15 +1369,18 @@ defines; procedure; pass and fail; extension needed.
 
 - **File and case:** `tests/test_badblocks.toml`,
   `test_badblocks_gbmap_format`. B-YGB and B-BIG.
-- **Covers:** FAIL-16. Matrix F6 to F10 × O1 with the gbmap.
-- **Defines:** `BADBLOCK_BEHAVIOR` 0 to 4 (2 to 4 with `CKPROGS`); bad block
-  2.
-- **Procedure:** Mark block 2 bad, format with `LFS3_F_GBMAP`, mount.
-- **Pass:** E: format returns an error and the mount fails cleanly. When
-  LFS3-BAD-14 lands, format must instead succeed with the gbmap root on
-  another block; update the case then.
-- **Fail:** format returns 0 and the mount fails or the filesystem is
-  inconsistent.
+- **Covers:** FAIL-16, BAD-14. Matrix F6 to F10 × O1 with the gbmap.
+- **Defines:** `BADBLOCK_BEHAVIOR` 0 to 4 (2 to 4 with `CKPROGS`, or found
+  by `LFS3_F_CKMETA`); bad block 2; also every block from 2 on bad.
+- **Procedure:** Mark block 2 bad, format with `LFS3_F_GBMAP`, mount, write.
+- **Pass:** where format can see the failure (behaviours 0 and 1, or
+  `CKPROGS`), format returns 0 with the gbmap root on another block, block 2
+  listed by `lfs3_fs_nextbad`, and at most one failed erase or prog on
+  block 2. Silent failures found only by `LFS3_F_CKMETA` make format return
+  an error, and the mount fails cleanly or its check finds the damage (E).
+  With every block from 2 on bad, format returns `LFS3_ERR_NOSPC`.
+- **Fail:** format fails while a good block remains, returns 0 and the mount
+  fails, or the filesystem is inconsistent.
 - **Extension:** none.
 
 #### NEW-17 `badblocks::source_readerror`
@@ -1662,7 +1665,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-76 | `fwrite::file_limit` | FILE-26 | `fwrite::fbig`, `truncate_fbig`, `fruncate_fbig` with `file_limit` 1, 1000, 65536; also writes ending exactly at the limit | FBIG beyond the limit, success at it | – |
 | NEW-77 | `badblocks::error_then_sync` | SYNC-09 | inject NOSPC and bad blocks into overwrites that span several entries; sync the desynced handle; remount | `lfs3_fs_ck` returns 0; bytes outside the failed range match the model | – |
 | NEW-78 | `attrs::root` | ATTR-06 | set, get, size and remove attributes on "/" across a remount and an mroot chain extension | values as set | – |
-| NEW-79 | `compat::gbmap_*` | ALLOC-15, BAD-05 | link builds with and without `LFS3_GBMAP` (and, later, with bad-block tracking) as `LFSP`; exchange images | the mount results of ALLOC-15; an older gbmap driver never writes a BMBAD block | – |
+| NEW-79 | `compat::gbmap_exchange`, `make test-compat-gbmap` | ALLOC-15, BAD-05 | builds with and without `LFS3_GBMAP` exchange images, with and without BMBAD ranges | the mount results of ALLOC-15; no gbmap driver from `v3-integration` 4f6d5ef8 on writes a BMBAD block. No compat flag guards older alpha drivers, which may (REQUIREMENTS.md BAD-05) | – |
 | NEW-80 | `gbmap::leak` | ALLOC-16 | B-YGB; rewrite a fixed file set 10,000 times | `lfs3_fs_usage` stops growing after the first 1,000 rewrites (within 2 blocks) | – |
 | NEW-81 | `gc::preerase_noerase` | PRE-02 | after gc pre-erase, 100 block allocations; `ERASE_CYCLES` 0xffffffff | no pre-erased block is erased again at allocation | – |
 | NEW-82 | `gc::steps_unbounded`, `gc::compact_unshrinkable` | GC-02 | `GC_STEPS=-1` after every operation of a fill-then-churn workload, through and past `LFS3_ERR_NOSPC`, for every combination of work flags, gbmap, pre-erase and `gc_compact_thresh`; bound each call with a byte counter in the bd callbacks. Separately, an mdir holding one entry whose compacted size is above `gc_compact_thresh` (a large attribute), with `lfs3_fs_ck(LFS3_CK_COMPACT)` and `lfs3_fs_gc` | each call does at most 10 × the disk size of I/O and leaves no flag of its work set; the unshrinkable mdir is compacted at most once | – |
@@ -1673,7 +1676,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-87 | `alloc::static_buffers` | RES-01, RES-08 | static `rcache_buffer`, `pcache_buffer`, `lookahead_buffer`, per-file `fcache_buffer`; an allocator that fails the test when called; then the same suites in B-NM | no allocation; one allocation of `fcache_size` per `lfs3_file_open` when buffers are not given | E-7 |
 | NEW-88 | `mount::max_blocks` | RES-07 | `block_count` 2^31 - 1, 512-byte blocks, sparse device; 1,000 files across the address range | format, mount, write, remount, read all succeed | E-9 |
 | NEW-89 | `threadsafe::locks` | THR-01, THR-02 | B-TS; counting `lock` and `unlock`; failing `lock` | one lock and unlock around each public call; a failing lock's error is returned with no bd operation. Waits on open question Q12 | – |
-| NEW-90 | `badblocks_gbmap` suite | BAD-01 to BAD-04, BAD-06 to BAD-09, BAD-11 to BAD-15 | the tests listed in 3-alloc §8.7 and the Pass conditions of REQUIREMENTS.md 6.5 | as the requirements. Becomes P0 when bad-block tracking (release blocker #1) is merged | E-1 |
+| NEW-90 | `badblocks_gbmap` suite, `make test-nomalloc` | BAD-01 to BAD-04, BAD-06 to BAD-16 | the cases on `v3-integration`, plus `badblocks_gbmap::suspect` (BAD-16), block 2 in `badblocks_gbmap::factory` (BAD-14), and the suite rebuilt with `LFS3_NO_MALLOC` and static buffers (BAD-07) | as the requirements | E-1 |
 | NEW-91 | cross-endian image round trip | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (`-d` disk files), each read on the other | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
 
 ### 6.6 P2: lower-value checks, benches and reports
