@@ -513,7 +513,8 @@ callback during that call.
 - **Fail:** any other negative value.
 - **Verified by:** cases assert specific codes throughout; the hook and
   `scripts/ckerrs.py` of LFS3-ERR-01.
-- **Status:** Partly tested.
+- **Status:** Partly tested at `b10efaa`; tested on `v3-integration`
+  (9c9e8145).
 - **When:** every CI run.
 
 #### LFS3-GEN-06
@@ -1887,8 +1888,8 @@ allocates from the lookahead buffer, without a new compat flag.
   `compat::gbmap_exchange` without 4f6d5ef8), which costs them a failed
   erase or prog per use, as an unmarked bad block would. v0.0 promises no
   compatibility between alpha drivers (SPEC.md), so no flag guards this.
-- **When:** every CI run (`compat::gbmap_exchange` in B-YGB and B-BIG);
-  release (`make test-compat-gbmap`).
+- **When:** every CI run (`compat::gbmap_exchange` in B-YGB and B-BIG, and
+  `make test-compat-gbmap` in the test-compat-gbmap job, 1c768762).
 
 #### LFS3-BAD-06
 
@@ -1924,8 +1925,8 @@ size fixed at compile time, without `lfs3_malloc`.
 - **Verified by:** `make test-nomalloc` (`badblocks_gbmap::*`).
 - **Status:** Not implemented at `b10efaa`. On `v3-integration` the queue
   and the suspect list are fixed arrays in `lfs3_t`; tested with
-  `make test-nomalloc` (71a6f970, f09acb9d), which also runs `repair::*`.
-  Not yet in CI.
+  `make test-nomalloc` (71a6f970, f09acb9d), which also runs `repair::*`,
+  and run by the test-nomalloc CI job (1c768762).
 - **When:** every CI run.
 
 #### LFS3-BAD-08
@@ -4641,8 +4642,9 @@ littlefs shall fail `lfs3_mount` when the final mroot has no geometry.
 - **Pass:** a NEW internal case that removes the geometry tag gets a
   negative result, in B-DEF.
 - **Fail:** the mount succeeds.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `mount::no_geometry`.
+- **Status:** Untested at `b10efaa`; tested on `v3-integration` (e9aeb8b2),
+  which returns `LFS3_ERR_CORRUPT` (Q22).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-12
@@ -6078,7 +6080,9 @@ LFS3-ERR-01.
   `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
 - **Fail:** a target without a job, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Untested: `make test-rdonly` has a job, the others don't.
+- **Status:** Untested at fd3157e3, where only `make test-rdonly` had a
+  job. On `v3-integration` (345c40f7, 1c768762) every target has a job and
+  passes in the `lfs3-ci` image; not yet run on GitHub.
 - **When:** every CI run.
 
 #### LFS3-CI-13
@@ -6095,7 +6099,9 @@ GitHub still supports.
 - **Fail:** any `node20` or older.
 - **Verified by:** review, with `gh api
   repos/actions/<name>/contents/action.yml?ref=<version>`.
-- **Status:** Known defect: all three actions are at v4 (node20).
+- **Status:** Known defect at fd3157e3, where all three actions were at v4
+  (node20); fixed on `v3-integration` (d32274b9): `actions/checkout@v5`,
+  `actions/upload-artifact@v6`, `actions/download-artifact@v7`.
 - **When:** every CI run.
 
 ### 6.22 Documentation (DOC)
@@ -6429,7 +6435,10 @@ code the function can return.
   its function doesn't list.
 - **Verified by:** `scripts/ckerrs.py` over the recordings of the CI jobs
   test, test-biggest and test-yes-gbmap (`make test-errs` locally).
-- **Status:** Not implemented.
+- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
+  (14f90293, 9c9e8145): over the B-DEF, B-YGB and B-BIG suites the runner
+  records 135 (function, code) pairs and every one is listed. Before the
+  lists, the check found 85 undocumented pairs in the default suite.
 - **When:** every CI run.
 
 #### LFS3-ERR-02
@@ -6447,7 +6456,9 @@ code: Retry, Rebuild or Fail.
 - **Fail:** a code without an action, or with an action that depends on
   which call returned it.
 - **Verified by:** review of [ERRORS.md](ERRORS.md).
-- **Status:** Not implemented (draft in issue #20).
+- **Status:** Not implemented at `b10efaa`; documented on `v3-integration`
+  (40b9e33e). Open question Q25 asks whether the root should keep
+  `LFS3_ERR_BUSY`.
 - **When:** before v3-beta.
 
 #### LFS3-ERR-03
@@ -6472,10 +6483,11 @@ returned it.
 - **Fail:** a code with two meanings.
 - **Verified by:** review; `badblocks::graft_torn`, `mount::no_geometry`.
 - **Status:** Known defect on `v3-integration` (fd3157e3): `lfs3_file_sync`
-  returns `LFS3_ERR_INVAL` for a handle torn by a failed multi-commit write
-  (until `lfs3_file_resync`), and `lfs3_mount` returns `LFS3_ERR_INVAL` for
-  an mroot without a geometry tag, while `LFS3_ERR_INVAL` otherwise means a
-  caller bug.
+  returned `LFS3_ERR_INVAL` for a handle torn by a failed multi-commit write
+  (until `lfs3_file_resync`), and `lfs3_mount` returned `LFS3_ERR_INVAL`
+  for an mroot without a geometry tag, while `LFS3_ERR_INVAL` otherwise
+  means a caller bug. Fixed and tested on `v3-integration` (d4211ea5,
+  e9aeb8b2).
 - **When:** before v3-beta.
 
 #### LFS3-ERR-04
@@ -6495,30 +6507,37 @@ the state shall be the one documented.
     returns (`errs::ioerror`);
   - metadata operations (`lfs3_mkdir`, `lfs3_remove`, `lfs3_rename`,
     `lfs3_setattr`, `lfs3_removeattr`, `lfs3_set`, creating a file) did not
-    happen, in RAM or on disk, except after an error from the sync callback
-    once the operation's commit was programmed: then the operation stands in
-    RAM and on disk and the error is returned once (`errs::ioerror`,
+    happen, in RAM or on disk, except after an error from the sync callback:
+    then they may have happened, alike in RAM and on disk, the error is
+    returned once, and calling again finds them done (`LFS3_ERR_EXIST`,
+    `LFS3_ERR_NOENT`, `LFS3_ERR_NOATTR`) or does them; `lfs3_remove` of a
+    directory and `lfs3_rename` return 0 when only their cleanup fails,
+    leaving `LFS3_I_MKCONSISTENT` set (`errs::ioerror`,
     `badblocks::ioerror`, `badblocks::badsync`, `alloc::nospc_*`);
   - file writes (`lfs3_file_write`, `flush`, `sync`, `truncate`,
     `fruncate`) leave the handle desynchronized and the file on disk as of
-    its last successful sync, or with the sync callback's error, as of the
-    sync that failed; `lfs3_file_close` then writes nothing and returns 0
-    (`errs::ioerror`, `badblocks::truncate_desync`, `files::close_error`);
+    its last successful sync, or, after an error from the sync callback in
+    `lfs3_file_sync`, possibly as of that sync; `lfs3_file_close` then
+    writes nothing and returns 0 (`errs::ioerror`,
+    `badblocks::truncate_desync`, `files::close_error`);
   - mount and format: the filesystem is not mounted; a mount without
     mount-time work programs and erases nothing; a later format succeeds
     (`errs::ioerror`, `mount::readerror`, `mount::fail_nowrite`);
   - janitorial calls (`lfs3_fs_mkconsistent`, `lfs3_fs_ck`, `lfs3_fs_gc`,
     `lfs3_fs_grow`, `lfs3_fs_mkgbmap`, `lfs3_fs_rmgbmap`, `lfs3_fs_mkbad`,
     `lfs3_fs_mkgood`) leave the filesystem consistent with its contents
-    unchanged, and calling again finishes the work (`errs::ioerror`);
+    unchanged, and calling again finishes the work; `lfs3_fs_mkbad` and
+    `lfs3_fs_mkgood` may leave their mark in RAM only, for the next commit
+    to write (`errs::ioerror`);
   - `lfs3_file_close` releases the handle on any error, and NOMEM leaves
     nothing allocated (`files::close_error`, `files::open_nomem`,
     `mount::nomem`);
   - a torn handle: LFS3-ERR-07.
 - **Fail:** an observed state the documentation doesn't describe.
-- **Verified by:** the cases above; NEW: `errs::ioerror`.
-- **Status:** Partly tested. The states are documented for sync and close
-  only.
+- **Verified by:** the cases above, and `errs::ioerror`.
+- **Status:** Partly tested at `b10efaa`, where the states were documented
+  for sync and close only; documented in ERRORS.md and tested on
+  `v3-integration` (3c7a175e, cb80d770, 40b9e33e).
 - **When:** every CI run.
 
 #### LFS3-ERR-05
@@ -6542,13 +6561,15 @@ the device reported bad.
   a remount, in B-DEF, B-BIG and B-YGB. The one documented exception:
   `lfs3_remove` and `lfs3_rename` return 0 when only the cleanup after
   their commit fails; the cleanup stays pending (`LFS3_I_MKCONSISTENT`) and
-  the next write retries it. An injected CORRUPT surfaces as CORRUPT or is
-  handled by relocation (issue #6).
+  the next write retries it (open question Q26). An injected CORRUPT
+  surfaces as CORRUPT or is handled by relocation (issue #6).
 - **Fail:** IO turned into CORRUPT, an IO swallowed, or a read of another
   copy, a relocation or a bad or suspect mark after an IO.
-- **Verified by:** `mount::readerror` (IO only); NEW: `errs::ioerror`; the
+- **Verified by:** `mount::readerror` and `errs::ioerror` (IO); the
   CORRUPT half: issue #6.
-- **Status:** Partly tested.
+- **Status:** Partly tested. The IO half holds on `v3-integration` without
+  a change to the code, tested by `errs::ioerror` (3c7a175e); the CORRUPT
+  half is issue #6.
 - **When:** every CI run.
 
 #### LFS3-ERR-06
@@ -6565,7 +6586,7 @@ internal code from a public function.
 - **Verified by:** the hook and check of LFS3-ERR-01.
 - **Status:** Known defect at `b10efaa` (RANGE reached the API from
   oversized commits; fixed on `v3-integration`, d428d7b8, 42e26e7e).
-  Untested as a general property.
+  Tested as a general property on `v3-integration` (9c9e8145).
 - **When:** every CI run.
 
 #### LFS3-ERR-07
@@ -6596,7 +6617,8 @@ release such a handle without writing.
 - **Fail:** any of the calls returns data, a size or a position, or
   writes, or resync doesn't recover the handle.
 - **Verified by:** `badblocks::graft_torn`.
-- **Status:** Known defect on `v3-integration` (fd3157e3), see Source.
+- **Status:** Known defect on `v3-integration` (fd3157e3), see Source;
+  fixed and tested on `v3-integration` (d4211ea5).
 - **When:** every CI run.
 
 ### 6.24 Graceful degradation (DEG)
@@ -7053,7 +7075,10 @@ robustness against checksum-valid but malformed images in scope for v3?
 
 **Q22. The error for a missing geometry tag.** `LFS3_ERR_INVAL` at
 `b10efaa`; `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` would match the other
-mount failures (LFS3-MOUNT-11).
+mount failures (LFS3-MOUNT-11). LFS3-ERR-03 rules out INVAL, which means a
+caller bug. `v3-integration` (e9aeb8b2) returns `LFS3_ERR_CORRUPT`, as for
+a missing magic string: every v3 mroot has a geometry, so its absence is
+damage, not a feature this build lacks.
 
 **Q23. Performance gates.** The PERF thresholds are ours. Which workloads
 and bounds does the project want to gate on? In particular, is
@@ -7064,6 +7089,25 @@ and bounds does the project want to gate on? In particular, is
 so images from incompatible alpha commits cannot be told apart (4-api R24).
 Options: (a) accept this until v3-beta; (b) bump the minor version on every
 format change during the alpha.
+
+**Q25. `LFS3_ERR_BUSY` for the root.** `lfs3_remove` and `lfs3_rename` of
+the root return `LFS3_ERR_BUSY`, as Linux does; v2 returned
+`LFS3_ERR_INVAL`. BUSY also means a block in use (`lfs3_fs_mkbad`) and a
+filesystem changed under an `LFS3_T_EXCL` traversal, which can clear, while
+the root never can. ERRORS.md gives BUSY one action, Rebuild by freeing the
+target, else Fail, which covers all three (LFS3-ERR-02). Options: (a) keep
+that; (b) return `LFS3_ERR_INVAL` for the root, as v2 did, so that BUSY
+always means "free the target and retry"; it changes about 30 assertions
+in `dirs`, `files` and `paths`.
+
+**Q26. Cleanup errors after remove and rename.** `lfs3_remove` of a
+directory and `lfs3_rename` commit, then clean up a grm; if the cleanup
+fails, they log the error and return 0, leaving `LFS3_I_MKCONSISTENT` set
+for the next write to retry (a TODO in `lfs3.c` asks whether to propagate
+it). LFS3-ERR-05 records this as its one exception. Options: (a) keep it:
+the operation is complete and nothing is lost; (b) return the error once,
+as for a failed sync after a commit, so the device's fault is reported
+where it happened, and a retry then returns `LFS3_ERR_NOENT`.
 
 
 ## 9. Requirements that need new tests

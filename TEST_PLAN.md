@@ -1029,8 +1029,8 @@ before every release.
 | J-BUILD | every build of 5.1, plus the combinations of LFS3-BUILD-04, BUILD-05, BUILD-06, BUILD-20 (NEW-53) | A-64LE, thumb | – | compile only, `-Werror` | – | PR | est. 5 min |
 | J-RO | B-RO and B-YES-RDONLY reading images written by B-DEF and B-YGB (NEW-46) | A-64LE | G-NOR | `-Pnone` | – | PR | est. 1 min |
 | J-SIZE | B-DEF, B-RO, B-YGB, B-BIG with `LFS3_NO_LOG -DLFS3_NO_ASSERT` (NEW-118) | thumb | – | – | – | PR | est. 2 min |
-| J-ERRS | the recordings of J-DEF, J-BIG and J-YGB (NEW-93) | A-64LE | – | – | `scripts/ckerrs.py` | PR | < 1 min after those jobs |
-| J-CHECKS | `make test-compat-gbmap` (NEW-79), `make test-nomalloc` (NEW-90), `make test-progonce` (B-DEF with `CKPROGONCE`) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | emubd prog-once | PR | est. 2, 2 and 263 s |
+| J-ERRS | the recordings of J-DEF, J-BIG and J-YGB (NEW-93) | A-64LE | – | – | `scripts/ckerrs.py` | PR | under 1 s after those jobs |
+| J-CHECKS | `make test-compat-gbmap` (NEW-79), `make test-nomalloc` (NEW-90), `make test-progonce` (B-DEF with `CKPROGONCE`) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | emubd prog-once | PR | 191 s (three builds) and 14 s in Docker on 6 loaded CPUs; test-progonce as J-DEF |
 | J-TOOLS | `make test`, `make bench`, `test.py -j` on Linux and macOS (LFS3-CI-08) | A-64LE | – | smoke | – | PR | est. 5 min |
 | J-ARCH | B-DEF | A-32LE, A-32BE (mips, powerpc) | G-NOR | `-Pnone` on PR; `-Pnone -Plinear` nightly | – | PR, nightly | est. 22-90 min per target for the full run |
 | J-SAN | B-DEF and B-BIG | A-64LE | G-NOR | `-Pnone -Plinear` (ASan, UBSan, FORTIFY); `-Pnone` (valgrind) | ASan + UBSan, FORTIFY (GCC), valgrind | nightly | 3,202 s for B-BIG ASan; est. 1-3 h valgrind |

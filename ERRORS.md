@@ -55,7 +55,9 @@ A read, prog, erase or sync callback returned `LFS3_ERR_IO`. Flash read at
 low supply voltage, a noisy bus, or a busy device can all fail once and work
 on the next try, so littlefs treats IO as transient: it returns it from the
 call it happened in, and doesn't read another copy, move data, or mark
-anything bad or suspect because of it.
+anything bad or suspect because of it. The one exception is the cleanup
+after `lfs3_remove` and `lfs3_rename`, see
+[Metadata operations](#metadata-operations).
 
 **Retry** the call, a bounded number of times, after a delay or once the
 supply has recovered. [The state after an error](#the-state-after-an-error)
