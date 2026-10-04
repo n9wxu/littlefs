@@ -4060,19 +4060,36 @@ about one block.
 
 #### LFS3-GC-02
 
-littlefs shall return from `lfs3_fs_gc` with `gc_steps` -1 once all pending
-work is complete, on any filesystem including a full one.
+littlefs shall return from `lfs3_fs_gc` with `gc_steps` -1, and from
+`lfs3_fs_ck`, after a bounded amount of work on any filesystem, including a
+full one and one with metadata that compaction cannot shrink, and shall
+leave clear every `LFS3_I_*` work flag the call was asked to work on.
 
 - **Source:** Stated: `lfs3.h:571-572` ("steps=-1 will not return until all
-  pending janitorial work has been completed").
-- **Measure:** return of the call.
-- **Pass:** a NEW case runs `lfs3_fs_gc` with `GC_STEPS=-1` after every
-  operation of `gc::spam_*` up to and past `LFS3_ERR_NOSPC`, and each call
-  returns within 10 × `block_count` steps, in B-BIG.
-- **Fail:** a call does not return within the bound.
-- **Verified by:** NEW.
-- **Status:** Untested. The maintainer's test comment warns: "DON'T test
-  with GC_STEPS=-1, it may never terminate!" (`tests/test_gc.toml:2992`).
+  pending janitorial work has been completed"). Derived: an unattended
+  system cannot recover from a call that never returns, nor from a flag
+  that asks for work no call can finish (issue #5). This replaces the note
+  in `lfs3.h` that steps=-1 may never return on a nearly full disk, or when
+  metadata can't be compacted below `gc_compact_thresh`.
+- **Measure:** bytes read, programmed and erased by each call; the
+  `LFS3_I_*` flags afterwards.
+- **Pass:** `gc::steps_unbounded` passes for every permutation of its work
+  flags, gbmap, pre-erase, `gc_compact_thresh` and file size, in B-BIG: each
+  `lfs3_fs_gc` call, from an empty disk to the first `LFS3_ERR_NOSPC` and for
+  100 operations after it, does at most 10 × the disk size of I/O and leaves
+  no flag of `gc_flags` set. `gc::compact_unshrinkable` passes in B-DEF,
+  B-YGB and B-BIG: with an mdir whose compacted size is above
+  `gc_compact_thresh`, `lfs3_fs_ck` with `LFS3_CK_COMPACT` (and
+  `lfs3_fs_gc` with `GC_STEPS=-1` where built) returns within the same
+  bound, clears `LFS3_I_COMPACT`, and compacts the mdir at most once.
+- **Fail:** a call exceeds the bound, or returns with a requested work flag
+  still set.
+- **Verified by:** `gc::steps_unbounded`, `gc::compact_unshrinkable`.
+- **Status:** Known defect at `b10efaa` (#5): with the gbmap, pre-erase and
+  lookahead, 16 of 384 permutations of `gc::steps_unbounded` never return,
+  because each gbmap repopulation and the sync after it allocate from the
+  few free blocks and ask for another repopulation; and an mdir that
+  compaction cannot shrink is compacted, and relocated, on every pass.
 - **When:** every CI run.
 
 #### LFS3-GC-03
@@ -6484,7 +6501,7 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Key-value API | KV | 9 | 5 | 1 | 2 | 0 | 1 |
 | Block allocation | ALLOC | 17 | 4 | 7 | 5 | 0 | 1 |
 | Pre-erase | PRE | 9 | 0 | 2 | 6 | 0 | 1 |
-| Garbage collection and traversals | GC | 16 | 8 | 6 | 2 | 0 | 0 |
+| Garbage collection and traversals | GC | 16 | 8 | 6 | 1 | 0 | 1 |
 | Format, mount, grow, compatibility | MOUNT | 27 | 10 | 4 | 6 | 1 | 6 |
 | Configuration validation | CFG | 17 | 1 | 6 | 8 | 0 | 2 |
 | Resource bounds | RES | 8 | 0 | 0 | 7 | 0 | 1 |
@@ -6493,14 +6510,14 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
 | Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
 | Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **357** | **107** | **63** | **100** | **25** | **62** |
+| **All** | | **357** | **107** | **63** | **99** | **25** | **63** |
 
 By level: 223 stated, 117 derived, 17 proposals. By When: 272 every CI run,
 44 nightly, 41 before v3-beta.
 
 107 requirements (30%) are fully checked by a case that runs in the default
 build. 63 are partly checked, most often because the checking case is
-compiled out of the default build. 62 are known defects; Appendix A says
+compiled out of the default build. 63 are known defects; Appendix A says
 which of them have fixes on our branches.
 
 The known defects, with the fixes that exist on our branches (Appendix A):
@@ -6529,6 +6546,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-KV-04 | 4-api R7 | v3-fix-files `9c7deb7` (`kv::set_fbig`) |
 | LFS3-ALLOC-11 | 3-alloc B11 | none |
 | LFS3-PRE-06 | 3-alloc B1 | v3-fix-alloc `3ceb48b` (`badblocks::preerase`) |
+| LFS3-GC-02 | #5 | v3-integration (`gc::steps_unbounded`, `gc::compact_unshrinkable`) |
 | LFS3-MOUNT-03 | 4-api R28 | none |
 | LFS3-MOUNT-09 | 1-meta 0.4 | none |
 | LFS3-MOUNT-14 | 4-api R5 | none |
@@ -6839,7 +6857,7 @@ new environment (9.2).
 | LFS3-PRE-08 | Untested | every CI run | ERASENOOP with pre-erase and CKPROGS |
 | LFS3-PRE-09 | Untested | nightly | emubd tear after the first `prog_size` bytes, `PCACHE_SIZE > PROG_SIZE` |
 | LFS3-GC-01 | Partly | every CI run | per-call work bound |
-| LFS3-GC-02 | Untested | every CI run | `GC_STEPS=-1` through and past NOSPC |
+| LFS3-GC-02 | Defect | every CI run | `GC_STEPS=-1` through and past NOSPC with every work flag; an mdir that compaction cannot shrink |
 | LFS3-GC-06 | Untested | every CI run | no handle left after `lfs3_fs_ck` |
 | LFS3-GC-11 | Partly | every CI run | block types from `LFS3_T_MTREEONLY` |
 | LFS3-GC-14 | Partly | every CI run | `GC_COMPACT_THRESH=-1` |
