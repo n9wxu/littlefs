@@ -690,8 +690,8 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                     }
                 }
 
-            // emulating metastability? prog data, choose a random bad bit,
-            // and mark as metastable
+            // emulating metastability? prog data, choose a random bad bit
+            // in the interrupted prog, and mark as metastable
             } else if (bd->cfg->powerloss_behavior
                     == LFS3_EMUBD_POWERLOSS_METASTABLE) {
                 // mutate the block
@@ -707,10 +707,11 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
                 lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
                 lfs3_emubd_markprog(cfg, b, off, size, &written);
 
-                // choose a new bad bit unless overridden
+                // choose a new bad bit unless overridden, a power-loss
+                // only disturbs the cells it was programming
                 if (!(0x80000000 & b->bad_bit)) {
-                    b->bad_bit = lfs3_emubd_prng_(&bd->prng)
-                            % (cfg->block_size*8);
+                    b->bad_bit = off*8
+                            + lfs3_emubd_prng_(&bd->prng) % (size*8);
                 }
 
                 // mark as metastable

@@ -699,6 +699,77 @@ code = '''
     lfs3_emubd_destroy(&cfg) => 0;
 '''
 
+# a metastable prog lands whole, but one bit in it reads randomly until
+# the block is next progged or erased, bytes outside the interrupted prog
+# never change
+[cases.test_bd_metastable]
+defines.PROG = ['PROG_SIZE', '16*PROG_SIZE']
+defines.BD_SEED = 'range(4)'
+if = 'ERASE_VALUE >= 0'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_METASTABLE,
+        .powerloss_cb = test_bd_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .seed = BD_SEED,
+    };
+    lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+
+    // data synced before the power loss, then the interrupted prog, then
+    // erased bytes
+    uint8_t wbuf[4*PROG];
+    for (lfs3_off_t j = 0; j < 3*PROG; j++) {
+        wbuf[j] = 'a' + j%26;
+    }
+    memset(&wbuf[3*PROG], ERASE_VALUE, PROG);
+    cfg.erase(&cfg, 0) => 0;
+    cfg.prog(&cfg, 0, 0, wbuf, 2*PROG) => 0;
+    lfs3_emubd_setpowercycles(&cfg, 1) => 0;
+    if (!setjmp(powerloss_jmp)) {
+        cfg.prog(&cfg, 0, 2*PROG, &wbuf[2*PROG], PROG) => 0;
+        // unreachable
+        assert(false);
+    }
+
+    // the bad bit is in the interrupted prog
+    lfs3_ssize_t bit = lfs3_emubd_badbit(&cfg, 0);
+    assert(bit >= 0);
+    assert((lfs3_size_t)bit/8 >= 2*PROG);
+    assert((lfs3_size_t)bit/8 < 3*PROG);
+
+    // only the bad bit ever reads differently, and it reads both ways
+    lfs3_size_t flips = 0;
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        uint8_t rbuf[4*PROG];
+        cfg.read(&cfg, 0, 0, rbuf, 4*PROG) => 0;
+        for (lfs3_off_t j = 0; j < 4*PROG; j++) {
+            uint8_t mask = (j == (lfs3_size_t)bit/8) ? 1 << (bit%8) : 0;
+            assert((rbuf[j] & ~mask) == (wbuf[j] & ~mask));
+            if ((rbuf[j] ^ wbuf[j]) & mask) {
+                flips += 1;
+            }
+        }
+    }
+    assert(flips > 0 && flips < 64);
+
+    // an erase settles it
+    cfg.erase(&cfg, 0) => 0;
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        uint8_t rbuf[4*PROG];
+        cfg.read(&cfg, 0, 0, rbuf, 4*PROG) => 0;
+        for (lfs3_off_t j = 0; j < 4*PROG; j++) {
+            assert(rbuf[j] == ERASE_VALUE);
+        }
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
 # lfs3_malloc and lfs3_free go through the runner's hooks, which count
 # them and can fail the nth lfs3_malloc
 [cases.test_bd_malloc]

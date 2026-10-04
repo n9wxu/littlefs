@@ -51,6 +51,11 @@ typedef enum lfs3_emubd_powerloss_behavior {
     LFS3_EMUBD_POWERLOSS_TORNTAIL    = 5, // Tail is progged, head is not
 } lfs3_emubd_powerloss_behavior_t;
 
+// LFS3_EMUBD_POWERLOSS_METASTABLE progs the interrupted prog whole, but
+// one bit it wrote reads randomly until the block is next progged or
+// erased. An interrupted erase leaves one bit anywhere in the block
+// reading randomly. Bits outside the interrupted operation never change.
+
 // LFS3_EMUBD_POWERLOSS_TORNTAIL leaves the first prog_size bytes of the
 // interrupted prog erased, progs a random-length run of the bytes after
 // them, and flips one bit in that run. A prog of only prog_size bytes is
