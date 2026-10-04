@@ -1743,6 +1743,34 @@ is going wrong and decide what to do. Finding suspects never writes, so
 read-only mounts find them too. Keeping them across mounts would need a new
 gbmap state and a compat flag, so it's left to the application.
 
+### Repairing checks
+
+With the gbmap, a check can repair what it finds, not just report it. Data
+blocks and B-tree nodes have a checksum where they're referenced, so with
+`ck_retries` a check that fails is read again, up to that many times, before
+the check gives up with `LFS3_ERR_CORRUPT`. How hard to try is the
+application's choice, since only it knows whether its supply can sag.
+
+On a writable filesystem, `lfs3_fs_ck`, `lfs3_fs_gc` and mount-time checks
+then move the contents of a suspect block to a new block, copying exactly
+the bytes of a read that passed: a data block's copy is checksummed as it's
+copied, and a B-tree node's copy is fetched and its checksum compared, so a
+bad read is never given a fresh checksum. Commits record the low two bits of
+their block, so a B-tree node is copied to a block with the same low bits.
+Once the new location is committed and nothing references the old block,
+littlefs tests it: erase, program a pattern, read it back. If that works the
+block was probably a weak write, and it's free again; if not, or if it needs
+moving twice in one mount, it's marked bad.
+
+Some things aren't moved. mdirs and mtree nodes have no checksum in a
+parent, their commits are only covered globally by the gcksum, so there's
+nothing to check a copy against. Blocks of open files are left until the
+files close. A block that can't be moved now, because the disk is full or
+the copy never checked out, is left for the next check.
+
+`ck_passes` makes `lfs3_fs_ck` and mount-time checks read everything more
+than once, which catches more bits that read differently each time.
+
 ### What v3 still doesn't handle
 
 1. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
