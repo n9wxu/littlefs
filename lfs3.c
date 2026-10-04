@@ -14303,6 +14303,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             lfs3_bptr_claim(&((lfs3_file_t*)h)->leaf.bptr);
         }
     }
+    // including ours, if we error some progs may have already landed,
+    // only a successful crystallization knows the new erased state
+    lfs3_bptr_claim(&file->leaf.bptr);
 
     // copy things in case we hit an error
     lfs3_sblock_t block_ = lfs3_bptr_block(&file->leaf.bptr);
