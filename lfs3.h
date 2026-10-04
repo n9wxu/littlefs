@@ -625,9 +625,12 @@ struct lfs3_cfg {
     // Note gc work can create more gc work. Compacting metadata changes
     // the filesystem, which requires another pass to confirm, and
     // compacting or pre-erasing may allocate blocks, which can trigger
-    // another lookahead/gbmap scan. If some metadata can't be compacted
-    // below gc_compact_thresh, or the disk is nearly full, steps=-1 may
-    // never return.
+    // another lookahead/gbmap scan. gc stops where more work can't make
+    // progress: metadata that compaction can't shrink is left as it is,
+    // and gbmap repopulation stops once a repopulation knows no more blocks
+    // than the one before it in the same call, as happens on a nearly
+    // full disk. So steps=-1 always returns, and on success leaves clear
+    // the info flags of the work in gc_flags.
     //
     // Defaults to steps=1 when zero.
     #ifdef LFS3_GC
@@ -690,8 +693,8 @@ struct lfs3_cfg {
     // Threshold for metadata compaction during gc in bytes.
     //
     // Metadata logs that exceed this threshold will be compacted during
-    // gc operations. Defaults to ~88% block_size when zero, though this
-    // default may change in the future.
+    // gc operations, if compaction can shrink them. Defaults to ~88%
+    // block_size when zero, though this default may change in the future.
     //
     // Note this only affects explicit gc operations. During normal
     // operations metadata is only compacted when full.

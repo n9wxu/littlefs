@@ -8852,6 +8852,24 @@ static lfs3_ssize_t lfs3_mdir_estimate___(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
 }
 #endif
 
+// the most an mdir can take after compaction, the estimate leaves out the
+// revision count, gstate deltas, and the checksums and padding that end
+// the commit
+#ifndef LFS3_RDONLY
+static lfs3_size_t lfs3_mdir_compactsize(const lfs3_t *lfs3,
+        lfs3_size_t estimate) {
+    return lfs3_min(
+            lfs3_alignup(
+                estimate
+                    + 4
+                    + 3*LFS3_TAG_DSIZE + 4 + LFS3_GRM_DSIZE
+                        + LFS3_GBMAP_DSIZE
+                    + 2+1+1+4+4 + 2+1+4+4,
+                lfs3->cfg->prog_size),
+            lfs3->cfg->block_size);
+}
+#endif
+
 // does this commit only remove one rid or one tag? compaction can leave
 // these out, so removing never needs more room than it frees
 #ifndef LFS3_RDONLY
@@ -10785,24 +10803,37 @@ again:;
                     ? lfs3->cfg->gc_compact_thresh
                     : lfs3->cfg->block_size - lfs3->cfg->block_size/8)) {
         lfs3_mdir_t *mdir = (lfs3_mdir_t*)bptr_->d.u.buffer;
-        LFS3_INFO("Compacting mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"} "
-                    "(%"PRId32" > %"PRId32")",
-                lfs3_dbgmbid(lfs3, mdir->mid),
-                mdir->r.blocks[0],
-                mdir->r.blocks[1],
-                lfs3_rbyd_eoff(&mdir->r),
-                (lfs3->cfg->gc_compact_thresh)
-                    ? lfs3->cfg->gc_compact_thresh
-                    : lfs3->cfg->block_size - lfs3->cfg->block_size/8);
-        // compact the mdir
-        uint32_t dirty = mgc->t.h.flags;
-        int err = lfs3_mdir_compact(lfs3, mdir);
-        if (err) {
-            return err;
+
+        // would compaction shrink it? an mdir compaction can't get below
+        // the threshold would otherwise be compacted on every pass
+        lfs3_ssize_t estimate = lfs3_mdir_estimate___(lfs3, mdir,
+                -2, -2,
+                NULL);
+        if (estimate < 0) {
+            return estimate;
         }
 
-        // reset dirty flag
-        mgc->t.h.flags &= ~LFS3_t_DIRTY | dirty;
+        if (lfs3_mdir_compactsize(lfs3, estimate)
+                < lfs3_rbyd_eoff(&mdir->r)) {
+            LFS3_INFO("Compacting mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"} "
+                        "(%"PRId32" > %"PRId32")",
+                    lfs3_dbgmbid(lfs3, mdir->mid),
+                    mdir->r.blocks[0],
+                    mdir->r.blocks[1],
+                    lfs3_rbyd_eoff(&mdir->r),
+                    (lfs3->cfg->gc_compact_thresh)
+                        ? lfs3->cfg->gc_compact_thresh
+                        : lfs3->cfg->block_size - lfs3->cfg->block_size/8);
+            // compact the mdir
+            uint32_t dirty = mgc->t.h.flags;
+            int err = lfs3_mdir_compact(lfs3, mdir);
+            if (err) {
+                return err;
+            }
+
+            // reset dirty flag
+            mgc->t.h.flags &= ~LFS3_t_DIRTY | dirty;
+        }
     }
     #endif
 
@@ -17711,6 +17742,14 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
 // multiple passes
 static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         uint32_t flags, lfs3_soff_t steps) {
+    // repopulating the gbmap allocates, and allocating asks for another
+    // repopulation, so we stop once a repopulation knows no more blocks
+    // than the last one, near full each one uses up what it finds
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    lfs3_sblock_t known = -1;
+    bool stalled = false;
+    #endif
+
     while ((lfs3_off_t)steps > 0) {
         // do we have any pending gc work?
         uint32_t pending = flags & (
@@ -17725,6 +17764,11 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
                         (lfs3_grm_count(lfs3) > 0)
                             ? LFS3_GC_MKCONSISTENT
                             : 0));
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        if (stalled) {
+            pending &= ~LFS3_GC_LOOKAHEAD;
+        }
+        #endif
         if (pending) {
             // prioritize lookahead/gbmap before any work that may need
             // to allocate
@@ -17790,6 +17834,17 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
 
             // end of traversal?
             if (tag == LFS3_ERR_NOENT) {
+                // repopulated the gbmap? did it learn anything?
+                #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+                if (lfs3_t_islookahead(mgc->t.h.flags)
+                        && !lfs3_t_ismtreeonly(mgc->t.h.flags)
+                        && !lfs3_t_isckpointed(mgc->t.h.flags)
+                        && mgc->gbmap_.r.weight != 0) {
+                    stalled = (lfs3_sblock_t)lfs3->gbmap.known <= known;
+                    known = lfs3->gbmap.known;
+                }
+                #endif
+
                 lfs3_handle_close(lfs3, &mgc->t.h);
             }
 
@@ -17850,6 +17905,12 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         }
     }
 
+    // the gbmap is as full as repopulating can make it
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    if (stalled) {
+        lfs3->flags &= ~LFS3_I_LOOKAHEAD;
+    }
+    #endif
     return 0;
 }
 
