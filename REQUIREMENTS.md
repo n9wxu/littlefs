@@ -6101,7 +6101,7 @@ littlefs shall list, in the comment for `lfs3_info.type`, every type
   removes it (LFS3-SYNC-13).
 - **Fail:** it says "either LFS3_TYPE_REG or LFS3_TYPE_DIR".
 - **Verified by:** review.
-- **Status:** Known defect (4-api R23, issue #12).
+- **Status:** Met on `v3-integration` (issue #12).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-09
