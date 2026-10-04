@@ -230,6 +230,25 @@ jobs:
               -DPOWERLOSS_BEHAVIOR=${{matrix.behavior}}" \
             make test
 
+  # run the expensive variants some cases leave to -DNIGHTLY=1
+  test-nightly-defines:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-nightly-defines
+        run: |
+          TESTFLAGS="$TESTFLAGS -DNIGHTLY=1 \
+              test_powerloss_p1_flush_pl test_badblocks_ioerror" \
+            make test
+
   # run the rbyd, btree and mtree tests with the rbyd balance check,
   # LFS3_DBGRBYDBALANCE asserts every fetched rbyd is balanced
   test-balance:
