@@ -17018,7 +17018,7 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
     if (tag < 0) {
         if (tag == LFS3_ERR_NOENT) {
             LFS3_ERROR("No geometry found");
-            return LFS3_ERR_INVAL;
+            return LFS3_ERR_CORRUPT;
         }
         return tag;
     }
