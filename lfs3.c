@@ -17852,10 +17852,13 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
 static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         uint32_t flags, lfs3_soff_t steps) {
     // repopulating the gbmap allocates, and allocating asks for another
-    // repopulation, so we stop once a repopulation knows no more blocks
-    // than the last one, near full each one uses up what it finds
+    // repopulation, near full each one uses up what it finds, so we stop
+    // repopulating once one leaves lookgbmap_thresh blocks or fewer known,
+    // when every commit repopulates anyways, or knows no more blocks than
+    // the last with no pre-erasing between them
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
     lfs3_sblock_t known = -1;
+    bool erased = false;
     bool stalled = false;
     #endif
 
@@ -17949,8 +17952,13 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
                         && !lfs3_t_ismtreeonly(mgc->t.h.flags)
                         && !lfs3_t_isckpointed(mgc->t.h.flags)
                         && mgc->gbmap_.r.weight != 0) {
-                    stalled = (lfs3_sblock_t)lfs3->gbmap.known <= known;
+                    stalled = lfs3->gbmap.known <= lfs3_min(
+                                lfs3->cfg->lookgbmap_thresh,
+                                lfs3->block_count-1)
+                            || ((lfs3_sblock_t)lfs3->gbmap.known <= known
+                                && !erased);
                     known = lfs3->gbmap.known;
+                    erased = false;
                 }
                 #endif
 
@@ -17987,6 +17995,7 @@ static int lfs3_fs_gc_(lfs3_t *lfs3, lfs3_mgc_t *mgc,
             if (err && err != LFS3_ERR_NOENT) {
                 return err;
             }
+            erased |= !err;
             #endif
 
         // if we have nothing else to do, try to commit the gbmap to

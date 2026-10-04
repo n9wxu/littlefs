@@ -638,10 +638,11 @@ struct lfs3_cfg {
     // compacting or pre-erasing may allocate blocks, which can trigger
     // another lookahead/gbmap scan. gc stops where more work can't make
     // progress: metadata that compaction can't shrink is left as it is,
-    // and gbmap repopulation stops once a repopulation knows no more blocks
-    // than the one before it in the same call, as happens on a nearly
-    // full disk. So steps=-1 always returns, and on success leaves clear
-    // the info flags of the work in gc_flags.
+    // and gbmap repopulation stops for the rest of the call once a
+    // repopulation leaves lookgbmap_thresh or fewer blocks known, as on a
+    // nearly full disk, or knows no more blocks than the one before it
+    // with no pre-erasing between them. So steps=-1 always returns, and
+    // on success leaves clear the info flags of the work in gc_flags.
     //
     // Defaults to steps=1 when zero.
     #ifdef LFS3_GC
