@@ -1638,21 +1638,21 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 
 | ID | Case (file) | Covers | Defines and procedure | Pass (fail otherwise) | Ext |
 |---|---|---|---|---|---|
-| NEW-55 | `powerloss::kv_pl_fuzz` | PL-12 | reentrant; `POWERLOSS_BEHAVIOR` 0-3; `lfs3_set` of values below and above the one-commit limit, value derived from (key, step), step stored in an attribute of the key | `lfs3_get` returns the old or the new value in full (A) | – |
-| NEW-56 | `powerloss::fsync_pl_fuzz` | PL-16 | reentrant form of `fsync::rwdrwd` and `fsync::*_fuzz`: several handles, desync, resync, sync | the file equals one handle's last successful sync (A) | – |
-| NEW-57 | `powerloss::osync_pl` | PL-17 | reentrant; handles opened with `LFS3_O_SYNC`, and a mount with `LFS3_M_SYNC`; each returned write recorded outside the device (in a variable that survives the longjmp) | every returned write is present after remount | – |
-| NEW-58 | `powerloss::flush_pl` | PL-06 | reentrant; write and flush (explicit, `LFS3_O_FLUSH`, `LFS3_M_FLUSH`) without syncing | after remount the file equals its last synced state | – |
+| NEW-55 | `powerloss_p1::kv_pl_fuzz` (in `tests/test_powerloss_p1.toml`) | PL-12 | reentrant; `POWERLOSS_BEHAVIOR` 0-3 and 5; `lfs3_set` of values below and above the one-commit limit, value derived from (key, step); the step is the first word of the value, `lfs3_set` cannot commit an attribute, and the set in flight is kept in a static | `lfs3_get` returns the old or the new value in full (A) | – |
+| NEW-56 | `powerloss_p1::fsync_pl_fuzz` | PL-16 | reentrant form of `fsync::rwdrwd` and `fsync::*_fuzz`: several handles, desync, resync, sync; each step copies the file to a base file, each sync commits (step, sync) with the file, and after a power loss the step is replayed from the base and the handles reopened as the model has them | the file equals one handle's last successful sync (A) | – |
+| NEW-57 | `powerloss_p1::osync_pl` | PL-17 | reentrant; handles opened with `LFS3_O_SYNC`, and a mount with `LFS3_M_SYNC`; each returned write recorded outside the device (in a variable that survives the longjmp) | every returned write is present after remount | – |
+| NEW-58 | `powerloss_p1::flush_pl` | PL-06 | reentrant; write and flush (explicit, `LFS3_O_FLUSH`, `LFS3_M_FLUSH`) without syncing; files of more than one block with `-DNIGHTLY=1` | after remount the file equals its last synced state | – |
 | NEW-59 | `attrs::setattr_pl_fuzz` | PL-11 | reentrant; `lfs3_setattr` and `lfs3_removeattr` on paths and on "/" with values derived from a step | every attribute has a value that some completed call set | – |
-| NEW-60 | `powerloss::tear_tail` | PRE-09 | reentrant; `POWERLOSS_BEHAVIOR` 5 (E-4); `PCACHE_SIZE` 4 × `PROG_SIZE`; workloads of NEW-04 and NEW-11; `CKPROGONCE` true | no prog to an already-programmed region; A. Settle open question Q19 before making this P0 | E-4, E-1 |
+| NEW-60 | `powerloss_p1::tear_tail` | PRE-09 | reentrant; `POWERLOSS_BEHAVIOR` 5 (E-4); `PCACHE_SIZE` 4 × `PROG_SIZE`; workloads of NEW-04 and NEW-11 (the second in B-BIG); `CKPROGONCE` true | no prog to an already-programmed region; A. Q19 is settled by the wider erased-state checksums (`57493587`) | E-4, E-1 |
 | NEW-61 | `relocations::wear_bound` | FAIL-14 | `BLOCK_RECYCLES` 0, 1, 4, 16, 100; `ERASE_CYCLES` 0xffffffff; commit repeatedly to one mdir; record the pair's blocks after each relocation | no mdir block is erased more than `block_recycles + 1` times between relocations | – |
 | NEW-62 | `ck::readflip_spam` | FAIL-09, INT-19 | `ck::spam_*_fuzz` with `BADBLOCK_BEHAVIOR=6` and `CKMETAPARITY=true`, mounted with `LFS3_M_CKMETAPARITY \| LFS3_M_CKDATACKSUMS` | every read returns the model's data or `LFS3_ERR_CORRUPT` (D) | – |
-| NEW-63 | `ck::launder` | candidate requirement (INT-18 to INT-20, DOC-13) | flip a bit in the source of an mdir compaction, a B-tree relocation and a crystallization, with each of `LFS3_M_CKFETCHES`, `LFS3_M_CKMETAPARITY`, `LFS3_M_CKDATACKSUMS` and none; then compact or relocate; then `lfs3_fs_ck` | with the matching check option the copy is refused with `LFS3_ERR_CORRUPT`; without, `lfs3_fs_ck` before the copy reports the flip. Records whether a flip can be copied into a fresh checksum; propose a requirement from the result | – |
+| NEW-63 | `ck::launder` | INT-24, proposed from the result (and INT-18 to INT-20, DOC-13) | flip a bit in the source of an mdir compaction, a B-tree relocation and a crystallization, with each of `LFS3_M_CKFETCHES`, `LFS3_M_CKMETAPARITY`, `LFS3_M_CKDATACKSUMS` and none; then compact or relocate; then `lfs3_fs_ck` | with the matching check option the copy is refused with `LFS3_ERR_CORRUPT`; without, `lfs3_fs_ck` before the copy reports the flip. Records whether a flip can be copied into a fresh checksum; propose a requirement from the result | – |
 | NEW-64 | `ck::ckmeta_gbmap` | INT-22 | B-YGB; flip bits in gbmap nodes; `lfs3_fs_ck(LFS3_CK_CKMETA)` | `LFS3_ERR_CORRUPT` (D) | – |
 | NEW-65 | `ck::rollback` | INT-06, INT-09, INT-21 | deterministic: commit X to mdir A, Y to mdir B; restore A's older block (mount must fail); restore B's (mount succeeds, `lfs3_fs_cksum` differs); restore A after mount (`lfs3_fs_ck` fails); also namespace operations after the rollback | as the three requirements; no assert | – |
 | NEW-66 | `rbyd::erased_values`, `mtree::ecksum_disturb` | INT-03, INT-04 | fill the erased region after each commit with every byte value and with random data; flip a bit in the prog unit after the last commit and commit again | no extra commit is accepted; the disturbed block is compacted, not appended | – |
 | NEW-67 | `ck::file_ckdata_blocks` | INT-13 | flip bits in each data block of a B-tree file; `lfs3_file_ck(LFS3_CK_CKDATA)` and open with `LFS3_O_CKDATA` | `LFS3_ERR_CORRUPT` | – |
 | NEW-68 | `mount::crafted_*` | GEN-07 | internal; checksum-valid images with an out-of-range block, offset, size, weight and alt jump, built by committing raw tags | `LFS3_ERR_CORRUPT`, no assert (B-DEF), no sanitizer report (B-NA). Waits on open question Q21 | – |
-| NEW-69 | balance-check build | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
+| NEW-69 | `make test-balance`, nightly job `test-balance` | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
 | NEW-70 | `mtree::rev_wrap` | META-12 | internal; set an mdir pair's revision counts to 0xfffffffe and 0xffffffff; compact across the wrap repeatedly | the newest commit is always fetched | – |
 | NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs; `lfs3_fs_mkconsistent` | no orphan left, every other entry present | – |
 | NEW-72 | `files::open_nomem` | FILE-16 | fail the file-cache allocation | `LFS3_ERR_NOMEM`, the handle not registered, unmount succeeds, no leak | E-7 |
@@ -1674,7 +1674,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-88 | `mount::max_blocks` | RES-07 | `block_count` 2^31 - 1, 512-byte blocks, sparse device; 1,000 files across the address range | format, mount, write, remount, read all succeed | E-9 |
 | NEW-89 | `threadsafe::locks` | THR-01, THR-02 | B-TS; counting `lock` and `unlock`; failing `lock` | one lock and unlock around each public call; a failing lock's error is returned with no bd operation. Waits on open question Q12 | – |
 | NEW-90 | `badblocks_gbmap` suite | BAD-01 to BAD-04, BAD-06 to BAD-09, BAD-11 to BAD-15 | the tests listed in 3-alloc §8.7 and the Pass conditions of REQUIREMENTS.md 6.5 | as the requirements. Becomes P0 when bad-block tracking (release blocker #1) is merged | E-1 |
-| NEW-91 | cross-endian image round trip | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (`-d` disk files), each read on the other | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
+| NEW-91 | `compat::endian_exchange` through `make test-compat-endian`, job `test-compat-endian` | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (mips and powerpc under qemu-user, `-d` disk files), each read on the other; the images must also be byte-identical | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
 
 ### 6.6 P2: lower-value checks, benches and reports
 
@@ -1746,8 +1746,8 @@ following hold on that commit:
 1. **Tests exist.** Every P0 test of section 6 (54) and every P1 test (37)
    is in the tree, except:
    - P1 tests that wait on an open question in REQUIREMENTS.md section 8
-     while that question is open: NEW-60 (Q19), NEW-68 (Q21), NEW-86 (Q15)
-     and NEW-89 (Q12);
+     while that question is open: NEW-68 (Q21), NEW-86 (Q15) and NEW-89
+     (Q12);
    - NEW-90 until bad-block tracking is merged. Once it is, NEW-90 is P0.
 
    P2 tests are not required, but every P2 test that exists must pass.

@@ -457,10 +457,13 @@ the same results as on the host that wrote it.
 - **Measure:** results of `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and
   `lfs3_fs_cksum` over a fixed image.
 - **Pass:** an image built by a fixed sequence of operations on A-64LE gives
-  identical results when mounted on A-32BE, and an image built on A-32BE gives
-  identical results on A-64LE.
+  identical results when mounted on A-32BE, and an image built on A-32BE
+  gives identical results on A-64LE, with mips and with powerpc as A-32BE.
+  The two images are also byte-identical.
 - **Fail:** any mount error or any differing result.
-- **Verified by:** NEW: cross-endian image round trip.
+- **Verified by:** `compat::endian_exchange` through
+  `make test-compat-endian` (job `test-compat-endian`, mips and powerpc
+  under qemu-user).
 - **Status:** Untested. Expected to fail until LFS3-META-04 is fixed.
 - **When:** every CI run.
 
@@ -681,8 +684,9 @@ littlefs shall not make data written by `lfs3_file_write` or
   `LFS3_O_FLUSH` and with `LFS3_M_FLUSH`) without syncing, finds after every
   power loss that the file equals its last synced state.
 - **Fail:** any unsynced byte is visible.
-- **Verified by:** implied by `powerloss::spam_f_pl_fuzz`; NEW: explicit
-  flush-without-sync case.
+- **Verified by:** implied by `powerloss::spam_f_pl_fuzz`;
+  `powerloss_p1::flush_pl` (explicit flush, `LFS3_O_FLUSH`, `LFS3_M_FLUSH`;
+  files of more than one block with `-DNIGHTLY=1`).
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -757,11 +761,12 @@ written by a file sync atomic under power loss.
 - **Source:** Stated: `lfs3.h:761-762, 799-802` (attributes "committed
   atomically").
 - **Measure:** `lfs3_getattr` and `lfs3_sizeattr` after remount.
-- **Pass:** `attrs::fattr_pl_fuzz_fuzz` and a NEW reentrant case for
-  `lfs3_setattr`/`lfs3_removeattr` on paths pass under `-Plinear` in B-DEF.
+- **Pass:** `attrs::fattr_pl_fuzz_fuzz` and `attrs::setattr_pl_fuzz`
+  (`lfs3_setattr` and `lfs3_removeattr` on files, directories and "/") pass
+  under `-Plinear` in B-DEF.
 - **Fail:** an attribute is torn, or has a value that was never set.
-- **Verified by:** `attrs::fattr_pl_fuzz_fuzz` (file-attached attributes
-  only); NEW for path attributes.
+- **Verified by:** `attrs::fattr_pl_fuzz_fuzz` (file-attached attributes);
+  `attrs::setattr_pl_fuzz` (path attributes and "/").
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -774,10 +779,11 @@ littlefs shall make `lfs3_set` atomic under power loss: after remount
   is implemented as `O_CREAT | O_TRUNC` write and close
   (`lfs3.c:15045-15071`).
 - **Measure:** `lfs3_get` and `lfs3_size` after remount.
-- **Pass:** a NEW reentrant `kv::set_*` fuzz case passes under `-Plinear`
-  in B-DEF, for values below and above the one-commit size limit.
+- **Pass:** `powerloss_p1::kv_pl_fuzz` passes under `-Plinear` in B-DEF, for
+  values below and above the one-commit size limit.
 - **Fail:** any other value or size.
-- **Verified by:** NEW. `test_kv` has no reentrant case.
+- **Verified by:** `powerloss_p1::kv_pl_fuzz`. Each value starts with the op
+  that wrote it, since `lfs3_set` cannot commit an attribute with the value.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -838,10 +844,10 @@ resynced handles write it.
 
 - **Source:** Derived from #1111 "A well-defined sync model", rules 2 to 5.
 - **Measure:** content and size after remount.
-- **Pass:** a NEW reentrant variant of `fsync::rwdrwd` and `fsync::*_fuzz`
-  passes under `-Plinear` in B-DEF.
+- **Pass:** `powerloss_p1::fsync_pl_fuzz` (two or three handles writing one
+  file, with desyncs, resyncs and syncs) passes under `-Plinear` in B-DEF.
 - **Fail:** the file matches no handle's synced state.
-- **Verified by:** NEW. `test_fsync` has no reentrant case.
+- **Verified by:** `powerloss_p1::fsync_pl_fuzz`.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -852,10 +858,10 @@ with `LFS3_O_SYNC` durable when the write returns.
 
 - **Source:** Stated: `lfs3.h:141` ("Sync metadata on every write").
 - **Measure:** file content after a power loss at any later point.
-- **Pass:** a NEW reentrant case with `LFS3_O_SYNC` and with `LFS3_M_SYNC`
-  passes under `-Plinear` in B-DEF.
+- **Pass:** `powerloss_p1::osync_pl` passes under `-Plinear` in B-DEF, with
+  `LFS3_O_SYNC` and with `LFS3_M_SYNC`.
 - **Fail:** data from a returned write is missing after remount.
-- **Verified by:** NEW.
+- **Verified by:** `powerloss_p1::osync_pl`.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -1059,12 +1065,14 @@ valid tag, whatever the erased value.
   assumptions about erase value"); the perturb bit, `lfs3.c:4430-4434`.
 - **Measure:** the tags fetch finds after the last commit, for erased values
   0x00, 0xff and random bytes.
-- **Pass:** `rbyd::*` pass with `ERASE_VALUE` in {0xff, 0x00, -1}, and a NEW
-  case that fills the erased region after each commit with every byte value
-  0x00 to 0xff and random data finds no extra commit, in B-DEF.
+- **Pass:** `rbyd::*` pass with `ERASE_VALUE` in {0xff, 0x00, -1}, and
+  `rbyd::erased_values`, which fills the erased region after each commit
+  with every byte value 0x00 to 0xff and with random data, and with a noop
+  erase fills the whole block before the commits, finds no extra commit, in
+  B-DEF.
 - **Fail:** fetch accepts bytes that were never written as part of a
   commit.
-- **Verified by:** `rbyd::*` (indirect); NEW: direct perturb test.
+- **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`.
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -1076,11 +1084,14 @@ erased-state checksum (ecksum).
 - **Source:** Stated: `lfs3.c:2655-2682`; appending onto a torn or disturbed
   region would mix old and new bits.
 - **Measure:** whether the next commit appends or compacts.
-- **Pass:** a NEW case that flips one bit in the prog unit after the last
-  commit of an mdir, remounts and commits, finds the mdir compacted into its
-  other block, in B-DEF with `PROG_SIZE` in {1, 16}.
+- **Pass:** `mtree::ecksum_disturb`, which flips the valid bit of the first
+  byte after the last commit of an mdir, a bit of the last byte of that prog
+  unit, or a bit of the last byte the ecksum covers, remounts and commits,
+  finds the mdir compacted into its other block, in B-DEF with `PROG_SIZE`
+  in {1, 16} and `ERASE_VALUE` in {0xff, 0x00, -1}. Without a flip the
+  commit appends.
 - **Fail:** the commit is appended to the disturbed block.
-- **Verified by:** NEW.
+- **Verified by:** `mtree::ecksum_disturb`.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -1111,12 +1122,13 @@ filesystem was built on.
 - **Source:** Stated: #1111 "Global-checksums" (gcksums "prevent rollback
   issues caused by naive checksumming"); `lfs3.c:15869-15901`.
 - **Measure:** mount result after an older commit of one mdir is restored.
-- **Pass:** a NEW deterministic case (commit X to mdir A, commit Y to mdir B,
-  restore A's block from before X) gets `LFS3_ERR_CORRUPT` from mount with
-  `LFS3_M_RDWR` and with `LFS3_M_RDONLY`, in B-DEF.
+- **Pass:** `ck::rollback` (commit X to mdir A, commit Y to mdir B, restore
+  A's blocks from before X) gets `LFS3_ERR_CORRUPT` from mount with
+  `LFS3_M_RDWR` and with `LFS3_M_RDONLY`, with A and B the mroot or mdirs in
+  the mtree, in B-DEF.
 - **Fail:** the mount succeeds.
 - **Verified by:** `ck::ckmeta_hard` with `METHOD=3` (indirect, via bit
-  flips); NEW: deterministic rollback case.
+  flips); `ck::rollback`.
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -1163,12 +1175,12 @@ rollback.
   (`tests/test_ck.toml:615-623`).
 - **Measure:** `lfs3_fs_cksum` before the last commit, after it, and after
   restoring the pre-commit block.
-- **Pass:** a NEW deterministic case finds the mount succeeds and the
-  checksum after the rollback differs from the value after the commit, in
-  B-DEF.
+- **Pass:** `ck::rollback` finds the mount succeeds, the checksum after the
+  rollback differs from the value after the commit and equals the value
+  before it, and namespace operations after the rollback work, in B-DEF.
 - **Fail:** the checksums are equal.
 - **Verified by:** `ck::ckmeta_hard` comments and `METHOD=3` (indirect);
-  NEW: deterministic case.
+  `ck::rollback`.
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -1220,16 +1232,24 @@ data block, respectively.
 #### LFS3-INT-13
 
 littlefs shall return `LFS3_ERR_CORRUPT` from `lfs3_file_ck` with
-`LFS3_CK_CKDATA`, and from `lfs3_file_opencfg` with `LFS3_O_CKDATA`, when any
-B-tree node or data block of that file has a flipped bit.
+`LFS3_CK_CKDATA`, and from `lfs3_file_opencfg` with `LFS3_O_CKDATA`, when
+any B-tree node or data block of that file has a flipped bit in a byte a
+checksum covers: the checksummed prefix of a data block, or the revision
+count, tags and data of a B-tree node up to the end of the commit holding
+its trunk. No checksum covers the padding after a commit's checksum.
 
 - **Source:** Stated: `lfs3.h:143-144, 1648-1652`.
 - **Measure:** return value.
 - **Pass:** `ck::file_ckmeta_easy`, `ck::file_ckmeta_hard`,
-  `ck::file_ckdata_easy` and `ck::file_ckdata_hard` pass in B-DEF, with bit
-  flips in B-tree nodes and in data blocks.
+  `ck::file_ckdata_easy` and `ck::file_ckdata_hard` pass in B-DEF, and
+  `ck::file_ckdata_blocks`, which flips the first and last covered bit, the
+  first and last data bit and random covered bits of every data block and
+  B-tree node of files of half a block to 8.5 blocks, written whole or in
+  syncs, gets `LFS3_ERR_CORRUPT` from `lfs3_file_ck`, from an open with
+  `LFS3_O_CKDATA` and from `lfs3_fs_ck` with `LFS3_CK_CKDATA`, in B-DEF and
+  B-BIG.
 - **Fail:** 0 is returned for a corrupted file.
-- **Verified by:** as listed; NEW: flips in data blocks.
+- **Verified by:** as listed; `ck::file_ckdata_blocks`.
 - **Status:** Partly tested (the cases flip bits only in B-tree blocks,
   `tests/test_ck.toml:1231-1233`). The scope question is open question Q13.
 - **When:** every CI run.
@@ -1322,11 +1342,11 @@ differently from when it was fetched.
   `lfs3.c:1368-1441`.
 - **Measure:** return value of the read.
 - **Pass:** `ck::ckparity_mroot` and `ck::ckparity_btree` with PROGFLIP and
-  READFLIP pass in B-BIG, and `ck::spam_*_fuzz` pass with
-  `CKMETAPARITY=true`.
+  READFLIP pass in B-BIG, and NEW-62 `ck::readflip_spam` (READFLIP bad
+  blocks, mounted with `LFS3_M_CKMETAPARITY | LFS3_M_CKDATACKSUMS`) passes
+  in B-BIG.
 - **Fail:** the flipped value is returned without the error.
-- **Verified by:** as listed; NEW: enable `CKMETAPARITY` in the spam cases,
-  which hard-code it to false.
+- **Verified by:** as listed; NEW-62 `ck::readflip_spam`.
 - **Status:** Partly tested (compiled out of B-DEF).
 - **When:** every CI run.
 
@@ -1356,9 +1376,12 @@ any mdir changes on disk while mounted.
   the in-RAM gcksum (`lfs3.c:10153-10162`).
 - **Measure:** return value of `lfs3_fs_ck(LFS3_CK_CKMETA)` after an mdir
   block is replaced by an older copy behind littlefs's back.
-- **Pass:** a NEW deterministic case gets `LFS3_ERR_CORRUPT`, in B-DEF.
+- **Pass:** `ck::rollback` gets `LFS3_ERR_CORRUPT` from `lfs3_fs_ck` with
+  `LFS3_CK_CKMETA` after an mdir's blocks are replaced by older copies while
+  mounted, and namespace operations on top of the rollback return 0 or
+  `LFS3_ERR_CORRUPT` and never assert, in B-DEF.
 - **Fail:** the check returns 0.
-- **Verified by:** `ck::ckmeta_hard` (indirect); NEW.
+- **Verified by:** `ck::ckmeta_hard` (indirect); `ck::rollback`.
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -1370,10 +1393,13 @@ littlefs shall return `LFS3_ERR_CORRUPT` from `lfs3_fs_ck` with
 - **Source:** Derived: gbmap nodes are metadata and are traversed as B-tree
   blocks (`lfs3.c:9913-9935`).
 - **Measure:** return value.
-- **Pass:** a NEW variant of `ck::ckmeta_hard` that flips bits in gbmap
-  nodes passes in B-YGB.
+- **Pass:** `ck::ckmeta_gbmap`, which flips the first and last covered bit
+  and random covered bits of every gbmap node of a gbmap of about 25 nodes,
+  gets `LFS3_ERR_CORRUPT` from `lfs3_fs_ck` with `LFS3_CK_CKMETA`, from a
+  traversal with `LFS3_T_CKMETA` and from a mount with `LFS3_M_CKMETA`, in
+  B-YGB and B-BIG.
 - **Fail:** the check returns 0.
-- **Verified by:** NEW.
+- **Verified by:** `ck::ckmeta_gbmap`.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -1398,6 +1424,30 @@ littlefs shall not return `LFS3_ERR_CORRUPT` because of
   during quick fetches, so every B-tree commit to an rbyd not fetched since
   mount fails; 1275 permutations of `mount::flags` and `mount::format_flags`
   fail in B-BIG).
+- **When:** every CI run.
+
+#### LFS3-INT-24
+
+littlefs shall, when mounted with the check option that covers the source of
+a copy, return `LFS3_ERR_CORRUPT` instead of copying a flipped bit under a
+fresh checksum. `LFS3_M_CKMETAPARITY` covers mdir compaction, B-tree node
+compaction and the crystallization of fragments; `LFS3_M_CKFETCHES` covers
+B-tree node compaction and crystallization from a data block;
+`LFS3_M_CKDATACKSUMS` covers crystallization from a data block.
+
+- **Source:** Proposal, from the results of NEW-63 (`ck::launder`): without
+  the covering option every copy tried put the flipped bit under a fresh
+  checksum, after which no check finds it; only a check run before the copy
+  does. Documenting this is LFS3-DOC-13.
+- **Measure:** result of the call that copies, and of `lfs3_fs_ck` before and
+  after it.
+- **Pass:** `ck::launder` passes in B-DEF and B-BIG: with the covering option
+  the copy returns `LFS3_ERR_CORRUPT` and a check still finds the flip, and
+  in every case `lfs3_fs_ck` before the copy returns `LFS3_ERR_CORRUPT`.
+- **Fail:** the copy succeeds with the covering option, or a check before
+  the copy misses the flip.
+- **Verified by:** `ck::launder`.
+- **Status:** Untested.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -1544,9 +1594,10 @@ littlefs shall return `LFS3_ERR_CORRUPT`, with `LFS3_M_CKMETAPARITY` and
 - **Source:** Stated: `lfs3.h:262-269`.
 - **Measure:** data and errors returned by reads.
 - **Pass:** `ck::ckparity_*` and `ck::ckdatacksums_data` pass with
-  `BADBLOCK_BEHAVIOR=6` in B-BIG.
+  `BADBLOCK_BEHAVIOR=6` in B-BIG, and NEW-62 `ck::readflip_spam` (READFLIP
+  bad blocks under a directory and a file workload) passes in B-BIG.
 - **Fail:** flipped data is returned without an error.
-- **Verified by:** as listed.
+- **Verified by:** as listed; NEW-62 `ck::readflip_spam`, see LFS3-INT-19.
 - **Status:** Partly tested (compiled out of B-DEF; `ckdatacksums_data`
   could not build at `b10efaa`, F-2).
 - **When:** every CI run.
@@ -2039,10 +2090,10 @@ total height of at most 2 × black height + 2.
 - **Source:** Stated: the invariant checked under `LFS3_DBGRBYDBALANCE`
   (`lfs3.c:2987-3027`).
 - **Measure:** the debug balance check.
-- **Pass:** `rbyd::*`, `btree::*` and `mtree::*` pass in a build with
-  `LFS3_DBGRBYDBALANCE`.
+- **Pass:** `make test-balance`, which runs `rbyd::*`, `btree::*` and
+  `mtree::*` in a build with `LFS3_DBGRBYDBALANCE`, passes.
 - **Fail:** the check fires.
-- **Verified by:** as listed.
+- **Verified by:** `make test-balance` (nightly job `test-balance`).
 - **Status:** Untested (the option is never built).
 - **When:** nightly.
 
@@ -2203,11 +2254,13 @@ revision count wraps around 2^32.
   with sequence arithmetic); format deliberately writes a wrapped pair
   (`lfs3.c:16191-16199`).
 - **Measure:** which block is fetched; content after compaction.
-- **Pass:** every suite passes (format exercises one wrap), and a NEW
-  internal case that sets revision counts to 0xfffffffe and compacts across
-  the wrap keeps the newest commit, in B-DEF.
+- **Pass:** every suite passes (format exercises one wrap), and
+  `mtree::rev_wrap`, which sets an mdir pair's revision counts to 0xfffffffe
+  and 0xffffffff and compacts across the wrap 24 more times, finds the
+  newest commit by fetching either block first and by mounting, for the
+  mroot and for an mdir in the mtree, in B-DEF.
 - **Fail:** the older block is fetched.
-- **Verified by:** all suites (incidental); NEW.
+- **Verified by:** all suites (incidental); `mtree::rev_wrap`.
 - **Status:** Partly tested.
 - **When:** every CI run.
 
@@ -2820,8 +2873,10 @@ whose file was removed, and `LFS3_ERR_NOENT` from `lfs3_file_resync` on it.
 #### LFS3-SYNC-09
 
 littlefs shall leave a filesystem that passes `lfs3_fs_ck` when a handle
-that returned a write error is later synced successfully. The content of
-the range the failed write touched is unspecified.
+that returned a write error is later synced successfully. The content of the
+range the failed write touched is unspecified. If the failed write left the
+handle torn, `lfs3_file_sync` refuses it with `LFS3_ERR_INVAL` and
+`lfs3_file_resync` returns it to the last sync (LFS3-ERR-03).
 
 - **Source:** Stated: #1111 "Better recovery from runtime errors" ("file
   data remains undefined after an error"), and `lfs3.h:1571-1572` (a
@@ -2830,11 +2885,15 @@ the range the failed write touched is unspecified.
   the middle could leave the handle's tree inconsistent (2-files B5).
 - **Measure:** `lfs3_fs_ck(LFS3_CK_CKMETA | LFS3_CK_CKDATA)` and
   `lfs3_file_size` against the tree's weight.
-- **Pass:** a NEW fuzz case injects NOSPC and bad blocks into multi-entry
-  overwrites, continues with `lfs3_file_sync`, remounts, and `lfs3_fs_ck`
-  returns 0, and bytes outside the failed range match the model, in B-DEF.
+- **Pass:** `badblocks::error_then_sync` sweeps `LFS3_ERR_NOSPC` (0 to all
+  blocks of a full disk freed), bad blocks (the n-th prog or erase fails
+  with `LFS3_ERR_CORRUPT`) and device errors (the n-th prog fails with
+  `LFS3_ERR_IO`) over every point of an overwrite spanning several fragments
+  or several data blocks and of its sync, then syncs the handle (or resyncs
+  it if torn) and remounts; `lfs3_fs_ck` returns 0 and bytes outside the
+  failed range match the model, in B-DEF and B-BIG with the prog-once check.
 - **Fail:** the check fails, or bytes outside the range differ.
-- **Verified by:** NEW.
+- **Verified by:** `badblocks::error_then_sync`.
 - **Status:** Untested (suspected, 2-files B5).
 - **When:** every CI run.
 
@@ -3370,10 +3429,11 @@ littlefs shall support attributes on the root directory ("/").
 - **Source:** Derived: `lfs3_setattr` accepts any path, and root attributes
   live beside the configuration in the mroot.
 - **Measure:** set, get, size and remove on "/".
-- **Pass:** a NEW case, including a remount and an mroot chain extension,
-  passes in B-DEF.
+- **Pass:** `attrs::root` sets, gets, sizes and removes attributes on "/"
+  across remounts, an mroot chain extension and mroot relocations, with and
+  without a file in the mroot, in B-DEF.
 - **Fail:** any error or wrong value.
-- **Verified by:** NEW (a probe passed at `b10efaa`).
+- **Verified by:** `attrs::root` (a probe passed at `b10efaa`).
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -3662,7 +3722,8 @@ have been removed.
 - **Pass:** a NEW case fills the disk until `LFS3_ERR_NOSPC`, removes half
   the files, and writes a new file of the freed size, in B-DEF.
 - **Fail:** the remove or the write fails.
-- **Verified by:** NEW.
+- **Verified by:** NEW. `badblocks::error_then_sync` removes files from a
+  full disk with 0 to all of their blocks freed.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -4020,20 +4081,21 @@ littlefs shall not program a pre-erased block without erasing it after a
 torn program that left the first `prog_size` bytes erased but changed bytes
 after them.
 
-- **Source:** Derived: the erased-state checksum covers only the first
-  `prog_size` bytes (`lfs3.c:2491-2502`), while the first program of a new
-  rbyd can be a `pcache_size` flush (3-alloc B17). Whether littlefs must
-  handle this or can state it as a hardware assumption is open question
-  Q19.
+- **Source:** Derived: the first program of a new rbyd or pre-erased block
+  can be a `pcache_size` flush (3-alloc B17). Open question Q19 is settled
+  by the erased-state checksums covering `max(pcache_size, LFS3_TAG_DSIZE)`
+  bytes (`57493587`).
 - **Measure:** programs to already-programmed regions.
-- **Pass:** a NEW emubd power-loss behaviour that tears a prog after its
-  first `prog_size` bytes, used in the LFS3-PRE-05 cases with
-  `PCACHE_SIZE > PROG_SIZE`, finds no prog to an already-programmed region,
-  in B-BIG.
+- **Pass:** `powerloss_p1::tear_tail` (torn-tail power loss, `PCACHE_SIZE` 4
+  × `PROG_SIZE`, the prog-once check, and the workloads of
+  `powerloss::append_pl` and `powerloss::preerase_pl_fuzz`) finds no prog to
+  an already-programmed region, in B-DEF and B-BIG; the pre-erase workload
+  needs B-BIG.
 - **Fail:** such a prog occurs.
-- **Verified by:** NEW: emubd extension.
+- **Verified by:** `powerloss_p1::tear_tail`; every `powerloss::*` case also
+  runs with torn tails.
 - **Status:** Untested.
-- **When:** nightly.
+- **When:** every CI run.
 
 ### 6.14 Garbage collection and traversals (GC)
 
@@ -4954,7 +5016,9 @@ block in between.
   the block's last erase.
 - **Pass:** every suite passes in B-DEF and B-BIG with the check enabled.
 - **Fail:** the check fires.
-- **Verified by:** NEW: emubd check.
+- **Verified by:** NEW: emubd check. `powerloss_p1::tear_tail` and
+  `badblocks::error_then_sync` (progs failing partway through a write) run
+  with the check.
 - **Status:** Untested.
 - **When:** every CI run.
 
@@ -6071,7 +6135,10 @@ littlefs shall document the limits of its error detection.
   outside the device (`lfs3_fs_cksum`); that a gcksum mismatch makes the
   mount fail with no degraded mode; that a change after mount is found only
   by the next check; and that data blocks are verified only with
-  `LFS3_M_CKFETCHES`, `LFS3_M_CKDATACKSUMS` or a ckdata check.
+  `LFS3_M_CKFETCHES`, `LFS3_M_CKDATACKSUMS` or a ckdata check; and that a
+  flipped bit read from the source of a copy (mdir compaction, B-tree node
+  compaction, crystallization) is copied under a fresh checksum unless the
+  check option that covers the source is enabled (LFS3-INT-24).
 - **Fail:** any item is missing.
 - **Verified by:** review.
 - **Status:** Not implemented (planned).
@@ -7272,11 +7339,11 @@ are mapped at the end of 6.4.
 | `LFS3_YES_REVNOISE` | BUILD-12, BUILD-15 |
 | `LFS3_CKPROGS` | INT-17, FAIL-03, FAIL-05, FAIL-06, FAIL-08, FAIL-11 |
 | `LFS3_YES_CKPROGS` | BUILD-12, BUILD-15 |
-| `LFS3_CKFETCHES` | INT-18, BUILD-04 |
+| `LFS3_CKFETCHES` | INT-18, INT-24, BUILD-04 |
 | `LFS3_YES_CKFETCHES` | BUILD-12, BUILD-15 |
-| `LFS3_CKMETAPARITY` | INT-19, INT-23, FAIL-09, BUILD-04 |
+| `LFS3_CKMETAPARITY` | INT-19, INT-23, INT-24, FAIL-09, BUILD-04 |
 | `LFS3_YES_CKMETAPARITY` | BUILD-12, BUILD-15 |
-| `LFS3_CKDATACKSUMS` | INT-20, FAIL-09, BUILD-03, BUILD-04 |
+| `LFS3_CKDATACKSUMS` | INT-20, INT-24, FAIL-09, BUILD-03, BUILD-04 |
 | `LFS3_YES_CKDATACKSUMS` | BUILD-12, BUILD-15 |
 | `LFS3_GC` | GC-01, GC-02, GC-03, GC-04, INT-15, INT-16, CFG-05, CFG-06, BUILD-04 |
 | `LFS3_YES_GC` | BUILD-12, BUILD-15 |
