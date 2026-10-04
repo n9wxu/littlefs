@@ -3324,6 +3324,15 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     return 0;
 }
 
+// number of times to read a block again when it fails a check
+//
+// note this being a function keeps gcc's -Wtype-limits quiet without
+// the gbmap, where it's always 0
+static inline lfs3_size_t lfs3_ckretries(const lfs3_t *lfs3) {
+    (void)lfs3;
+    return LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0);
+}
+
 // check an rbyd against the cksum its parent records, reading it again up
 // to ck_retries times, a read can fail while the supply is low and pass
 // later
@@ -3334,7 +3343,7 @@ static int lfs3_rbyd_ckretry(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
     for (lfs3_size_t i = 0;; i++) {
         int err = lfs3_rbyd_fetchck(lfs3, rbyd, block, trunk, cksum);
         if (err != LFS3_ERR_CORRUPT
-                || i >= LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0)) {
+                || i >= lfs3_ckretries(lfs3)) {
             return err;
         }
 
@@ -3348,7 +3357,7 @@ static int lfs3_bptr_ckretry(lfs3_t *lfs3, const lfs3_bptr_t *bptr) {
     for (lfs3_size_t i = 0;; i++) {
         int err = lfs3_bptr_ck(lfs3, bptr);
         if (err != LFS3_ERR_CORRUPT
-                || i >= LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0)) {
+                || i >= lfs3_ckretries(lfs3)) {
             return err;
         }
 
