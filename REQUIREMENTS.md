@@ -5730,17 +5730,29 @@ littlefs shall pass the test suite in every B-YES-x build.
 
 #### LFS3-BUILD-16
 
-littlefs shall pass the test suite in B-NA.
+littlefs shall pass the test suite in B-NA, built so that littlefs's own
+asserts compile out as in a release build while the tests keep theirs.
 
 - **Source:** Derived: release builds define `LFS3_NO_ASSERT`, and some
   defects show different behaviour there (for example 2-files B1 corrupts
-  silently instead of asserting).
-- **Measure:** runner results.
-- **Pass:** `make test` with `-DLFS3_NO_ASSERT` exits 0 (cases that test an
-  assert are excluded by `ifndef`).
-- **Fail:** any failure.
-- **Verified by:** all suites.
-- **Status:** Untested.
+  silently instead of asserting). The runner rewrites asserts with
+  `scripts/prettyasserts.py` to show their operands; if it rewrites
+  `LFS3_ASSERT` in `lfs3.c`, a B-NA runner still asserts and release
+  behaviour can't be tested (issue #14).
+- **Measure:** runner results; `mount::noassert`, an internal case built
+  only with `LFS3_NO_ASSERT`, which passes only if `LFS3_ASSERT` in
+  littlefs's sources compiles out.
+- **Pass:** `make test-release` (B-NA, everything in `RELEASE_DIR`) exits
+  0, including `mount::noassert` (cases that test an assert are excluded by
+  `ifndef`); test code, emubd and the runner keep their asserts; a CI job
+  runs it.
+- **Fail:** any failure, or an `LFS3_ASSERT` in `lfs3.c` or `lfs3_util.c`
+  that still fires in B-NA.
+- **Verified by:** `make test-release` (NEW-133), `mount::noassert`.
+- **Status:** Known defect on `v3-integration` (issue #14): the B-NA
+  runner doesn't build (tests call `assert` from macros prettyasserts
+  can't rewrite, and `lfs3_util.h` includes `<assert.h>` only with asserts
+  on), and with that fixed every `LFS3_ASSERT` still traps.
 - **When:** every CI run.
 
 #### LFS3-BUILD-17
@@ -7097,7 +7109,7 @@ new environment (9.2).
 | LFS3-BUILD-13 | Defect | every CI run | B-BIG (LFS3-CI-03) |
 | LFS3-BUILD-14 | Untested | every CI run | B-YGB (LFS3-CI-03) |
 | LFS3-BUILD-15 | Untested | nightly | each B-YES-x build |
-| LFS3-BUILD-16 | Untested | every CI run | B-NA |
+| LFS3-BUILD-16 | Defect | every CI run | `make test-release` (B-NA) and `mount::noassert` |
 | LFS3-BUILD-17 | Untested | nightly | B-NB and B-NS |
 | LFS3-CI-01 | Defect | every CI run | v3 workflow |
 | LFS3-CI-02 | Defect | every CI run | v3 workflow, cross architectures |
