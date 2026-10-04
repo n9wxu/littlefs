@@ -1862,8 +1862,7 @@ survives if the gbmap is disabled and re-enabled.
 ## The global block map (gbmap)
 
 The gbmap is an optional on-disk map of the state of every block, used to
-speed up block allocation, track pre-erased blocks, and, in the future,
-bad blocks. Without it, the driver finds free blocks by traversing the
+speed up block allocation, track pre-erased blocks, and track bad blocks. Without it, the driver finds free blocks by traversing the
 filesystem into a RAM bitmap, the lookahead buffer, as in v2.
 
 The gbmap is a [B-tree](#b-trees) whose bids are block addresses. Each
@@ -1875,12 +1874,27 @@ the length of the range, and the entry's tag the state:
 | `0x0440` | `BMFREE`   | none             | free, must be erased before use |
 | `0x0441` | `BMINUSE`  | none             | in use, or assumed in use      |
 | `0x0442` | `BMERASED` | optional ecksum  | free and already erased        |
-| `0x0443` | `BMBAD`    | none             | bad, reserved                  |
+| `0x0443` | `BMBAD`    | none             | bad                            |
 
 The two low bits of these tags are the state: bit 0 means in use, bit 1
-means erased, and in use + erased means bad. `BMBAD` is reserved for
-bad-block tracking and never written by the driver, which treats it like
-`BMINUSE`.
+means erased, and in use + erased means bad.
+
+A `BMBAD` range holds blocks that must never be erased or programmed. The
+driver writes one for a block whose erase or prog failed, or whose
+read-back failed with `LFS3_M_CKPROGS`, once no committed block pointer
+references it, and for blocks given to `lfs3_fs_mkbad`. Unlike the other
+states, `BMBAD` is trusted outside the window: a writer must keep `BMBAD`
+blocks out of use however it allocates, including when it allocates from
+a traversal of the filesystem instead of from the gbmap, since nothing
+references a bad block, and must keep `BMBAD` ranges when it repopulates
+the gbmap, even for a block it finds still referenced. A writer may clear
+one (`lfs3_fs_mkgood`).
+
+Marks are advisory: a lost mark only costs another failed erase or prog,
+so `BMBAD` comes with no compat flag. gbmap drivers older than the bad-block
+tracking on `v3-integration` (4f6d5ef8) treat `BMBAD` as in use in the
+gbmap, but may allocate a `BMBAD` block from a traversal, which costs them
+what an unmarked bad block would.
 
 A `BMERASED` range may carry an erased-state checksum, the same encoding as
 an [`ECKSUM`](#0x3200-lfs3_tag_ecksum), the CRC-32C of the first `cksize`
@@ -1910,9 +1924,11 @@ Blocks that become free are not marked free right away. The driver
 repopulates the gbmap from time to time by traversing the filesystem, at
 which point the window covers the whole disk again.
 
-When a filesystem is formatted with a gbmap, block 2 holds the initial
-gbmap root, with blocks 0-2 in use and everything else free, `window` is 3,
-and `known` is the block count.
+When a filesystem is formatted with a gbmap, the first block from 2 on
+that erases and programs holds the initial gbmap root, usually block 2.
+Blocks 0 and 1 and the root are in use, any blocks skipped before the
+root are bad, everything after it is free, `window` is the block after the
+root, and `known` is the block count.
 
 The gbmap only matters to writers. A reader can ignore it, but a writer
 that doesn't understand it would allocate blocks without updating it,
@@ -2718,8 +2734,8 @@ The checksum applies to each block in the range: the CRC-32C of its first
 
 bits: `v--- -1-- +1-- --11`
 
-A range of bad blocks. Reserved for planned bad-block tracking: the driver
-never writes it, and treats it as in use.
+A range of bad blocks, which a writer must never erase or program, see
+[the gbmap](#the-global-block-map-gbmap). It has no data.
 
 ---
 #### `0x06xx` LFS3_TAG_UATTR
@@ -2904,11 +2920,13 @@ open.
    be told apart on disk. The maintainer has said the format may still
    change before release, and that the released driver will reject v0.0.
 
-2. **Planned features.** Bad-block tracking (`BMBAD` is reserved but never
-   written), metadata redundancy, data redundancy and deduplication, and
-   16-bit and 64-bit variants are planned or being considered. Bad-block
-   tracking is the one the maintainer lists as a release blocker. Any of
-   these may change the format.
+2. **Planned features.** Metadata redundancy, data redundancy and
+   deduplication, and 16-bit and 64-bit variants are planned or being
+   considered. Any of these may change the format. Bad-block tracking,
+   which the maintainer lists as a release blocker, uses `BMBAD` without a
+   format change. Blocks that only fail reads are kept in RAM as suspect
+   and not written to disk; keeping them across mounts would need a new
+   gbmap state and a wcompat flag.
 
 3. **Redundancy bits.** The two low bits of `MAGIC`, `GBMAPDELTA`, and
    most struct tags are reserved for redundancy (`lfs3_tag_redund` exists in
@@ -2965,8 +2983,9 @@ open.
     unit before the end of the block gets an `ECKSUM` that is rejected
     later. This is harmless, but one of the two should probably change.
 
-13. **gbmap at format.** Format always places the initial gbmap root in
-    block 2, with a TODO about trying other blocks if block 2 is bad.
+13. **gbmap at format.** Format places the initial gbmap root in the first
+    block from 2 on that erases and programs, marking any it skips bad. A
+    block device can refuse to erase a block it knows is bad.
 
 14. **Empty `BMERASED`.** An empty `BMERASED` payload is defined as
     "erased, checksum unknown", but the driver never writes one.

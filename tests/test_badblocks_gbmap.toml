@@ -1785,8 +1785,9 @@ code = '''
 # test marking a factory bad-block table after format, before anything
 # is written
 #
-# format only writes the mroot anchor and gbmap root, so this keeps every
-# other listed block from ever being erased
+# format only writes the mroot anchor and gbmap root, and puts the root on
+# the first block after the anchor that erases and programs, so this
+# keeps every other listed block from ever being erased
 [cases.test_badblocks_gbmap_factory]
 defines.BADBLOCK_BEHAVIOR = [
     'LFS3_EMUBD_BADBLOCK_PROGERROR',
@@ -1799,18 +1800,28 @@ code = '''
     struct lfs3_cfg cfg;
     test_bbg_wrap(&cfg, CFG);
 
-    // our factory bad-block table
+    // our factory bad-block table, blocks 2 and 3 are where format would
+    // put the gbmap root
     bool *bad = calloc(BLOCK_COUNT, 1);
     for (lfs3_block_t b = 3; b < BLOCK_COUNT; b += 5) {
         lfs3_emubd_mkbad(CFG, b) => 0;
         bad[b] = true;
     }
+    lfs3_emubd_mkbad(CFG, 2) => 0;
+    bad[2] = true;
     lfs3_emubd_mkbad(CFG, 7) => 0;
     bad[7] = true;
 
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    // format tried blocks 2 and 3 once each, the device refusing them
+    for (lfs3_block_t b = 2; b < 4; b++) {
+        assert(test_bbg_erases[b] == 1);
+        assert(test_bbg_progs[b] <= 1);
+        test_bbg_erases[b] = 0;
+        test_bbg_progs[b] = 0;
+    }
     for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
         if (bad[b]) {
             lfs3_fs_mkbad(&lfs3, b) => 0;

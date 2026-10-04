@@ -1501,7 +1501,11 @@ typedef struct lfs3 {
 // object, and does not leave the filesystem mounted. The config struct must
 // be zeroed for defaults and backwards compatibility.
 //
-// Returns a negative error code on failure.
+// With LFS3_F_GBMAP, the gbmap's root goes in the first block from 2 on
+// that erases and progs, and any blocks skipped are marked bad.
+//
+// Returns LFS3_ERR_NOSPC if no block is left for the gbmap's root, or a
+// negative error code on failure.
 #ifndef LFS3_RDONLY
 int lfs3_format(lfs3_t *lfs3, uint32_t flags,
         const struct lfs3_cfg *cfg);
@@ -1979,7 +1983,10 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3);
 // littlefs never erases or programs a block marked bad, and keeps the
 // mark in the gbmap across mounts. littlefs marks blocks bad itself when
 // an erase or prog fails with LFS3_ERR_CORRUPT, this is for blocks known
-// to be bad some other way, such as a NAND factory bad-block table.
+// to be bad some other way, such as a NAND factory bad-block table. Mark
+// these right after format. Format only writes blocks 0 and 1 and the
+// gbmap's root, and a block device that refuses to erase a known-bad
+// block keeps format from using it for the root.
 //
 // Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
 // anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap,

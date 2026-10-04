@@ -17182,40 +17182,54 @@ int lfs3_unmount(lfs3_t *lfs3) {
 
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_formatgbmap(lfs3_t *lfs3) {
-    // TODO should we try multiple blocks?
-    //
-    // TODO if we try multiple blocks we should update test_badblocks
-    // to test block 3 when gbmap is present
-    //
-    // assume we can write gbmap to block 2
-    lfs3->gbmap.window = 3 % lfs3->block_count;
-    lfs3->gbmap.known = lfs3->block_count;
-    lfs3->gbmap.b.r.blocks[0] = 2;
-    lfs3->gbmap.b.r.trunk = 0;
-    lfs3->gbmap.b.r.weight = 0;
-    lfs3->gbmap.b.r.eoff = 0;
-    lfs3->gbmap.b.r.cksum = 0;
+    // the gbmap root goes in the first block after the mroot anchor that
+    // erases and progs, any we skip are bad, a block device that knows a
+    // block is bad (a factory bad-block table) can refuse to erase it
+    for (lfs3_block_t block = 2; block < lfs3->block_count; block++) {
+        lfs3->gbmap.window = (block+1) % lfs3->block_count;
+        lfs3->gbmap.known = lfs3->block_count;
+        lfs3_rbyd_init(&lfs3->gbmap.b.r, block);
 
-    int err = lfs3_bd_erase(lfs3, lfs3->gbmap.b.r.blocks[0]);
-    if (err) {
-        return err;
+        int err = lfs3_bd_erase(lfs3, block);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+
+        if (!err) {
+            lfs3_rattr_t rattrs[9];
+            lfs3_rattr_t *r = rattrs;
+            // blocks 0..2 - in-use, with our root if we skipped nothing
+            *r++ = LFS3_RATTR(2, LFS3_TAG_BMINUSE, -2);
+            *r++ = LFS3_RATTR_WEIGHT((block == 2) ? +3 : +2);
+            // blocks 2..block - bad, block - in-use
+            if (block > 2) {
+                *r++ = LFS3_RATTR(2, LFS3_TAG_BMBAD, -2);
+                *r++ = LFS3_RATTR_WEIGHT(+(block-2));
+                *r++ = LFS3_RATTR(2, LFS3_TAG_BMINUSE, -2);
+                *r++ = LFS3_RATTR_WEIGHT(+1);
+            }
+            // blocks block+1..block_count - free
+            if (lfs3->block_count > block+1) {
+                *r++ = LFS3_RATTR(2, LFS3_TAG_BMFREE, -2);
+                *r++ = LFS3_RATTR_WEIGHT(+(lfs3->block_count - (block+1)));
+            }
+            *r++ = LFS3_RATTR_NULL;
+            LFS3_ASSERT((lfs3_size_t)(r-rattrs)
+                    <= sizeof(rattrs)/sizeof(lfs3_rattr_t));
+
+            err = lfs3_rbyd_commit(lfs3, &lfs3->gbmap.b.r, 0, rattrs);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+        }
+
+        if (!err) {
+            return 0;
+        }
     }
 
-    err = lfs3_rbyd_commit(lfs3, &lfs3->gbmap.b.r, 0, LFS3_RATTRS(
-            // blocks 0..3 - in-use
-            LFS3_RATTR(2, LFS3_TAG_BMINUSE, -2),
-            LFS3_RATTR_WEIGHT(+3),
-            // blocks 3..block_count - free
-            (lfs3->block_count > 3)
-                ? LFS3_RATTR(2, LFS3_TAG_BMFREE, -2)
-                : LFS3_RATTR(2, LFS3_TAG_NULL, 0),
-            LFS3_RATTR_WEIGHT(+(lfs3->block_count - 3)),
-            LFS3_RATTR_NULL));
-    if (err) {
-        return err;
-    }
-
-    return 0;
+    // no block left for the gbmap root
+    return LFS3_ERR_NOSPC;
 }
 #endif
 
