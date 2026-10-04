@@ -13121,6 +13121,9 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
     //
     // note the -2 to adjust for dot entries, rewind already leaves
     // the mid at the first real entry
+    //
+    // positions only count what lfs3_dir_read returns, so we need to
+    // step over orphans one entry at a time
     lfs3_off_t off_ = lfs3_smax(off - 2, 0);
     while (off_ > 0) {
         // next mdir?
@@ -13137,12 +13140,30 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
             }
         }
 
-        lfs3_off_t d = lfs3_min(
-                off_,
-                dir->h.mdir.r.weight
-                    - lfs3_mrid(lfs3, dir->h.mdir.mid));
-        dir->h.mdir.mid += d;
-        off_ -= d;
+        // lookup the next name tag
+        lfs3_data_t data;
+        lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, &dir->h.mdir,
+                LFS3_tag_MASK8 | LFS3_TAG_NAME,
+                &data);
+        if (tag < 0) {
+            return tag;
+        }
+
+        // did mismatch? we're past the end of the dir
+        lfs3_did_t did;
+        err = lfs3_data_readleb128(lfs3, &data, &did);
+        if (err) {
+            return err;
+        }
+        if (did != dir->did) {
+            break;
+        }
+
+        // orphans don't count
+        if (tag != LFS3_tag_ORPHAN) {
+            off_ -= 1;
+        }
+        dir->h.mdir.mid += 1;
     }
 
     dir->pos = off;

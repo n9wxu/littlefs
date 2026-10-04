@@ -220,6 +220,9 @@ code = '''
 [cases.test_dread_seek_tell]
 defines.N = [0, 1, 2, 4, 8, 16, 32, 64]
 defines.PARENT = [false, true]
+# leave an orphaned stickynote before the first entry and after every
+# entry, read hides these, so seek must not count them
+defines.ORPHANS = [false, true]
 code = '''
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
@@ -234,6 +237,31 @@ code = '''
         char name[256];
         sprintf(name, "%s/dir%03x", ((PARENT) ? "pricklypear" : ""), i);
         lfs3_mkdir(&lfs3, name) => 0;
+    }
+
+    // closing a not-yet-created desync file leaves an orphan, but only
+    // after all opens
+    if (ORPHANS) {
+        lfs3_file_t *files = malloc((N+1)*sizeof(lfs3_file_t));
+        assert(files);
+        for (lfs3_size_t i = 0; i < N+1; i++) {
+            char name[256];
+            if (i == 0) {
+                sprintf(name, "%s/dir", ((PARENT) ? "pricklypear" : ""));
+            } else {
+                sprintf(name, "%s/dir%03xo",
+                        ((PARENT) ? "pricklypear" : ""), i-1);
+            }
+            lfs3_file_open(&lfs3, &files[i], name,
+                    LFS3_O_WRONLY
+                        | LFS3_O_CREAT
+                        | LFS3_O_EXCL
+                        | LFS3_O_DESYNC) => 0;
+        }
+        for (lfs3_size_t i = 0; i < N+1; i++) {
+            lfs3_file_close(&lfs3, &files[i]) => 0;
+        }
+        free(files);
     }
 
     lfs3_dir_t dir;
