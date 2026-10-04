@@ -44,6 +44,8 @@ RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 COMPAT_DIR ?= $(BUILDDIR)/compat
 
+DBG_DIR ?= $(BUILDDIR)/dbg
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -608,6 +610,16 @@ test-compat-gbmap:
 		done ; \
 	done
 
+## Check that the debug scripts decode what littlefs writes and reject
+## what littlefs rejects, with and without the gbmap
+.PHONY: test-dbg
+test-dbg:
+	$(MAKE) BUILDDIR=$(DBG_DIR)/def test-runner
+	$(MAKE) BUILDDIR=$(DBG_DIR)/ygb LFS3_YES_GBMAP=1 test-runner
+	./scripts/test_dbg.py \
+		-R$(DBG_DIR)/def/runners/test_runner \
+		-R$(DBG_DIR)/ygb/runners/test_runner
+
 ## List the tests
 .PHONY: test-list list-tests
 test-list list-tests: test-runner
@@ -950,6 +962,7 @@ clean:
 	rm -f $(BUILDDIR)/runners/rdonly_runner.o
 	rm -rf $(RDONLY_DIR)
 	rm -rf $(COMPAT_DIR)
+	rm -rf $(DBG_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)
