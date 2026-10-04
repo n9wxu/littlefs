@@ -5433,3 +5433,31 @@ corrupt_mounted:;
     // how many errors did we survive?
     printf("survived %d block errors!\n", (int)(i/PERIOD));
 '''
+
+# A block crystallized with an unaligned tail, which crystal_thresh
+# smaller than prog_size allows, must still checksum exactly its
+# cksize bytes, not the padding of its last prog
+[cases.test_ck_ckdata_unaligned]
+defines.PROG_SIZE = 16
+defines.CRYSTAL_THRESH = [0, 1, 8]
+defines.SIZE = [2047, 2048, 2049, 4097]
+code = '''
+    uint8_t wbuf[SIZE];
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        wbuf[i] = 'a' + (i % 26);
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_RDONLY) => 0;
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKDATA) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''

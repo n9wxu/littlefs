@@ -419,14 +419,21 @@ static int lfs3_bd_flush(lfs3_t *lfs3, uint32_t *cksum) {
 
         // make this cache available, if we error anything in this cache
         // would be useless anyways
+        lfs3_size_t size_ = lfs3->pcache.size;
         lfs3_bd_droppcache(lfs3);
 
-        // flush
+        // flush, the prog-aligned checksum covers what we cached, not
+        // the padding to prog_size, which a block's cksize doesn't
+        // include
         int err = lfs3_bd_prog_(lfs3, lfs3->pcache.block,
                 lfs3->pcache.off, lfs3->pcache.buffer, size,
-                cksum);
+                (cksum == &lfs3->pcksum) ? NULL : cksum);
         if (err) {
             return err;
+        }
+        if (cksum && cksum == &lfs3->pcksum) {
+            lfs3->pcksum = lfs3_crc32c(lfs3->pcksum,
+                    lfs3->pcache.buffer, size_);
         }
     }
 
