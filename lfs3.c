@@ -2287,6 +2287,16 @@ static inline bool lfs3_attr_isnoattr(const struct lfs3_attr *attr) {
     return lfs3_attr_size(attr) == LFS3_ERR_NOATTR;
 }
 
+// zero the rest of an attr's buffer after reading d bytes into it,
+// without a mutable size the attr is all buffer_size bytes, and these
+// would otherwise be written back as whatever was there
+static void lfs3_attr_zerotail(const struct lfs3_attr *attr,
+        lfs3_size_t d) {
+    if (attr->buffer_size > (lfs3_ssize_t)d) {
+        lfs3_memset((uint8_t*)attr->buffer + d, 0, attr->buffer_size - d);
+    }
+}
+
 static lfs3_scmp_t lfs3_attr_cmp(lfs3_t *lfs3, const struct lfs3_attr *attr,
         const lfs3_data_t *data) {
     // note data=NULL => NOATTR
@@ -13277,6 +13287,7 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
 
             lfs3_size_t d = lfs3_min(size, file->cfg->attrs[i].buffer_size);
             lfs3_memcpy(file->cfg->attrs[i].buffer, buffer, d);
+            lfs3_attr_zerotail(&file->cfg->attrs[i], d);
             if (file->cfg->attrs[i].size) {
                 *file->cfg->attrs[i].size = d;
             }
@@ -13445,6 +13456,7 @@ static int lfs3_file_fetch(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
             if (d < 0) {
                 return d;
             }
+            lfs3_attr_zerotail(&file->cfg->attrs[i], d);
 
             if (file->cfg->attrs[i].size) {
                 *file->cfg->attrs[i].size = d;
@@ -15473,6 +15485,7 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                             lfs3_memcpy(file_->cfg->attrs[j].buffer,
                                     file->cfg->attrs[i].buffer,
                                     d);
+                            lfs3_attr_zerotail(&file_->cfg->attrs[j], d);
                             if (file_->cfg->attrs[j].size) {
                                 *file_->cfg->attrs[j].size = d;
                             }
