@@ -314,6 +314,24 @@ jobs:
         run: |
           CFLAGS="$CFLAGS -DLFS3_YES_GBMAP" make test
 
+  # run with LFS3_NO_ASSERT, the release build, where littlefs's asserts
+  # compile out
+  test-release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-release
+        run: |
+          make test-release
+
   # run with LFS3_NO_BUILTINS to make sure that works
   test-no-builtins:
     runs-on: ubuntu-24.04
@@ -353,6 +371,24 @@ jobs:
       - name: test-rdonly
         run: |
           make test-rdonly
+
+  # check that the debug scripts decode what littlefs writes and reject
+  # what littlefs rejects
+  test-dbg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-dbg
+        run: |
+          make test-dbg
 
   # run under Valgrind to check for memory errors
   test-valgrind:

@@ -2320,12 +2320,16 @@ code = '''
     lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
     lfs3_file_close(&lfs3, &file) => 0;
 
-    // try opening a file with missing attrs
+    // try opening a file with missing attrs, missing attrs are created
+    // from our buffers
     uint8_t a_buf[256];
+    memset(a_buf, 'a', sizeof(a_buf));
     lfs3_ssize_t a_size = -1;
     uint8_t b_buf[256];
+    memset(b_buf, 'b', sizeof(b_buf));
     lfs3_ssize_t b_size = -1;
     uint8_t c_buf[256];
+    memset(c_buf, 'c', sizeof(c_buf));
     lfs3_ssize_t c_size = -1;
     struct lfs3_attr attrs[] = {
         {
@@ -2460,12 +2464,16 @@ code = '''
 
     // _don't_ create a file
 
-    // try opening a file with these attrs
+    // try opening a file with these attrs, missing attrs are created
+    // from our buffers
     uint8_t a_buf[256];
+    memset(a_buf, 'a', sizeof(a_buf));
     lfs3_ssize_t a_size = -1;
     uint8_t b_buf[256];
+    memset(b_buf, 'b', sizeof(b_buf));
     lfs3_ssize_t b_size = -1;
     uint8_t c_buf[256];
+    memset(c_buf, 'c', sizeof(c_buf));
     lfs3_ssize_t c_size = -1;
     struct lfs3_attr attrs[] = {
         {
@@ -2510,6 +2518,120 @@ code = '''
     }
 
     lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that the bytes of a file attr's buffer past a shorter attr are
+# zero, and that a missing attr leaves the buffer as we set it
+#
+# without a size, an attr's size is its buffer_size, so all of these
+# bytes are written back on sync
+[cases.test_attrs_fattr_zerofill]
+defines.MUTSIZE = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // create a file with one attr
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+    const char *a = "One 18.25 ounce package chocolate cake mix.";
+    lfs3_setattr(&lfs3, "cat", 'a', a, strlen(a)) => 0;
+
+    // open with 'a' and a missing 'b', in buffers full of junk
+    uint8_t a_buf[256];
+    memset(a_buf, 0xcc, sizeof(a_buf));
+    lfs3_ssize_t a_size = -1;
+    uint8_t b_buf[256];
+    memset(b_buf, 0xcc, sizeof(b_buf));
+    lfs3_ssize_t b_size = -1;
+    struct lfs3_attr attrs[] = {
+        {
+            .type = 'a',
+            .flags = LFS3_A_RDWR,
+            .buffer = a_buf,
+            .buffer_size = sizeof(a_buf),
+            .size = (MUTSIZE) ? &a_size : NULL,
+        },
+        {
+            .type = 'b',
+            .flags = LFS3_A_RDWR,
+            .buffer = b_buf,
+            .buffer_size = sizeof(b_buf),
+            .size = (MUTSIZE) ? &b_size : NULL,
+        },
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = attrs,
+        .attr_count = 2,
+    };
+    lfs3_file_opencfg(&lfs3, &file, "cat", LFS3_O_RDWR, &filecfg) => 0;
+
+    #define TEST_ZEROFILL_CHECK(a_) do { \
+        assert(memcmp(a_buf, a_, strlen(a_)) == 0); \
+        for (lfs3_size_t i_ = strlen(a_); i_ < sizeof(a_buf); i_++) { \
+            assert(a_buf[i_] == 0); \
+        } \
+        if (MUTSIZE) { \
+            assert(a_size == (lfs3_ssize_t)strlen(a_)); \
+        } \
+        for (lfs3_size_t i_ = 0; i_ < sizeof(b_buf); i_++) { \
+            assert(b_buf[i_] == 0xcc); \
+        } \
+        if (MUTSIZE) { \
+            assert(b_size == LFS3_ERR_NOATTR); \
+        } \
+    } while (0)
+    TEST_ZEROFILL_CHECK(a);
+
+    // a shorter setattr updates our buffer
+    const char *a_ = "Four large eggs.";
+    lfs3_setattr(&lfs3, "cat", 'a', a_, strlen(a_)) => 0;
+    TEST_ZEROFILL_CHECK(a_);
+
+    // so does a shorter attr from another handle's sync
+    const char *a__ = "Oil.";
+    struct lfs3_attr attrs_[] = {
+        {
+            .type = 'a',
+            .flags = LFS3_A_WRONLY,
+            .buffer = (void*)a__,
+            .buffer_size = strlen(a__),
+        },
+    };
+    struct lfs3_file_cfg filecfg_ = {
+        .attrs = attrs_,
+        .attr_count = 1,
+    };
+    lfs3_file_t file_;
+    lfs3_file_opencfg(&lfs3, &file_, "cat", LFS3_O_RDWR, &filecfg_) => 0;
+    lfs3_file_write(&lfs3, &file_, "miao", strlen("miao")) => strlen("miao");
+    lfs3_file_sync(&lfs3, &file_) => 0;
+    TEST_ZEROFILL_CHECK(a__);
+    lfs3_file_close(&lfs3, &file_) => 0;
+
+    // our close writes our attrs, and only these bytes
+    lfs3_file_close(&lfs3, &file) => 0;
+    TEST_ZEROFILL_CHECK(a__);
+    #undef TEST_ZEROFILL_CHECK
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint8_t rbuf[2*256];
+    if (MUTSIZE) {
+        lfs3_getattr(&lfs3, "cat", 'a', rbuf, sizeof(rbuf)) => strlen(a__);
+        assert(memcmp(rbuf, a__, strlen(a__)) == 0);
+        lfs3_getattr(&lfs3, "cat", 'b', rbuf, sizeof(rbuf))
+                => LFS3_ERR_NOATTR;
+    } else {
+        lfs3_getattr(&lfs3, "cat", 'a', rbuf, sizeof(rbuf)) => 256;
+        assert(memcmp(rbuf, a_buf, 256) == 0);
+        lfs3_getattr(&lfs3, "cat", 'b', rbuf, sizeof(rbuf)) => 256;
+        assert(memcmp(rbuf, b_buf, 256) == 0);
+    }
     lfs3_unmount(&lfs3) => 0;
 '''
 

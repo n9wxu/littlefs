@@ -847,7 +847,13 @@ struct lfs3_cfg {
 
 // File info structure
 struct lfs3_info {
-    // Type of the file, either LFS3_TYPE_REG or LFS3_TYPE_DIR
+    // Type of the file, one of:
+    // - LFS3_TYPE_REG - A regular file
+    // - LFS3_TYPE_DIR - A directory
+    // - LFS3_TYPE_STICKYNOTE - A file created by a handle that is still
+    //   open and has not been synced, with size 0. A power-loss before
+    //   the first sync removes it.
+    // - LFS3_TYPE_UNKNOWN - An entry of a type this driver doesn't know
     uint8_t type;
 
     // Size of the file, only valid for REG files. Limited to 32-bits.

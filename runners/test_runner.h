@@ -81,6 +81,8 @@ void test_trace(const char *fmt, ...);
 
 #include <stdio.h>
 #include <stdint.h>
+// tests assert even when littlefs doesn't, LFS3_NO_ASSERT skips this
+#include <assert.h>
 
 // give source a chance to define feature macros
 #undef _FEATURES_H

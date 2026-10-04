@@ -2988,6 +2988,156 @@ code = '''
 '''
 
 
+# test a tag whose reserved bit 7 reads set after the mroot was fetched
+#
+# no writer sets bit 7, so this is corrupt wherever we read it, and must
+# never be copied into a new commit
+[cases.test_ck_reserved_bit]
+defines.N = 8
+defines.SIZE = 8
+in = 'lfs3.c'
+code = '''
+    // find every tag in the mroot's last commit, our block randomization
+    // is intentionally consistent
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'a', SIZE);
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "file%03x", i);
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+    }
+
+    lfs3_block_t block = lfs3.mroot.r.blocks[0];
+    lfs3_size_t tags[512];
+    lfs3_size_t tag_count = 0;
+    lfs3_size_t off = sizeof(uint32_t);
+    while (off < lfs3_rbyd_eoff(&lfs3.mroot.r)) {
+        lfs3_tag_t tag;
+        lfs3_rid_t weight;
+        lfs3_size_t size;
+        lfs3_ssize_t d = lfs3_bd_readtag(&lfs3,
+                block, off, -1,
+                &tag, &weight, &size,
+                NULL,
+                NULL);
+        assert(d > 0);
+        assert(tag_count < sizeof(tags)/sizeof(lfs3_size_t));
+        tags[tag_count++] = off;
+        off += d + ((lfs3_tag_isalt(tag)) ? 0 : size);
+
+        // not the last commit? start over
+        if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM
+                && off < lfs3_rbyd_eoff(&lfs3.mroot.r)) {
+            tag_count = 0;
+        }
+    }
+    assert(tag_count > 0);
+    lfs3_unmount(&lfs3) => 0;
+
+    // set bit 7 of each tag in turn, after the mroot is fetched
+    for (lfs3_size_t i = 0; i < tag_count; i++) {
+        lfs3_size_t badbit = 8*(tags[i]+1) + 7;
+        printf("--- badblock: 0x%x.%x, badbit: 0x%x ---\n",
+                (lfs3_size_t)block, tags[i]+1, badbit);
+
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        for (lfs3_size_t j = 0; j < N; j++) {
+            char name[256];
+            sprintf(name, "file%03x", j);
+            lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+        }
+        assert(lfs3.mroot.r.blocks[0] == block);
+
+        lfs3_emubd_flipbit(CFG, block, badbit) => 0;
+        lfs3_bd_droprcache(&lfs3);
+
+        // reads and writes may fail with LFS3_ERR_CORRUPT, or may be
+        // misdirected, but nothing may assert, new tags go next to the
+        // flipped one
+        for (lfs3_size_t j = 0; j < N; j++) {
+            char name[256];
+            sprintf(name, "file%03x", j);
+            struct lfs3_info info;
+            int err = lfs3_stat(&lfs3, name, &info);
+            assert(err <= 0);
+            uint8_t rbuf[SIZE];
+            lfs3_ssize_t d = lfs3_get(&lfs3, name, rbuf, SIZE);
+            assert(d <= SIZE);
+            err = lfs3_setattr(&lfs3, name, 'a', wbuf, SIZE);
+            assert(err <= 0);
+            err = lfs3_set(&lfs3, name, wbuf, SIZE/2);
+            assert(err <= 0);
+            sprintf(name, "file%03x_", j);
+            err = lfs3_set(&lfs3, name, wbuf, SIZE);
+            assert(err <= 0);
+        }
+        lfs3_unmount(&lfs3) => 0;
+
+        // the flipped bit is now under a checksum, our mount may fail
+        int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+        assert(err <= 0);
+        if (!err) {
+            lfs3_unmount(&lfs3) => 0;
+        }
+    }
+'''
+
+
+# test a root bookmark whose did reads differently after it was fetched
+#
+# the root bookmark is always mid 0, a mkdir must never try to place a
+# new bookmark before it
+[cases.test_ck_root_bookmark]
+defines.N = 32
+in = 'lfs3.c'
+code = '''
+    // find the root bookmark's did
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mdir_t mdir;
+    lfs3_mtree_lookup(&lfs3, 0, &mdir) => 0;
+    lfs3_data_t data;
+    lfs3_mdir_lookup(&lfs3, &mdir, LFS3_TAG_BOOKMARK, &data)
+            => LFS3_TAG_BOOKMARK;
+    assert(lfs3_data_ondisk(&data));
+    lfs3_block_t badblock = data.u.disk.block;
+    lfs3_size_t badoff = data.u.disk.off;
+    lfs3_unmount(&lfs3) => 0;
+
+    // make the did read as each of its low 7 bits in turn
+    for (lfs3_size_t i = 0; i < 7; i++) {
+        lfs3_size_t badbit = 8*badoff + i;
+        printf("--- badblock: 0x%x.%x, badbit: 0x%x ---\n",
+                (lfs3_size_t)badblock, badoff, badbit);
+
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_emubd_flipbit(CFG, badblock, badbit) => 0;
+        lfs3_bd_droprcache(&lfs3);
+
+        // lookups may go wrong, but nothing may assert
+        for (lfs3_size_t j = 0; j < N; j++) {
+            char name[256];
+            sprintf(name, "dir%03x", j);
+            int err = lfs3_mkdir(&lfs3, name);
+            assert(err <= 0);
+            struct lfs3_info info;
+            err = lfs3_stat(&lfs3, name, &info);
+            assert(err <= 0);
+        }
+        lfs3_unmount(&lfs3) => 0;
+
+        // reset badbit
+        lfs3_emubd_flipbit(CFG, badblock, badbit) => 0;
+    }
+'''
+
+
 # Some simple ckdatacksums tests
 
 # test every single-bit error in a file's data block

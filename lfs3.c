@@ -2303,6 +2303,16 @@ static inline bool lfs3_attr_isnoattr(const struct lfs3_attr *attr) {
     return lfs3_attr_size(attr) == LFS3_ERR_NOATTR;
 }
 
+// zero the rest of an attr's buffer after reading d bytes into it,
+// without a mutable size the attr is all buffer_size bytes, and these
+// would otherwise be written back as whatever was there
+static void lfs3_attr_zerotail(const struct lfs3_attr *attr,
+        lfs3_size_t d) {
+    if (attr->buffer_size > (lfs3_ssize_t)d) {
+        lfs3_memset((uint8_t*)attr->buffer + d, 0, attr->buffer_size - d);
+    }
+}
+
 static lfs3_scmp_t lfs3_attr_cmp(lfs3_t *lfs3, const struct lfs3_attr *attr,
         const lfs3_data_t *data) {
     // note data=NULL => NOATTR
@@ -3592,8 +3602,11 @@ static int lfs3_rbyd_appendtag(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_tag_t tag, lfs3_rid_t weight, lfs3_size_t size) {
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_tag_isinternal(tag));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(tag & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (tag & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // do we fit?
     if (lfs3_rbyd_eoff(rbyd) + LFS3_TAG_DSIZE
@@ -3646,8 +3659,11 @@ static int lfs3_rbyd_appendrattr_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_from_t from, lfs3_count_t count, const lfs3_rattr_t *args) {
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_tag_isinternal(tag));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(tag & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (tag & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // encode lazy tags?
     //
@@ -4032,8 +4048,11 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     LFS3_ASSERT(lfs3_rbyd_isfetched(rbyd));
     // tag must not be internal at this point
     LFS3_ASSERT(!lfs3_rattr_isinternal(rattr));
-    // bit 7 is reserved for future subtype extensions
-    LFS3_ASSERT(!(lfs3_rattr_tag(rattr) & 0x80));
+    // bit 7 is reserved for future subtype extensions, we never set it,
+    // so this tag was copied from a misread on disk
+    if (lfs3_rattr_tag(rattr) & 0x80) {
+        return LFS3_ERR_SRCCORRUPT;
+    }
 
     // rids and weights out of our rbyd's range mean our caller found
     // them in on-disk state that has since read differently
@@ -9423,6 +9442,12 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         // push a new grm, this tag lets us push grms atomically when
         // creating new mids
         if (lfs3_rattr_tag(r) == LFS3_tag_GRMPUSH) {
+            // mid=0 is the root bookmark, nothing goes before it, our
+            // lookup must have read something corrupt
+            if (mid_ == 0) {
+                lfs3_fs_revertgdelta(lfs3);
+                return LFS3_ERR_CORRUPT;
+            }
             lfs3_grm_push(lfs3, mid_);
 
         // adjust pending grms?
@@ -13392,6 +13417,9 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
     //
     // note the -2 to adjust for dot entries, rewind already leaves
     // the mid at the first real entry
+    //
+    // positions only count what lfs3_dir_read returns, so we need to
+    // step over orphans one entry at a time
     lfs3_off_t off_ = lfs3_smax(off - 2, 0);
     while (off_ > 0) {
         // next mdir?
@@ -13408,12 +13436,30 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
             }
         }
 
-        lfs3_off_t d = lfs3_min(
-                off_,
-                dir->h.mdir.r.weight
-                    - lfs3_mrid(lfs3, dir->h.mdir.mid));
-        dir->h.mdir.mid += d;
-        off_ -= d;
+        // lookup the next name tag
+        lfs3_data_t data;
+        lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, &dir->h.mdir,
+                LFS3_tag_MASK8 | LFS3_TAG_NAME,
+                &data);
+        if (tag < 0) {
+            return tag;
+        }
+
+        // did mismatch? we're past the end of the dir
+        lfs3_did_t did;
+        err = lfs3_data_readleb128(lfs3, &data, &did);
+        if (err) {
+            return err;
+        }
+        if (did != dir->did) {
+            break;
+        }
+
+        // orphans don't count
+        if (tag != LFS3_tag_ORPHAN) {
+            off_ -= 1;
+        }
+        dir->h.mdir.mid += 1;
     }
 
     dir->pos = off;
@@ -13558,6 +13604,7 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
 
             lfs3_size_t d = lfs3_min(size, file->cfg->attrs[i].buffer_size);
             lfs3_memcpy(file->cfg->attrs[i].buffer, buffer, d);
+            lfs3_attr_zerotail(&file->cfg->attrs[i], d);
             if (file->cfg->attrs[i].size) {
                 *file->cfg->attrs[i].size = d;
             }
@@ -13726,6 +13773,7 @@ static int lfs3_file_fetch(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
             if (d < 0) {
                 return d;
             }
+            lfs3_attr_zerotail(&file->cfg->attrs[i], d);
 
             if (file->cfg->attrs[i].size) {
                 *file->cfg->attrs[i].size = d;
@@ -14071,8 +14119,10 @@ static int lfs3_file_lookupnext(lfs3_t *lfs3, LFS3_BCONST lfs3_file_t *file,
     if (tag < 0) {
         return tag;
     }
-    LFS3_ASSERT(tag == LFS3_TAG_DATA
-            || tag == LFS3_TAG_BLOCK);
+    // anything else means the disk reads differently than it did
+    if (tag != LFS3_TAG_DATA && tag != LFS3_TAG_BLOCK) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // fetch the bptr/data fragment
     int err = lfs3_bptr_fetch(lfs3, bptr_, tag, weight, data);
@@ -14576,6 +14626,10 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                 pos + size,
                 file->b.b.r.weight));
 
+    // anything still in the pcache was left by an operation that failed,
+    // it must never reach disk, or our checksum
+    lfs3_bd_droppcache(lfs3);
+
     // resuming crystallization? or do we need to allocate a new block?
     if (!lfs3_o_isuncryst(file->b.h.flags)) {
         goto relocate;
@@ -14595,9 +14649,11 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             == file->leaf.weight);
 
     // before we write, claim the erased state!
+    //
+    // this includes our own, if we fail after programming anything we
+    // can't resume here, the bytes past our leaf are no longer erased
     for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
         if (lfs3_o_type(h->flags) == LFS3_TYPE_REG
-                && h != &file->b.h
                 && lfs3_bptr_block(&((lfs3_file_t*)h)->leaf.bptr)
                     == lfs3_bptr_block(&file->leaf.bptr)) {
             lfs3_bptr_claim(&((lfs3_file_t*)h)->leaf.bptr);
@@ -15750,6 +15806,7 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                             lfs3_memcpy(file_->cfg->attrs[j].buffer,
                                     file->cfg->attrs[i].buffer,
                                     d);
+                            lfs3_attr_zerotail(&file_->cfg->attrs[j], d);
                             if (file_->cfg->attrs[j].size) {
                                 *file_->cfg->attrs[j].size = d;
                             }

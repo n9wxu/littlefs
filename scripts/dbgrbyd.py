@@ -52,7 +52,7 @@ TAG_MNAME       = 0x0330    #   v--- --11 +-11 ----
 TAG_STRUCT      = 0x0400    ##  v--- -1-- +ttt tttt
 TAG_BRANCH      = 0x0400    #   v--- -1-- +--- --rr
 TAG_DATA        = 0x0404    #   v--- -1-- +--- -1rr
-TAG_BLOCK       = 0x0408    #   v--- -1-- +--- 1err
+TAG_BLOCK       = 0x0408    #   v--- -1-- +--- 1-rr
 TAG_DID         = 0x0420    #   v--- -1-- +-1- ----
 TAG_BSHRUB      = 0x0428    #   v--- -1-- +-1- 1-rr
 TAG_BTREE       = 0x042c    #   v--- -1-- +-1- 11rr
@@ -359,6 +359,32 @@ def fromtag(data, j=0):
     size, d_ = fromleb128(data, j+d); d += d_
     return tag>>15, tag&0x7fff, weight, size, d
 
+# decode a leb128 the way lfs3_fromleb128 does, None if truncated or
+# overflowed
+def fromleb128_(data, j=0):
+    word = 0
+    for d in range(min(5, len(data)-j)):
+        b = data[j+d]
+        word = (word | (b & 0x7f) << 7*d) & 0xffffffff
+        if not b & 0x80:
+            return (word if word >> 7*d == b else None), d+1
+    return None, 0
+
+# check a tag the way lfs3_bd_readtag does
+def cktag(data, j=0):
+    # room for the smallest tag?
+    if j > len(data)-4:
+        return False
+    data = data[j:j+2+5+4]
+    # weights are limited to 31-bits, sizes to 28-bits
+    weight, d = fromleb128_(data, 2)
+    if weight is None or weight > 0x7fffffff:
+        return False
+    size, _ = fromleb128_(data, 2+d)
+    if size is None or size > 0x0fffffff:
+        return False
+    return True
+
 def xxd(data, width=16):
     for i in range(0, len(data), width):
         yield '%-*s %-*s' % (
@@ -602,7 +628,7 @@ class Rbyd:
         while j_ < len(data) and (not trunk or eoff <= trunk):
             # read next tag
             v, tag, w, size, d = fromtag(data, j_)
-            if v != parity(cksum__):
+            if v != parity(cksum__) or not cktag(data, j_):
                 break
             cksum__ ^= 0x00000080 if v else 0
             cksum__ = crc32c(data[j_:j_+d], cksum__)
@@ -615,21 +641,24 @@ class Rbyd:
                 if (tag & 0xff00) != TAG_CKSUM:
                     cksum__ = crc32c(data[j_:j_+size], cksum__)
 
-                    # found a gcksumdelta?
-                    if (tag & 0xff00) == TAG_GCKSUMDELTA:
+                    # found a gcksumdelta? matched exactly, as lfs3_rbyd_fetch_
+                    if tag == TAG_GCKSUMDELTA:
                         gcksumdelta_ = Rattr(tag, w, block, j_-d,
                                 data[j_-d:j_],
                                 data[j_:j_+size])
 
                 # found a cksum?
                 else:
+                    # truncated cksum? wrong phase?
+                    if size < 4 or (tag & TAG_PHASE) != (block & 0x3):
+                        break
                     # check cksum
                     cksum___ = fromle32(data, j_)
                     if cksum__ != cksum___:
                         break
                     # commit what we have
                     eoff = eoff_ if eoff_ else j_ + size
-                    cksum = cksum_
+                    cksum = tcksum if eoff_ else cksum_
                     trunk_ = trunk__
                     weight = weight_
                     gcksumdelta = gcksumdelta_
@@ -657,15 +686,13 @@ class Rbyd:
                         if not tag & TAG_SHRUB or trunk___ == trunk:
                             trunk__ = trunk___
                             weight_ = weight__
-                            # keep track of eoff for best matching trunk
+                            # keep track of eoff for best matching trunk,
+                            # committed only if its commit's cksum checks
+                            # out
                             if trunk and j_ + size > trunk:
                                 eoff_ = j_ + size
-                                eoff = eoff_
-                                cksum = cksum__ ^ (
+                                tcksum = cksum__ ^ (
                                         0xfca42daf if perturb else 0)
-                                trunk_ = trunk__
-                                weight = weight_
-                                gcksumdelta = gcksumdelta_
                         trunk___ = 0
 
                 # update canonical checksum, xoring out any perturb state
@@ -822,7 +849,9 @@ class Rbyd:
                 tag_ = alt
                 w_ = upper-lower
 
-                if not tag_ or (rid_, tag_) < (rid, tag):
+                # the shrub bit is not part of the key
+                if (not tag_ & 0xfff
+                        or (rid_, tag_ & 0xfff) < (rid, tag & 0xfff)):
                     if path:
                         return None, None, path_
                     else:

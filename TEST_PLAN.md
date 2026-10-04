@@ -1279,8 +1279,11 @@ defines; procedure; pass and fail; extension needed.
   `BADBLOCK_BEHAVIOR` 0 and 1; `BLOCK_RECYCLES` 4; `SEED` range(5).
 - **Procedure:** Rewrite files until `LFS3_ERR_NOSPC`, with power losses
   throughout. After the first `LFS3_ERR_NOSPC`, remount read-only and read
-  everything.
-- **Pass:** A until end of life, then G.
+  everything. A format that a power loss interrupts is repeated; before each
+  repeat, reset the wear of every block format writes (blocks 0 and 1, and
+  block 2 with the gbmap), so that the workload, not the repeated formats,
+  wears the disk out.
+- **Pass:** A until end of life, then G, in B-DEF, B-YGB and B-BIG.
 - **Fail:** any error other than `LFS3_ERR_NOSPC` at end of life; data loss.
 - **Extension:** none.
 
@@ -1597,7 +1600,7 @@ already written on the fork's branches are listed first.
 | ID | Case | Covers | Status | Procedure and pass condition |
 |---|---|---|---|---|
 | NEW-32 | `dirs::mv_subtree` | DIR-05 | written on `v3-fix-api` (`067ebe7`) | `rename("a", "a/b")` and deeper forms return `LFS3_ERR_INVAL`; nothing changes |
-| NEW-33 | `dread::seek_tell` | DIR-11 | written on `v3-fix-api` (`cc4acb9`) | save tell at every position, seek back from every position, read every remaining entry |
+| NEW-33 | `dread::seek_tell` | DIR-11 | written on `v3-fix-api` (`cc4acb9`) | save tell at every position, seek back from every position, read every remaining entry; also with an orphaned stickynote before the first entry and after every entry, which read must hide and seek must not count |
 | NEW-34 | `fwrite::append_fbig` | FILE-03 | written on `v3-fix-files` (`5500063`) | `O_APPEND` after a rewind cannot pass `file_limit`; after a seek near the limit it writes at the end |
 | NEW-35 | `files::read_big` | FILE-04 | written on `v3-fix-files` (`25cfa66`) | read with size -1 from the start, the middle and `LFS3_FILE_MAX` returns the remaining length |
 | NEW-36 | `kv::set_fbig` | KV-04 | written on `v3-fix-files` (`9c7deb7`) | `lfs3_set` above `file_limit` returns `LFS3_ERR_FBIG`; existing and new files unchanged |
@@ -1619,6 +1622,11 @@ already written on the fork's branches are listed first.
 | NEW-52 | `dirs::rm_many_2layers` | PL-27 | existing case | remove the `TEST_PLS && N==4` exclusion (`tests/test_dirs.toml:3442`) once the "did in the wrong mdir" bug is fixed; the case passes under `-Plinear` with PLB-TORN |
 | NEW-53 | build matrix (J-BUILD) | BUILD-01 to BUILD-11, BUILD-20, INT-05 | new job | every build of 5.1 and the combinations of BUILD-04, BUILD-05, BUILD-06 and BUILD-20 compile with `-Werror` under GCC and clang (and arm-none-eabi for BUILD-11); `ck::crc32c*` pass with each crc32c option; `nm` finds no undeclared external symbol (BUILD-10) |
 | NEW-54 | sanitizer job (J-SAN) | GEN-03, CI-04, CI-09 | new job | ASan and UBSan in B-DEF and B-BIG with `-Pnone -Plinear`, valgrind with `-Pnone`, GCC FORTIFY: zero reports, test code included. Fix the zero-length arrays in `alloc::nospc_*` that B.3 found |
+| NEW-130 | `badblocks::crystal_ioerror` | CFG-15 | new | `BLOCK_SIZE` 512; a file of 16-byte fragments, then an overwrite of its middle half that crystallizes data blocks, with the n-th read, prog or erase failing with `LFS3_ERR_IO`, for every n the write reaches; then sync (resync if refused), close and remount. `CKPROGONCE` true. No byte is programmed twice, the file is old data with a prefix of the write, and `lfs3_fs_ck(CKMETA \| CKDATA)` returns 0, in B-DEF, B-YGB and B-BIG |
+| NEW-131 | `attrs::fattr_zerofill` | ATTR-14 | new | `MUTSIZE` false and true; buffers of 256 bytes filled with 0xcc; a file with a 43-byte attribute 'a' and none of type 'b'; open read-write, then `lfs3_setattr` a 7-byte 'a', then another handle syncs a 3-byte 'a' | after each step the bytes of 'a' past its size are zero and 'b''s buffer is still 0xcc; after close and remount the stored 'a' and 'b' hold exactly those bytes, in B-DEF, B-YGB and B-BIG. With the valgrind job: no report in `attrs::*` |
+| NEW-132 | `make test-dbg` (`scripts/test_dbg.py`) | DOC-20 | new job | B-DEF and B-YGB runners write the image cases (`test.py -d`), including a B-tree file and an mroot chain; every dbg script must decode each with `-e`. Checksum-valid variants break one rule each: bit 7 in an alt, a leaf and a gcksumdelta, CKSUM phase and size, leb128 limits, a torn B-tree and mtree commit, a shrub null tag, VERSION bytes and incompatible versions, a one-block mptr, exact struct and magic tags | every variant is rejected (`-e` exits 2) or shown as the driver sees it; valid images decode as before |
+| NEW-133 | `make test-release` (J-NA); `mount::noassert` | BUILD-16 | new job | the full suite built with `LFS3_NO_ASSERT`, where `LFS3_ASSERT` in `lfs3.c` and `lfs3_util.c` is left to the preprocessor (it compiles out) and test code, emubd and the runner keep their asserts; `mount::noassert`, internal and built only in B-NA, reaches the line after an `LFS3_ASSERT` that is false | every case passes; the CI job runs it on every push |
+| NEW-134 | `ck::reserved_bit`, `ck::root_bookmark` | GEN-09 | new, internal | after the mroot is fetched, set bit 7 of each tag of its last commit in turn, then stat, get, setattr, shrink and create files next to it; flip each low bit of the root bookmark's did in turn, then make directories | every call returns 0 or an `enum lfs3_err` code, nothing asserts, in B-DEF, B-YGB and B-BIG |
 
 ### 6.4 Extensions to emubd and the runner
 
@@ -1657,7 +1665,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-68 | `mount::crafted_*` | GEN-07 | internal; checksum-valid images with an out-of-range block, offset, size, weight and alt jump, built by committing raw tags | `LFS3_ERR_CORRUPT`, no assert (B-DEF), no sanitizer report (B-NA). Waits on open question Q21 | – |
 | NEW-69 | balance-check build | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
 | NEW-70 | `mtree::rev_wrap` | META-12 | internal; set an mdir pair's revision counts to 0xfffffffe and 0xffffffff; compact across the wrap repeatedly | the newest commit is always fetched | – |
-| NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs; `lfs3_fs_mkconsistent` | no orphan left, every other entry present | – |
+| NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs, adding orphans until a scan finds at least two such mdirs in a row (packing differs between builds); `lfs3_fs_mkconsistent` | no orphan left, every other entry present, in B-DEF, B-YGB and B-BIG | – |
 | NEW-72 | `files::open_nomem` | FILE-16 | fail the file-cache allocation | `LFS3_ERR_NOMEM`, the handle not registered, unmount succeeds, no leak | E-7 |
 | NEW-73 | `fwrite::filemax` | FILE-17 | sparse write of 16 bytes ending at 2^31 - 2; remount; read; fruncate to 16 | each step succeeds with the expected data | – |
 | NEW-74 | `files::close_error` | FILE-21 | make the sync inside close fail with NOSPC and with a bad block | the handle is released; unmount succeeds; no leak | – |
