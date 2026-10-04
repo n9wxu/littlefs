@@ -43,6 +43,7 @@ RDONLY_DIR ?= $(BUILDDIR)/rdonly
 RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 COMPAT_DIR ?= $(BUILDDIR)/compat
+BALANCE_DIR ?= $(BUILDDIR)/balance
 
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
@@ -607,6 +608,16 @@ test-compat-gbmap:
 				|| exit 1 ; \
 		done ; \
 	done
+
+## Run the rbyd, btree and mtree tests with the rbyd balance check
+#
+# LFS3_DBGRBYDBALANCE asserts every fetched rbyd is balanced. Everything
+# goes in BALANCE_DIR.
+.PHONY: test-balance
+test-balance:
+	$(MAKE) BUILDDIR=$(BALANCE_DIR) LFS3_DBGRBYDBALANCE=1 test-runner
+	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner $(TESTFLAGS) \
+		test_rbyd test_btree test_mtree
 
 ## List the tests
 .PHONY: test-list list-tests
