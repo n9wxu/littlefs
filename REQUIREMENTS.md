@@ -3194,19 +3194,29 @@ remove or rename entries.
 
 littlefs shall resume a directory iteration at the same entry after
 `lfs3_dir_seek` to any value that `lfs3_dir_tell` returned, including 0 and
-1.
+1, and including in a directory that holds orphaned stickynotes. A position
+counts the entries `lfs3_dir_read` returns, so entries it hides do not
+move it.
 
 - **Source:** Stated: `lfs3.h:1683-1697` ("The new off must be a value
-  previous returned from tell").
+  previous returned from tell", "does indicate the current position in the
+  directory iteration"). `lfs3_dir_read` hides orphaned stickynotes
+  (LFS3-SYNC-14); counting them in seek but not in read sends a seek one
+  entry back per orphan before the position (issue #12). Counting only what
+  read returns also keeps a saved position valid when mkconsistent removes
+  hidden orphans between tell and seek.
 - **Measure:** entries read after the seek.
-- **Pass:** a NEW case records `lfs3_dir_tell` before each read of a
-  directory with 5 entries, seeks back to each value, and reads the same
-  remaining sequence, in B-DEF.
+- **Pass:** `dread::seek_tell` records `lfs3_dir_tell` before each read of
+  directories of 0 to 64 entries, with and without an orphaned stickynote
+  before the first entry and after every entry, seeks back to each value
+  from every position, and reads the same remaining sequence, in B-DEF,
+  B-YGB and B-BIG.
 - **Fail:** any other sequence.
-- **Verified by:** NEW. `dread::seek` seeks to 0 and 1 but reads only one
-  entry afterwards.
+- **Verified by:** `dread::seek_tell` (NEW-33).
 - **Status:** Known defect (1-meta 0.1: `off - 2` wraps at `lfs3.c:12241`;
-  after `seek(0)` only "." and ".." are returned).
+  after `seek(0)` only "." and ".." are returned); fixed on
+  `v3-integration`, where seek still counts orphaned stickynotes that read
+  skips (issue #12).
 - **When:** every CI run.
 
 #### LFS3-DIR-12
@@ -6085,10 +6095,13 @@ littlefs shall list, in the comment for `lfs3_info.type`, every type
   returned (LFS3-SYNC-13, LFS3-DIR-17).
 - **Measure:** the header text.
 - **Pass:** the comment at `lfs3.h:721` lists REG, DIR, STICKYNOTE and
-  UNKNOWN.
+  UNKNOWN, and says a STICKYNOTE is a file created by a handle that is
+  still open and not yet synced, with size 0. Reporting such a file as REG
+  would hide from the application that it is not durable yet: a power loss
+  removes it (LFS3-SYNC-13).
 - **Fail:** it says "either LFS3_TYPE_REG or LFS3_TYPE_DIR".
 - **Verified by:** review.
-- **Status:** Known defect (4-api R23).
+- **Status:** Known defect (4-api R23, issue #12).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-09

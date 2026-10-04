@@ -1597,7 +1597,7 @@ already written on the fork's branches are listed first.
 | ID | Case | Covers | Status | Procedure and pass condition |
 |---|---|---|---|---|
 | NEW-32 | `dirs::mv_subtree` | DIR-05 | written on `v3-fix-api` (`067ebe7`) | `rename("a", "a/b")` and deeper forms return `LFS3_ERR_INVAL`; nothing changes |
-| NEW-33 | `dread::seek_tell` | DIR-11 | written on `v3-fix-api` (`cc4acb9`) | save tell at every position, seek back from every position, read every remaining entry |
+| NEW-33 | `dread::seek_tell` | DIR-11 | written on `v3-fix-api` (`cc4acb9`) | save tell at every position, seek back from every position, read every remaining entry; also with an orphaned stickynote before the first entry and after every entry, which read must hide and seek must not count |
 | NEW-34 | `fwrite::append_fbig` | FILE-03 | written on `v3-fix-files` (`5500063`) | `O_APPEND` after a rewind cannot pass `file_limit`; after a seek near the limit it writes at the end |
 | NEW-35 | `files::read_big` | FILE-04 | written on `v3-fix-files` (`25cfa66`) | read with size -1 from the start, the middle and `LFS3_FILE_MAX` returns the remaining length |
 | NEW-36 | `kv::set_fbig` | KV-04 | written on `v3-fix-files` (`9c7deb7`) | `lfs3_set` above `file_limit` returns `LFS3_ERR_FBIG`; existing and new files unchanged |
