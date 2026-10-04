@@ -572,6 +572,43 @@ littlefs shall not issue a block device operation outside
   64-block configuration the allocator erases block 64).
 - **When:** every CI run.
 
+#### LFS3-GEN-09
+
+littlefs shall return `LFS3_ERR_CORRUPT`, and not assert, when metadata
+reads differently from when it was fetched or holds a value no writer
+produces, with or without the read checks of `LFS3_M_CKMETAPARITY`.
+
+- **Source:** Derived: asserts state what the code guarantees, not what the
+  device returns. A bit left metastable by a power loss, or one that flips
+  on read, changes metadata after the commit checksum accepted it, and
+  without parity checks a lookup can be sent the wrong way. Such a read
+  may fail the operation with an error, never the program. The cases'
+  own comments state this criterion (`tests/test_ck.toml`,
+  `tests/test_dirs.toml`); fixes of the same class are 42e7f9eb and
+  e5646435.
+- **Measure:** asserts and return codes under METASTABLE power loss and
+  READFLIP bad bits.
+- **Pass:** `dirs::rm_many_2layers_metastable` and `ck::metastable_alts`
+  pass in B-DEF, B-YGB and B-BIG: every call returns 0 or an `enum lfs3_err`
+  code and nothing asserts. In particular a tag with bit 7 set (reserved,
+  written as 0) is never copied into a new commit, the operation fails
+  instead; and a lookup that places a new entry before the root bookmark,
+  at mid 0, fails the operation. A checksum-valid commit holding a bit-7
+  tag still fetches: rejecting it there would silently roll back to the
+  previous commit, and an unknown config tag with bit 7 must still fail
+  mount with `LFS3_ERR_NOTSUP` (LFS3-MOUNT-09), not `LFS3_ERR_CORRUPT`.
+- **Fail:** an assert, or any other negative result.
+- **Verified by:** as listed; `ck::reserved_bit` and `ck::root_bookmark`
+  (NEW-134), which make the same misreads happen deterministically in
+  every build.
+- **Status:** Known defect on `v3-integration` (issue #18): in B-YGB a
+  misdirected bookmark lookup in `lfs3_mkdir` pushes mid 0 to the grm
+  (assert in `lfs3_grm_push`, 6 permutations of
+  `dirs::rm_many_2layers_metastable`), and a tag read with bit 7 set is
+  copied into a new commit (assert in `lfs3_rbyd_appendtag`,
+  `ck::metastable_alts`).
+- **When:** every CI run.
+
 ### 6.2 Power-loss resilience (PL)
 
 The requirements in this section use `POWERLOSS_BEHAVIOR=0` (ATOMIC) unless
@@ -2242,12 +2279,17 @@ including when removing orphans drops a pair during the scan.
 - **Source:** Derived: the scan steps back by one mid when a pair is
   dropped, marked "TODO big hack! is it big enough?" (`lfs3.c:10329-10337`).
 - **Measure:** orphans left after `lfs3_fs_mkconsistent`.
-- **Pass:** a NEW case that leaves orphaned stickynotes as the only entries
-  of several consecutive pairs, then runs `lfs3_fs_mkconsistent`, finds no
-  orphan left and every other entry present, in B-DEF.
+- **Pass:** a case that leaves orphaned stickynotes as the only entries of
+  at least two consecutive pairs, then runs `lfs3_fs_mkconsistent`, finds no
+  orphan left and every other entry present, in B-DEF, B-YGB and B-BIG. How
+  many entries fit a pair depends on the build (the gbmap's gstate takes
+  room), so the case adds orphans until the scan finds such a run, rather
+  than assuming a count.
 - **Fail:** an orphan remains or an entry is skipped.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `stickynotes::cleanup_drop` (NEW-71).
+- **Status:** Partly tested on `v3-integration`: passes in B-DEF and B-BIG;
+  in B-YGB, 3 permutations with 512-byte blocks and 8 orphans never build
+  two orphan-only pairs, and the case's precondition fails (issue #18).
 - **When:** every CI run.
 
 #### LFS3-META-15
@@ -6760,6 +6802,7 @@ new environment (9.2).
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
 | LFS3-GEN-07 | Untested | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-GEN-08 | Defect | every CI run | the LFS3-MOUNT-21 case, with bounds checks |
+| LFS3-GEN-09 | Defect | every CI run | `dirs::rm_many_2layers_metastable`, `ck::metastable_alts` in B-YGB |
 | LFS3-PL-03 | Untested | nightly | reentrant cases under METASTABLE that accept `LFS3_ERR_CORRUPT`, B-BIG |
 | LFS3-PL-06 | Partly | every CI run | reentrant flush-without-sync case (explicit flush, `O_FLUSH`, `M_FLUSH`) |
 | LFS3-PL-11 | Partly | every CI run | reentrant `lfs3_setattr`/`lfs3_removeattr` on paths |

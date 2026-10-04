@@ -321,7 +321,9 @@ Tag fields:
 
 5. **Reserved (1-bit)** - Bit 7 is reserved for a future extension of the
    subtype (the plan is to turn it into a leb128 continuation bit). Writers
-   must write 0. The driver does not check it on read.
+   must write 0. The driver reads a tag with bit 7 set as an unknown tag,
+   and never copies one into a new commit: an operation that would fails
+   with `LFS3_ERR_CORRUPT`.
 
 6. **Subtype (7-bits)** - The specific type within the suptype.
 
@@ -2124,8 +2126,9 @@ with other drivers, and notes where the v0.0 driver differs.
 11. **Reserved bits** - Writers must write bit 7 of every tag as 0, must
     not write the `10` tag mode, and must write struct tags with the exact
     values listed here, including their low "redundancy" bits. The v0.0
-    driver does not check bit 7 when reading, and treats a struct tag with
-    different low bits as a different, unknown tag.
+    driver reads a tag with bit 7 set as an unknown tag but never copies
+    one into a commit, and treats a struct tag with different low bits as a
+    different, unknown tag.
 
 12. **Preserving unknown tags** - When the driver compacts an rbyd, it
     copies every tag in the tree, in order, including tags it doesn't

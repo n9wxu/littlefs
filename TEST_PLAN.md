@@ -1658,7 +1658,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-68 | `mount::crafted_*` | GEN-07 | internal; checksum-valid images with an out-of-range block, offset, size, weight and alt jump, built by committing raw tags | `LFS3_ERR_CORRUPT`, no assert (B-DEF), no sanitizer report (B-NA). Waits on open question Q21 | – |
 | NEW-69 | balance-check build | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
 | NEW-70 | `mtree::rev_wrap` | META-12 | internal; set an mdir pair's revision counts to 0xfffffffe and 0xffffffff; compact across the wrap repeatedly | the newest commit is always fetched | – |
-| NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs; `lfs3_fs_mkconsistent` | no orphan left, every other entry present | – |
+| NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs, adding orphans until a scan finds at least two such mdirs in a row (packing differs between builds); `lfs3_fs_mkconsistent` | no orphan left, every other entry present, in B-DEF, B-YGB and B-BIG | – |
 | NEW-72 | `files::open_nomem` | FILE-16 | fail the file-cache allocation | `LFS3_ERR_NOMEM`, the handle not registered, unmount succeeds, no leak | E-7 |
 | NEW-73 | `fwrite::filemax` | FILE-17 | sparse write of 16 bytes ending at 2^31 - 2; remount; read; fruncate to 16 | each step succeeds with the expected data | – |
 | NEW-74 | `files::close_error` | FILE-21 | make the sync inside close fail with NOSPC and with a bad block | the handle is released; unmount succeeds; no leak | – |
