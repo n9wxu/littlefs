@@ -46,6 +46,8 @@ COMPAT_DIR ?= $(BUILDDIR)/compat
 
 DBG_DIR ?= $(BUILDDIR)/dbg
 
+RELEASE_DIR ?= $(BUILDDIR)/release
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -76,6 +78,14 @@ VALGRIND      ?= valgrind
 GDB           ?= gdb
 PERF          ?= perf
 PRETTYASSERTS ?= ./scripts/prettyasserts.py
+
+# prettyasserts rewrites asserts so failures show their operands, but
+# with LFS3_NO_ASSERT littlefs's own asserts must compile out, as in a
+# release build, so leave LFS3_ASSERT in our sources to the preprocessor,
+# the rest of the test harness keeps its asserts
+PRETTYASSERTSFLAGS = $(if $(and \
+		$(filter -DLFS3_NO_ASSERT%,$(CFLAGS)), \
+		$(filter $(SRC:%.c=%),$(basename $(basename $*)))),,-Plfs3_)
 
 # some flags are gcc-only, so find out if we're actually clang (cc may
 # be either)
@@ -547,6 +557,15 @@ rdonly-runner: $(RDONLY_RUNNER)
 test: test-runner
 	./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
 
+## Run the tests in a release build, with LFS3_NO_ASSERT
+#
+# littlefs's asserts compile out, the test harness keeps its own, see
+# PRETTYASSERTSFLAGS, everything goes in RELEASE_DIR
+.PHONY: test-release
+test-release:
+	$(MAKE) BUILDDIR=$(RELEASE_DIR) LFS3_NO_ASSERT=1 test-runner
+	./scripts/test.py -R$(RELEASE_DIR)/runners/test_runner $(TESTFLAGS)
+
 ## Run the tests with emubd's prog-once check
 .PHONY: test-progonce
 test-progonce: test-runner
@@ -909,10 +928,10 @@ $(BUILDDIR)/%.s: $(BUILDDIR)/%.c
 	$(CC) -S $(CFLAGS) $< -o$@
 
 $(BUILDDIR)/%.a.c: %.c
-	$(PRETTYASSERTS) -Plfs3_ $< -o$@
+	$(PRETTYASSERTS) $(PRETTYASSERTSFLAGS) $< -o$@
 
 $(BUILDDIR)/%.a.c: $(BUILDDIR)/%.c
-	$(PRETTYASSERTS) -Plfs3_ $< -o$@
+	$(PRETTYASSERTS) $(PRETTYASSERTSFLAGS) $< -o$@
 
 $(BUILDDIR)/%.t.c: %.toml
 	./scripts/test.py -c $< $(TESTCFLAGS) -o$@
@@ -963,6 +982,7 @@ clean:
 	rm -rf $(RDONLY_DIR)
 	rm -rf $(COMPAT_DIR)
 	rm -rf $(DBG_DIR)
+	rm -rf $(RELEASE_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)

@@ -3393,3 +3393,17 @@ code = '''
     printf("used %"PRIu32" blocks\n", lfs3_sparsebd_used(&cfg));
     lfs3_sparsebd_destroy(&cfg) => 0;
 '''
+
+# test that littlefs's asserts compile out with LFS3_NO_ASSERT
+#
+# the runner rewrites asserts so failures show their operands, it must
+# leave littlefs's own to the preprocessor here, or release behaviour
+# can't be tested
+[cases.test_mount_noassert]
+ifdef = 'LFS3_NO_ASSERT'
+in = 'lfs3.c'
+code = '''
+    bool asserted = true;
+    LFS3_ASSERT(!asserted);
+    assert(asserted);
+'''

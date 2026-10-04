@@ -120,6 +120,9 @@ class TestCase:
         self.death = config.pop('death', None)
         self.death_code = config.pop('death_code', None)
         self.death_code_lineno = config.pop('death_code_lineno', None)
+        # littlefs's asserts compile out with LFS3_NO_ASSERT
+        if self.death is not None:
+            self.ifndef.append('LFS3_NO_ASSERT')
 
         self.internal = config.pop('internal',
                 config.pop('suite_internal', None))
