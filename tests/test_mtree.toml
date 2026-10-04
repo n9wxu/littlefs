@@ -6788,3 +6788,173 @@ code = '''
 
     lfs3_deinit(&lfs3) => 0;
 '''
+
+
+## P1 tests ##
+
+# revision counts across 2^32
+#
+# fetch orders the blocks of an mdir pair by sequence comparison of their
+# revision counts. We set a pair's revision counts to 0xfffffffe and
+# 0xffffffff, by flipping bits in the revision count the compaction reads
+# and flipping them back after, then keep compacting across the wrap. The
+# newest commit must always be fetched
+[cases.test_mtree_rev_wrap]
+# we set the revision counts ourselves
+defines.REVPERTURB = false
+defines.REVNOISE = false
+# MDIR=0 => the mroot
+# MDIR=1 => an mdir in the mtree
+defines.MDIR = [0, 1]
+# compactions after reaching 0xffffffff, each adds 0x20000000 to the
+# revision count without block_recycles
+defines.COMPACTIONS = 24
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "target",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    #define TEST_REV_WRAP_LOOKUP(mdir) do { \
+        const char *path_ = "target"; \
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(&lfs3, &path_, \
+                (mdir), NULL); \
+        assert(tag_ == LFS3_TAG_REG); \
+    } while (0)
+    #define TEST_REV_WRAP_REV(block, rev) do { \
+        uint8_t rev_buf_[4]; \
+        lfs3_bd_droprcache(&lfs3); \
+        int err_ = lfs3_bd_read(&lfs3, (block), 0, 0, rev_buf_, 4); \
+        assert(!err_); \
+        (rev) = lfs3_fromle32(rev_buf_); \
+    } while (0)
+
+    // for an mdir in the mtree, add files until the target is not in
+    // the mroot
+    lfs3_mdir_t mdir;
+    TEST_REV_WRAP_LOOKUP(&mdir);
+    for (lfs3_size_t i = 0;
+            MDIR && lfs3_mdir_cmp(&mdir, &lfs3.mroot) == 0;
+            i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_COUNT);
+
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(i % 26), 32);
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, 32) => 32;
+        lfs3_file_close(&lfs3, &file) => 0;
+        TEST_REV_WRAP_LOOKUP(&mdir);
+    }
+    assert((lfs3_mdir_cmp(&mdir, &lfs3.mroot) != 0) == MDIR);
+
+    // the revision counts we want, first walk towards 0xfffffffe in
+    // steps the sequence comparison can order, then 0xfffffffe and
+    // 0xffffffff, then let compaction take over
+    uint32_t rev;
+    TEST_REV_WRAP_REV(mdir.r.blocks[0], rev);
+    uint32_t wants[16];
+    lfs3_size_t want_count = 0;
+    while ((int32_t)(0xfffffffe - rev) > 0x40000000
+            || (int32_t)(0xfffffffe - rev) <= 0) {
+        rev += 0x40000000;
+        wants[want_count++] = rev;
+    }
+    wants[want_count++] = 0xfffffffe;
+    wants[want_count++] = 0xffffffff;
+
+    lfs3_size_t wraps = 0;
+    for (uint32_t i = 0; i < want_count + COMPACTIONS; i++) {
+        TEST_REV_WRAP_LOOKUP(&mdir);
+        lfs3_block_t old = mdir.r.blocks[0];
+
+        // make the compaction read the revision count before the one we
+        // want, without block_recycles it adds 0x20000000
+        uint32_t flips = 0;
+        if (i < want_count) {
+            uint32_t rev_;
+            TEST_REV_WRAP_REV(old, rev_);
+            flips = rev_ ^ (wants[i] - 0x20000000);
+            for (lfs3_size_t b = 0; b < 32; b++) {
+                if (flips & ((uint32_t)1 << b)) {
+                    lfs3_emubd_flipbit(CFG, old, b) => 0;
+                }
+            }
+            lfs3_bd_droprcache(&lfs3);
+        }
+
+        // force a compaction
+        lfs3_mdir_claim(&mdir);
+        lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_ATTR('a'), 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(sizeof(uint32_t)),
+                LFS3_RATTR_ARG(&i),
+                LFS3_RATTR_NULL)) => 0;
+        assert(mdir.r.blocks[0] != old);
+        assert(mdir.r.blocks[1] == old);
+
+        // and restore the old block
+        for (lfs3_size_t b = 0; b < 32; b++) {
+            if (flips & ((uint32_t)1 << b)) {
+                lfs3_emubd_flipbit(CFG, old, b) => 0;
+            }
+        }
+        lfs3_bd_droprcache(&lfs3);
+
+        uint32_t revs[2];
+        TEST_REV_WRAP_REV(mdir.r.blocks[0], revs[0]);
+        TEST_REV_WRAP_REV(mdir.r.blocks[1], revs[1]);
+        printf("rev 0x{%"PRIx32",%"PRIx32"}: 0x%08"PRIx32" 0x%08"PRIx32"\n",
+                mdir.r.blocks[0], mdir.r.blocks[1], revs[0], revs[1]);
+        if (i < want_count) {
+            assert(revs[0] == wants[i]);
+        }
+        assert((int32_t)(revs[0] - revs[1]) > 0);
+        if (revs[0] < revs[1]) {
+            wraps += 1;
+        }
+
+        // fetch must find the newest commit, whichever block it reads
+        // first
+        for (int o = 0; o < 2; o++) {
+            lfs3_mdir_t mdir_;
+            lfs3_mdir_fetch(&lfs3, &mdir_, mdir.mid,
+                    (o == 0)
+                        ? (lfs3_block_t[2]){
+                            mdir.r.blocks[0], mdir.r.blocks[1]}
+                        : (lfs3_block_t[2]){
+                            mdir.r.blocks[1], mdir.r.blocks[0]}) => 0;
+            assert(mdir_.r.blocks[0] == mdir.r.blocks[0]);
+            lfs3_data_t data;
+            lfs3_mdir_lookup(&lfs3, &mdir_, LFS3_TAG_ATTR('a'), &data)
+                    => LFS3_TAG_ATTR('a');
+            uint32_t v;
+            lfs3_data_read(&lfs3, &data, &v, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(v == i);
+        }
+
+        // and so must mount
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        uint32_t v;
+        lfs3_getattr(&lfs3, "target", 'a', &v, sizeof(uint32_t))
+                => sizeof(uint32_t);
+        assert(v == i);
+    }
+    // 0xffffffff, and then every eighth compaction, wraps
+    assert(wraps >= 1 + COMPACTIONS/8 - 1);
+
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_REV_WRAP_LOOKUP
+    #undef TEST_REV_WRAP_REV
+'''
