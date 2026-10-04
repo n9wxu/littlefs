@@ -601,12 +601,13 @@ produces, with or without the read checks of `LFS3_M_CKMETAPARITY`.
 - **Verified by:** as listed; `ck::reserved_bit` and `ck::root_bookmark`
   (NEW-134), which make the same misreads happen deterministically in
   every build.
-- **Status:** Known defect on `v3-integration` (issue #18): in B-YGB a
-  misdirected bookmark lookup in `lfs3_mkdir` pushes mid 0 to the grm
+- **Status:** Tested on `v3-integration` (7d27de3d). Before, in B-YGB a
+  misdirected bookmark lookup in `lfs3_mkdir` pushed mid 0 to the grm
   (assert in `lfs3_grm_push`, 6 permutations of
-  `dirs::rm_many_2layers_metastable`), and a tag read with bit 7 set is
+  `dirs::rm_many_2layers_metastable`), and a tag read with bit 7 set was
   copied into a new commit (assert in `lfs3_rbyd_appendtag`,
-  `ck::metastable_alts`).
+  `ck::metastable_alts`); NEW-134 hit both, and an assert in
+  `lfs3_file_lookupnext`, in B-DEF (issue #18).
 - **When:** every CI run.
 
 ### 6.2 Power-loss resilience (PL)
@@ -1038,9 +1039,10 @@ littlefs shall survive a power loss while blocks are wearing out.
 - **Fail:** any permutation fails, or end of life is reported as anything
   other than `LFS3_ERR_NOSPC`.
 - **Verified by:** `exhaustion::spam_file_pl_fuzz` (NEW-10).
-- **Status:** Partly tested on `v3-integration`: passes in B-DEF and B-BIG;
-  60 permutations fail in B-YGB because ten interrupted formats wear out
-  block 2 before the workload starts (issue #4).
+- **Status:** Tested on `v3-integration` (afdf7f05): passes in B-DEF,
+  B-YGB and B-BIG. Before, 60 permutations failed in B-YGB because ten
+  interrupted formats wore out block 2 before the workload started
+  (issue #4).
 - **When:** nightly.
 
 #### LFS3-PL-27
@@ -2287,9 +2289,9 @@ including when removing orphans drops a pair during the scan.
   than assuming a count.
 - **Fail:** an orphan remains or an entry is skipped.
 - **Verified by:** `stickynotes::cleanup_drop` (NEW-71).
-- **Status:** Partly tested on `v3-integration`: passes in B-DEF and B-BIG;
-  in B-YGB, 3 permutations with 512-byte blocks and 8 orphans never build
-  two orphan-only pairs, and the case's precondition fails (issue #18).
+- **Status:** Tested on `v3-integration` (68039c4d). Before, in B-YGB, 3
+  permutations with 512-byte blocks and 8 orphans never built two
+  orphan-only pairs, and the case's precondition failed (issue #18).
 - **When:** every CI run.
 
 #### LFS3-META-15
@@ -3213,10 +3215,9 @@ move it.
   B-YGB and B-BIG.
 - **Fail:** any other sequence.
 - **Verified by:** `dread::seek_tell` (NEW-33).
-- **Status:** Known defect (1-meta 0.1: `off - 2` wraps at `lfs3.c:12241`;
-  after `seek(0)` only "." and ".." are returned); fixed on
-  `v3-integration`, where seek still counts orphaned stickynotes that read
-  skips (issue #12).
+- **Status:** Tested on `v3-integration` (233ff491). Known defect at
+  `b10efaa` (1-meta 0.1: `off - 2` wraps at `lfs3.c:12241`); later, seek
+  still counted orphaned stickynotes that read skips (issue #12).
 - **When:** every CI run.
 
 #### LFS3-DIR-12
@@ -3565,10 +3566,11 @@ application set it when the attribute does not exist.
 - **Fail:** a non-zero byte past the attribute, a changed buffer for a
   missing attribute, or a valgrind report.
 - **Verified by:** `attrs::fattr_zerofill` (NEW-131); the CI valgrind job.
-- **Status:** Known defect on `v3-integration` (issue #2): open and the
-  updates from `lfs3_setattr` and other handles' syncs leave the bytes past
-  the attribute untouched, and 9 `attrs::fattr_*` cases with `MODE=2,
-  MUTSIZE=0` fail under valgrind.
+- **Status:** Tested on `v3-integration` (245b84c9), and the CI valgrind
+  suite set passes. Before, open and the updates from `lfs3_setattr` and
+  other handles' syncs left the bytes past the attribute untouched, and 9
+  `attrs::fattr_*` cases with `MODE=2, MUTSIZE=0` failed under valgrind
+  (issue #2).
 - **When:** every CI run.
 
 ### 6.11 Key-value API (KV)
@@ -5056,11 +5058,12 @@ part way, and shall never program bytes a failed write left in its caches.
 - **Fail:** the check fires, a data checksum mismatches, or an assert.
 - **Verified by:** NEW-12 (emubd check, all suites);
   `badblocks::crystal_ioerror` (NEW-130); `badblocks::graft_torn`.
-- **Status:** Known defect on `v3-integration` (issue #3): after a failed
-  crystallization the file still treated its data block as erased past the
-  bytes the failed attempt programmed, and the next crystallization flushed
-  the failed attempt's prog cache into its own checksum. `graft_torn` asserts
-  (`off >= pcache.off`) in B-YGB.
+- **Status:** Partly tested on `v3-integration` (0c531757):
+  `badblocks::crystal_ioerror` and `badblocks::graft_torn` pass in B-DEF,
+  B-YGB and B-BIG. Before, a failed crystallization left its data block
+  marked erased past the bytes it had programmed, and the next one flushed
+  the failed attempt's prog cache into its own checksum (issue #3). The
+  all-suite run with the check enabled (NEW-12) is not part of this.
 - **When:** every CI run.
 
 #### LFS3-CFG-16
@@ -5710,7 +5713,9 @@ littlefs shall pass the test suite in B-YGB.
 - **Pass:** `make test` with `LFS3_YES_GBMAP=1` exits 0.
 - **Fail:** any failure.
 - **Verified by:** all suites.
-- **Status:** Untested.
+- **Status:** Tested on `v3-integration` (e529bb20): the full suite passes
+  in B-YGB, after issues #3, #4 and #18; the `test-yes-gbmap` CI job runs
+  it.
 - **When:** every CI run.
 
 #### LFS3-BUILD-15
@@ -5749,10 +5754,12 @@ asserts compile out as in a release build while the tests keep theirs.
 - **Fail:** any failure, or an `LFS3_ASSERT` in `lfs3.c` or `lfs3_util.c`
   that still fires in B-NA.
 - **Verified by:** `make test-release` (NEW-133), `mount::noassert`.
-- **Status:** Known defect on `v3-integration` (issue #14): the B-NA
-  runner doesn't build (tests call `assert` from macros prettyasserts
-  can't rewrite, and `lfs3_util.h` includes `<assert.h>` only with asserts
-  on), and with that fixed every `LFS3_ASSERT` still traps.
+- **Status:** Tested on `v3-integration` (e529bb20). Before, the B-NA
+  runner didn't build (tests call `assert` from macros prettyasserts can't
+  rewrite, and `lfs3_util.h` includes `<assert.h>` only with asserts on),
+  and with that fixed every `LFS3_ASSERT` still trapped (issue #14). Death
+  tests, which expect littlefs to assert, are built only without
+  `LFS3_NO_ASSERT`.
 - **When:** every CI run.
 
 #### LFS3-BUILD-17
@@ -6113,7 +6120,8 @@ littlefs shall list, in the comment for `lfs3_info.type`, every type
   removes it (LFS3-SYNC-13).
 - **Fail:** it says "either LFS3_TYPE_REG or LFS3_TYPE_DIR".
 - **Verified by:** review.
-- **Status:** Met on `v3-integration` (issue #12).
+- **Status:** Known defect (4-api R23); fixed on `v3-integration`
+  (170f0110, issue #12).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-09
@@ -6315,9 +6323,9 @@ driver rejects.
   one-block mptr are rejected.
 - **Fail:** any check fails.
 - **Verified by:** `make test-dbg` (NEW-132).
-- **Status:** Known defect on `v3-integration` (issue #13): the scripts at
-  3c0afc90 pass 68 of the checker's 387 checks, all of them on valid
-  images.
+- **Status:** Tested on `v3-integration` (cc19a932): `make test-dbg`
+  passes 537 of 537 checks. The scripts at 3c0afc90 passed 248, the valid
+  images and the bit-7 commits they already kept (issue #13).
 - **When:** every CI run.
 
 ### 6.23 Error handling for unattended systems (ERR)
@@ -6886,7 +6894,7 @@ new environment (9.2).
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
 | LFS3-GEN-07 | Untested | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-GEN-08 | Defect | every CI run | the LFS3-MOUNT-21 case, with bounds checks |
-| LFS3-GEN-09 | Defect | every CI run | `dirs::rm_many_2layers_metastable`, `ck::metastable_alts` in B-YGB |
+| LFS3-GEN-09 | Tested | every CI run | `dirs::rm_many_2layers_metastable`, `ck::metastable_alts` in B-YGB, NEW-134 (7d27de3d) |
 | LFS3-PL-03 | Untested | nightly | reentrant cases under METASTABLE that accept `LFS3_ERR_CORRUPT`, B-BIG |
 | LFS3-PL-06 | Partly | every CI run | reentrant flush-without-sync case (explicit flush, `O_FLUSH`, `M_FLUSH`) |
 | LFS3-PL-11 | Partly | every CI run | reentrant `lfs3_setattr`/`lfs3_removeattr` on paths |
@@ -6900,7 +6908,7 @@ new environment (9.2).
 | LFS3-PL-20 | Untested | nightly | reentrant gc, `lfs3_fs_ck`, RDWR traversals, mount work flags |
 | LFS3-PL-22 | Untested | every CI run | reentrant format then mount |
 | LFS3-PL-25 | Untested | nightly | reentrant variants of `badblocks::region_*`/`alternating_*` |
-| LFS3-PL-26 | Partly | nightly | `exhaustion::spam_file_pl_fuzz` in B-YGB |
+| LFS3-PL-26 | Tested | nightly | `exhaustion::spam_file_pl_fuzz` in B-YGB (afdf7f05) |
 | LFS3-INT-03 | Partly | every CI run | fill the erased region after each commit with every byte value |
 | LFS3-INT-04 | Untested | every CI run | flip a bit after the last commit; the next commit must compact |
 | LFS3-INT-06 | Partly | every CI run | deterministic rollback of a non-latest mdir; mount must fail |
@@ -6966,7 +6974,7 @@ new environment (9.2).
 | LFS3-ATTR-07 | Untested | every CI run | all 256 attribute types on one file |
 | LFS3-ATTR-10 | Partly | every CI run | `buffer_size = LFS3_ERR_NOATTR` removes at sync |
 | LFS3-ATTR-12 | Defect | every CI run | open with `LFS3_A_RDONLY | LFS3_A_LAZY` (`attrs::fattr_rdonly` on v3-fix-files) |
-| LFS3-ATTR-14 | Defect | every CI run | zeros past a short attribute, `attrs::fattr_zerofill` |
+| LFS3-ATTR-14 | Tested | every CI run | zeros past a short attribute, `attrs::fattr_zerofill` (245b84c9) |
 | LFS3-KV-04 | Defect | every CI run | `lfs3_set` above `file_limit` (`kv::set_fbig` on v3-fix-files) |
 | LFS3-KV-05 | Partly | every CI run | `lfs3_get`/`lfs3_size` on a directory |
 | LFS3-KV-08 | Untested | every CI run | `lfs3_get` on an uncreated file |
@@ -7061,7 +7069,7 @@ new environment (9.2).
 | LFS3-CI-11 | Untested | nightly | nightly geometry workflow |
 | LFS3-DOC-02 | Planned | before v3-beta | SPEC-based reader cross-check |
 | LFS3-DOC-03 | Planned | before v3-beta | README example compile job |
-| LFS3-DOC-20 | Defect | every CI run | `make test-dbg` |
+| LFS3-DOC-20 | Tested | every CI run | `make test-dbg` (cc19a932) |
 
 ### 9.2 Existing tests in a new environment
 
@@ -7107,9 +7115,9 @@ new environment (9.2).
 | LFS3-CFG-16 | Partly | every CI run | B-BIG with `GC_LOOKAHEAD_THRESH` matrix |
 | LFS3-CFG-17 | Partly | every CI run | B-BIG with `GC_LOOKGBMAP_THRESH` matrix |
 | LFS3-BUILD-13 | Defect | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-BUILD-14 | Untested | every CI run | B-YGB (LFS3-CI-03) |
+| LFS3-BUILD-14 | Tested | every CI run | B-YGB (LFS3-CI-03), passes at e529bb20 |
 | LFS3-BUILD-15 | Untested | nightly | each B-YES-x build |
-| LFS3-BUILD-16 | Defect | every CI run | `make test-release` (B-NA) and `mount::noassert` |
+| LFS3-BUILD-16 | Tested | every CI run | `make test-release` (B-NA) and `mount::noassert` (e529bb20) |
 | LFS3-BUILD-17 | Untested | nightly | B-NB and B-NS |
 | LFS3-CI-01 | Defect | every CI run | v3 workflow |
 | LFS3-CI-02 | Defect | every CI run | v3 workflow, cross architectures |
