@@ -6958,3 +6958,117 @@ code = '''
     #undef TEST_REV_WRAP_LOOKUP
     #undef TEST_REV_WRAP_REV
 '''
+
+# a disturbed erased region after an mdir's last commit makes the next
+# commit compact the mdir into its other block, instead of appending to
+# bytes that may be half-programmed
+[cases.test_mtree_ecksum_disturb]
+# MDIR=0 => the mroot
+# MDIR=1 => an mdir in the mtree
+defines.MDIR = [0, 1]
+defines.PROG_SIZE = [1, 16]
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+# DISTURB=0 => nothing, the commit appends
+# DISTURB=1 => flip the valid bit of the first byte after the commit
+# DISTURB=2 => flip a bit in the last byte of the first prog unit
+# DISTURB=3 => flip a bit in the last byte the ecksum covers
+defines.DISTURB = [0, 1, 2, 3]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | F_FLAGS, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "target",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    #define TEST_ECKSUM_DISTURB_LOOKUP(mdir) do { \
+        const char *path_ = "target"; \
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(&lfs3, &path_, \
+                (mdir), NULL); \
+        assert(tag_ == LFS3_TAG_REG); \
+    } while (0)
+
+    // for an mdir in the mtree, add files until the target is not in
+    // the mroot
+    lfs3_mdir_t mdir;
+    TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
+    for (lfs3_size_t i = 0;
+            MDIR && lfs3_mdir_cmp(&mdir, &lfs3.mroot) == 0;
+            i++) {
+        // a bit hacky, but this catches infinite loops
+        assert(i < BLOCK_COUNT);
+
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(i % 26), 32);
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, 32) => 32;
+        lfs3_file_close(&lfs3, &file) => 0;
+        TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
+    }
+    assert((lfs3_mdir_cmp(&mdir, &lfs3.mroot) != 0) == MDIR);
+
+    // commit something, and find where the commit ends
+    uint32_t v = 1;
+    lfs3_setattr(&lfs3, "target", 'a', &v, sizeof(v)) => 0;
+    TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
+    lfs3_block_t block = mdir.r.blocks[0];
+    lfs3_size_t eoff = lfs3_rbyd_eoff(&mdir.r);
+    assert(eoff < BLOCK_SIZE);
+    assert(eoff % PROG_SIZE == 0);
+    lfs3_size_t cksize = lfs3_ecksum_cksize(&lfs3, eoff);
+    assert(cksize >= PROG_SIZE);
+    lfs3_unmount(&lfs3) => 0;
+
+    // disturb the erased region
+    if (DISTURB == 1) {
+        lfs3_emubd_flipbit(CFG, block, 8*eoff + 7) => 0;
+    } else if (DISTURB == 2) {
+        lfs3_emubd_flipbit(CFG, block, 8*(eoff + PROG_SIZE-1)) => 0;
+    } else if (DISTURB == 3) {
+        lfs3_emubd_flipbit(CFG, block, 8*(eoff + cksize-1) + 3) => 0;
+    }
+
+    // remount and commit again
+    lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+    TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
+    assert(mdir.r.blocks[0] == block);
+    if (DISTURB) {
+        // fetch must not trust the disturbed erased state
+        assert(lfs3_rbyd_eoff(&mdir.r) >= BLOCK_SIZE);
+    } else {
+        assert(lfs3_rbyd_eoff(&mdir.r) == eoff);
+    }
+    v = 2;
+    lfs3_setattr(&lfs3, "target", 'a', &v, sizeof(v)) => 0;
+
+    // a disturbed mdir is compacted into its other block, an undisturbed
+    // one appended to
+    TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
+    if (DISTURB) {
+        assert(mdir.r.blocks[0] != block);
+        assert(mdir.r.blocks[1] == block);
+    } else {
+        assert(mdir.r.blocks[0] == block);
+        assert(lfs3_rbyd_eoff(&mdir.r) > eoff);
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
+        }
+
+        lfs3_getattr(&lfs3, "target", 'a', &v, sizeof(v)) => sizeof(v);
+        assert(v == 2);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_ECKSUM_DISTURB_LOOKUP
+'''

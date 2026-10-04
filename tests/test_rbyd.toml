@@ -17736,3 +17736,134 @@ code = '''
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
 '''
 
+
+
+## P1 tests ##
+
+# the erased bytes after a commit never parse as a valid tag, whatever
+# they hold
+#
+# FILL=0 => after each commit, fill the erased region with each byte
+#           value and with random data, as if it were disturbed after
+#           the commit
+# FILL=1 => fill the block with each byte value and with random data
+#           before the commits, as an erase that leaves that value
+#           would, this needs a noop erase to prog over it
+[cases.test_rbyd_erased_values]
+defines.FILL = [0, 1]
+defines.PROG_SIZE = [1, 16]
+# keep the block small, we refill it a lot
+defines.BLOCK_SIZE = 4096
+defines.COMMITS = 8
+# random fills, in addition to every byte value
+defines.RANDOM = 16
+if = 'FILL == 0 || ERASE_VALUE == -1'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_init(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t *image = malloc(BLOCK_SIZE);
+    uint8_t *fill = malloc(BLOCK_SIZE);
+    assert(image && fill);
+    uint32_t prng = 42;
+
+    // fill v is a byte value below 256, and random data after
+    #define TEST_ERASED_VALUES_FILL(v, off) do { \
+        for (lfs3_size_t j_ = (off); j_ < BLOCK_SIZE; j_++) { \
+            fill[j_] = ((v) < 256) ? (v) : TEST_PRNG(&prng); \
+        } \
+    } while (0)
+
+    // fetch must find exactly our commits, values[k] is the last value
+    // of attr k+1, or -1 if not committed
+    int32_t values[4];
+    #define TEST_ERASED_VALUES_CK(rbyd, erased) do { \
+        lfs3_bd_droprcache(&lfs3); \
+        lfs3_rbyd_t rbyd_; \
+        int err_ = lfs3_rbyd_fetch(&lfs3, &rbyd_, (rbyd).blocks[0], 0); \
+        assert(!err_); \
+        assert(rbyd_.trunk == (rbyd).trunk); \
+        assert(rbyd_.weight == (rbyd).weight); \
+        assert(rbyd_.cksum == (rbyd).cksum); \
+        if (erased) { \
+            assert(lfs3_rbyd_eoff(&rbyd_) == lfs3_rbyd_eoff(&(rbyd))); \
+        } \
+        for (lfs3_size_t k_ = 0; k_ < 4; k_++) { \
+            lfs3_data_t data_; \
+            lfs3_stag_t tag_ = lfs3_rbyd_lookup(&lfs3, &rbyd_, \
+                    -1, LFS3_TAG_ATTR(1+k_), &data_); \
+            if (values[k_] < 0) { \
+                assert(tag_ == LFS3_ERR_NOENT); \
+                continue; \
+            } \
+            assert(tag_ == LFS3_TAG_ATTR(1+k_)); \
+            uint8_t buf_[4]; \
+            lfs3_ssize_t d_ = lfs3_data_read(&lfs3, &data_, buf_, 4); \
+            assert(d_ == 4); \
+            assert(lfs3_fromle32(buf_) == (uint32_t)values[k_]); \
+        } \
+    } while (0)
+
+    for (lfs3_size_t v = 0; v < ((FILL == 1) ? 256+RANDOM : 1); v++) {
+        lfs3_rbyd_t rbyd = {
+            .blocks[0] = 0,
+            .eoff = 0,
+            .cksum = 0,
+            .trunk = 0,
+            .weight = 0,
+        };
+        lfs3_bd_erase(&lfs3, rbyd.blocks[0]) => 0;
+        if (FILL == 1) {
+            TEST_ERASED_VALUES_FILL(v, 0);
+            CFG->prog(CFG, rbyd.blocks[0], 0, fill, BLOCK_SIZE) => 0;
+            lfs3_bd_droprcache(&lfs3);
+        }
+        for (lfs3_size_t k = 0; k < 4; k++) {
+            values[k] = -1;
+        }
+
+        for (lfs3_size_t c = 0; c < COMMITS; c++) {
+            uint32_t value = (c << 16) | v;
+            uint8_t value_buf[4];
+            lfs3_tole32(value, value_buf);
+            lfs3_rbyd_commit(&lfs3, &rbyd, -1, LFS3_RATTRS(
+                    LFS3_RATTR(2, LFS3_TAG_ATTR(1+(c % 4)), 0,
+                        LFS3_FROM_BUF, 4),
+                    LFS3_RATTR_ARG(value_buf),
+                    LFS3_RATTR_NULL)) => 0;
+            values[c % 4] = value;
+
+            // the bytes after our commit are what the erase left, and
+            // fetch must still know the block is erased
+            if (FILL == 1) {
+                TEST_ERASED_VALUES_CK(rbyd, true);
+                continue;
+            }
+
+            // disturb the erased region with each value
+            lfs3_size_t eoff = lfs3_rbyd_eoff(&rbyd);
+            CFG->read(CFG, rbyd.blocks[0], 0, image, BLOCK_SIZE) => 0;
+            for (lfs3_size_t w = 0; w < 256+RANDOM; w++) {
+                if (eoff < BLOCK_SIZE) {
+                    TEST_ERASED_VALUES_FILL(w, eoff);
+                    CFG->prog(CFG, rbyd.blocks[0], eoff,
+                            &fill[eoff], BLOCK_SIZE-eoff) => 0;
+                }
+                TEST_ERASED_VALUES_CK(rbyd, false);
+
+                // restore our block
+                CFG->erase(CFG, rbyd.blocks[0]) => 0;
+                CFG->prog(CFG, rbyd.blocks[0], 0, image, BLOCK_SIZE) => 0;
+                lfs3_bd_droprcache(&lfs3);
+            }
+            TEST_ERASED_VALUES_CK(rbyd, true);
+        }
+    }
+
+    free(image);
+    free(fill);
+    lfs3_deinit(&lfs3) => 0;
+    #undef TEST_ERASED_VALUES_FILL
+    #undef TEST_ERASED_VALUES_CK
+'''
