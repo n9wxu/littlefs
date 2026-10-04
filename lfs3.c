@@ -803,13 +803,17 @@ static inline lfs3_size_t lfs3_ptail_off(const lfs3_t *lfs3) {
 // parity=true, the parity of a tag's data, cksum>>31 over
 // [cksum & 0x7fffffff, cksize)
 
-#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+#if !defined(LFS3_RDONLY) \
+        || defined(LFS3_CKDATACKSUMS) \
+        || defined(LFS3_CKMETAPARITY)
 static inline lfs3_size_t lfs3_bd_ckoff(uint32_t cksum, bool parity) {
     return (parity) ? (cksum & 0x7fffffff) : 0;
 }
 #endif
 
-#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+#if !defined(LFS3_RDONLY) \
+        || defined(LFS3_CKDATACKSUMS) \
+        || defined(LFS3_CKMETAPARITY)
 static int lfs3_bd_ckprefix(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
         lfs3_size_t cksize, uint32_t cksum, bool parity,
@@ -845,7 +849,9 @@ static int lfs3_bd_ckprefix(lfs3_t *lfs3,
 }
 #endif
 
-#if defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY)
+#if !defined(LFS3_RDONLY) \
+        || defined(LFS3_CKDATACKSUMS) \
+        || defined(LFS3_CKMETAPARITY)
 static int lfs3_bd_cksuffix(lfs3_t *lfs3,
         lfs3_block_t block, lfs3_size_t off, lfs3_size_t hint,
         lfs3_size_t cksize, uint32_t cksum, bool parity,
@@ -1015,8 +1021,8 @@ static lfs3_scmp_t lfs3_bd_cmpck(lfs3_t *lfs3,
 }
 #endif
 
-#if !defined(LFS3_RDONLY) \
-        && (defined(LFS3_CKDATACKSUMS) || defined(LFS3_CKMETAPARITY))
+// crystallizing data copies with checks in every build
+#ifndef LFS3_RDONLY
 static int lfs3_bd_cpyck(lfs3_t *lfs3,
         lfs3_block_t dst_block, lfs3_size_t dst_off,
         lfs3_block_t src_block, lfs3_size_t src_off, lfs3_size_t hint,
@@ -14432,11 +14438,32 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                             d,
                             lfs3_bptr_size(&bptr__)
                                 - (pos_ - (bid__-(weight__-1))));
-                    err = lfs3_bd_progdata(lfs3, block_, pos_ - block_pos,
-                            &LFS3_DATA_SLICE(&bptr__.d,
-                                pos_ - (bid__-(weight__-1)),
-                                d_),
-                            &lfs3->pcksum);
+                    // copying a block? check its checksum on the bytes
+                    // we copy, even without LFS3_M_CKDATACKSUMS, or we'd
+                    // launder a flipped bit under our new checksum
+                    if (lfs3_bptr_isbptr(&bptr__)) {
+                        lfs3_size_t off__ = lfs3_bptr_off(&bptr__)
+                                + (pos_ - (bid__-(weight__-1)));
+                        if (off__ + d_ > lfs3_bptr_cksize(&bptr__)
+                                || lfs3_bptr_cksize(&bptr__)
+                                    > lfs3->cfg->block_size) {
+                            return LFS3_ERR_CORRUPT;
+                        }
+                        err = lfs3_bd_cpyck(lfs3, block_, pos_ - block_pos,
+                                lfs3_bptr_block(&bptr__), off__, d_,
+                                d_,
+                                lfs3_bptr_cksize(&bptr__),
+                                lfs3_bptr_cksum(&bptr__),
+                                false,
+                                &lfs3->pcksum);
+                    } else {
+                        err = lfs3_bd_progdata(lfs3,
+                                block_, pos_ - block_pos,
+                                &LFS3_DATA_SLICE(&bptr__.d,
+                                    pos_ - (bid__-(weight__-1)),
+                                    d_),
+                                &lfs3->pcksum);
+                    }
                     if (err) {
                         LFS3_ASSERT(err != LFS3_ERR_RANGE);
                         // bad prog? try another block
