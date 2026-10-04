@@ -5638,3 +5638,167 @@ code = '''
     free(wbuf);
     free(rbuf);
 '''
+
+# flips in gbmap nodes are found by metadata checks
+#
+# Every flip lands in bytes a checksum covers, the tags of a node up to
+# the commit with its trunk, leaving out the padding after each commit's
+# checksum
+[cases.test_ck_ckmeta_gbmap]
+# METHOD=0 => lfs3_fs_ck with LFS3_CK_CKMETA
+# METHOD=1 => lfs3_trv_read with LFS3_T_CKMETA
+# METHOD=2 => lfs3_mount with LFS3_M_CKMETA
+defines.METHOD = [0, 1, 2]
+# small blocks for more gbmap nodes
+defines.BLOCK_SIZE = 512
+# a file per block, every other one removed, about 25 gbmap nodes
+defines.N = 64
+# random flips per node, in addition to the first and last covered bit
+defines.FLIPS = 8
+defines.SEED = 42
+ifdef = 'LFS3_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t wbuf[BLOCK_SIZE];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        memset(wbuf, 'a' + (i % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE) => BLOCK_SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    for (lfs3_size_t i = 1; i < N; i += 2) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        lfs3_remove(&lfs3, name) => 0;
+    }
+    // rebuild the gbmap from what is in use
+    lfs3_fs_ck(&lfs3, LFS3_CK_LOOKAHEAD) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // find the gbmap's nodes
+    lfs3_block_t nodes[256];
+    lfs3_size_t trunks[256];
+    lfs3_size_t node_count = 0;
+    lfs3_btrv_t btrv;
+    lfs3_btrv_init(&btrv);
+    while (true) {
+        lfs3_data_t data;
+        lfs3_stag_t tag = lfs3_btree_traverse(&lfs3, &lfs3.gbmap.b, &btrv,
+                NULL, NULL, &data);
+        assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+        if (tag == LFS3_ERR_NOENT) {
+            break;
+        }
+        if (tag == LFS3_TAG_BRANCH) {
+            const lfs3_rbyd_t *rbyd = (const lfs3_rbyd_t*)data.u.buffer;
+            assert(node_count < 256);
+            nodes[node_count] = rbyd->blocks[0];
+            trunks[node_count] = lfs3_rbyd_trunk(rbyd);
+            node_count += 1;
+        }
+    }
+    printf("gbmap: %"PRId32" nodes\n", node_count);
+    assert(node_count > 1);
+
+    uint32_t prng = SEED;
+    uint8_t covered[BLOCK_SIZE];
+    for (lfs3_size_t n = 0; n < node_count; n++) {
+        // which bytes do checksums cover? the revision count, then each
+        // tag up to the end of the commit with our trunk, except the
+        // padding after each commit's checksum
+        memset(covered, 0, BLOCK_SIZE);
+        memset(covered, 1, 4);
+        lfs3_size_t off = 4;
+        while (true) {
+            lfs3_tag_t tag;
+            lfs3_rid_t weight;
+            lfs3_size_t size;
+            lfs3_ssize_t d = lfs3_bd_readtag(&lfs3, nodes[n], off, -1,
+                    &tag, &weight, &size, NULL, NULL);
+            assert(d > 0);
+            if (lfs3_tag_isalt(tag)) {
+                memset(&covered[off], 1, d);
+                off += d;
+            } else if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM) {
+                memset(&covered[off], 1, d+4);
+                off += d + size;
+                if (off > trunks[n]) {
+                    break;
+                }
+            } else {
+                memset(&covered[off], 1, d+size);
+                off += d + size;
+            }
+        }
+        lfs3_size_t end = off;
+        printf("gbmap node 0x%"PRIx32", trunk %"PRId32", end %"PRId32"\n",
+                nodes[n], trunks[n], end);
+
+        for (lfs3_size_t f = 0; f < 2+FLIPS; f++) {
+            lfs3_size_t badbit;
+            if (f == 0) {
+                badbit = 0;
+            } else if (f == 1) {
+                badbit = 8*end - 1;
+                while (!covered[badbit/8]) {
+                    badbit -= 8;
+                }
+            } else {
+                do {
+                    badbit = TEST_PRNG(&prng) % (8*end);
+                } while (!covered[badbit/8]);
+            }
+            printf("flipping 0x%x.%x+%x\n", nodes[n], badbit/8, badbit%8);
+            lfs3_emubd_flipbit(CFG, nodes[n], badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+
+            if (METHOD == 0) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+            } else if (METHOD == 1) {
+                lfs3_trv_t trv;
+                lfs3_trv_open(&lfs3, &trv,
+                        LFS3_T_RDONLY | LFS3_T_CKMETA) => 0;
+                int err;
+                for (lfs3_block_t i = 0;; i++) {
+                    // a bit hacky, but this catches infinite loops
+                    assert(i < 2*BLOCK_COUNT);
+                    struct lfs3_tinfo tinfo;
+                    err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                    assert(!err
+                            || err == LFS3_ERR_NOENT
+                            || err == LFS3_ERR_CORRUPT);
+                    if (err) {
+                        break;
+                    }
+                }
+                assert(err == LFS3_ERR_CORRUPT);
+                lfs3_trv_close(&lfs3, &trv) => 0;
+            } else if (METHOD == 2) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETA, CFG)
+                        => LFS3_ERR_CORRUPT;
+            }
+
+            lfs3_emubd_flipbit(CFG, nodes[n], badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+            if (METHOD == 2) {
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            }
+        }
+    }
+
+    // and with every bit restored, everything checks
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETA, CFG) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
