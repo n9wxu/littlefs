@@ -2188,3 +2188,85 @@ code = '''
     free(base);
     free(pre);
 '''
+
+# the mroot anchor, blocks 0 and 1, can't relocate, so its wear must be
+# bounded (LFS3-DEG-08)
+#
+# the anchor is erased while it's the mroot, up to block_recycles+1 times
+# a block, then it names the mroot, and is written only when that mroot
+# relocates, after block_recycles+1 compactions, a commit of a few dozen
+# bytes, so it's erased once every block_size/64 relocations or fewer,
+# and once more each time it extends the mroot chain
+#
+# MDIR=0 => commit to the mroot
+# MDIR=1 => commit to an mdir in the mtree
+[cases.test_relocations_anchor_wear]
+defines.BLOCK_RECYCLES = [0, 1, 4, 16]
+defines.ERASE_CYCLES = 0xffffffff
+defines.BLOCK_SIZE = 512
+defines.MDIR = [0, 1]
+defines.COMMITS = [10000, 40000]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "target",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // for an mdir in the mtree, add files until the target is not in
+    // the mroot
+    for (lfs3_size_t i = 0; MDIR; i++) {
+        assert(i < BLOCK_COUNT);
+        const char *path = "target";
+        lfs3_mdir_t mdir;
+        lfs3_mtree_pathlookup(&lfs3, &path, &mdir, NULL) => LFS3_TAG_REG;
+        if (lfs3_mptr_cmp(mdir.r.blocks, lfs3.mroot.r.blocks) != 0) {
+            break;
+        }
+
+        char name[256];
+        sprintf(name, "file%03x", i);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(i % 26), 32);
+        lfs3_set(&lfs3, name, wbuf, 32) => 0;
+    }
+
+    lfs3_emubd_swear_t *base = malloc(
+            BLOCK_COUNT*sizeof(lfs3_emubd_swear_t));
+    assert(base);
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        base[b] = lfs3_emubd_wear(CFG, b);
+    }
+
+    for (uint32_t i = 0; i < COMMITS; i++) {
+        lfs3_setattr(&lfs3, "target", 'a', &i, sizeof(i)) => 0;
+    }
+
+    // the anchor's erases against all erases
+    lfs3_emubd_swear_t anchor = 0;
+    lfs3_emubd_swear_t total = 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        lfs3_emubd_swear_t erases = lfs3_emubd_wear(CFG, b) - base[b];
+        total += erases;
+        if (b < 2) {
+            anchor += erases;
+        }
+    }
+    lfs3_emubd_swear_t bound = 2*(BLOCK_RECYCLES+2)
+            + total / ((BLOCK_RECYCLES+1) * (BLOCK_SIZE/64));
+    printf("anchor %"PRId32", total %"PRId32", bound %"PRId32"\n",
+            anchor, total, bound);
+    assert(anchor <= bound);
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint32_t v;
+    lfs3_getattr(&lfs3, "target", 'a', &v, sizeof(v)) => sizeof(v);
+    assert(v == COMMITS-1);
+    lfs3_unmount(&lfs3) => 0;
+    free(base);
+'''

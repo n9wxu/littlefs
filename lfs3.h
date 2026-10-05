@@ -632,6 +632,13 @@ struct lfs3_cfg {
     //
     // 0 results in pure copy-on-write, which may be counter-productive. Set
     // to -1 to disable block-level wear-leveling.
+    //
+    // The mroot anchor, blocks 0 and 1, can't relocate. It's erased up to
+    // block_recycles+1 times a block while it's the first mroot, then it
+    // names the mroot, and only changes when that mroot relocates. Its
+    // erases stay within 2*(block_recycles+2) plus all erases divided by
+    // (block_recycles+1)*(block_size/64). With -1 it stays the mroot, and
+    // wears as the mroot does.
     #ifndef LFS3_RDONLY
     int32_t block_recycles;
     #endif
