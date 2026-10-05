@@ -1487,6 +1487,42 @@ defines; procedure; pass and fail; extension needed.
 - **Fail:** a node left on the suspect block, a lost file, or an error.
 - **Extension:** none.
 
+#### NEW-147 `badblocks::gbmap_root`
+
+- **File and case:** `tests/test_badblocks.toml`,
+  `test_badblocks_gbmap_root`, internal. B-YGB and B-BIG.
+- **Covers:** DEG-08.
+- **Defines:** `WHEN` 0 (while mounted) and 1 (before a mount); `SIZE`
+  half a block and two blocks; READERROR.
+- **Procedure:** Write 8 files, sync the gbmap, make its root a bad block
+  that fails reads, while mounted or before a remount, then rewrite every
+  file twice. Count the old root's erases and progs. Read and check, and
+  again after a remount.
+- **Pass:** every write succeeds; the mount that finds the root bad
+  reports `LFS3_I_MKGBMAP`, and no flag is left after the writes; the
+  gbmap's root has moved; the old root is erased at most once and never
+  programmed; every file reads back and checks.
+- **Fail:** a write error, the old root reused or programmed, or wrong
+  data.
+- **Extension:** none.
+
+#### NEW-148 `relocations::anchor_wear`
+
+- **File and case:** `tests/test_relocations.toml`,
+  `test_relocations_anchor_wear`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-08.
+- **Defines:** `BLOCK_RECYCLES` 0, 1, 4 and 16; `BLOCK_SIZE` 512; `MDIR`
+  0 (commit to the mroot) and 1 (to an mdir of the mtree); `COMMITS`
+  10,000 and 40,000.
+- **Procedure:** Make `COMMITS` attribute commits, counting the erases of
+  every block from the first.
+- **Pass:** the erases of blocks 0 and 1 are at most
+  2(`BLOCK_RECYCLES`+2) plus all erases over
+  (`BLOCK_RECYCLES`+1)(`BLOCK_SIZE`/64); the attribute reads back after
+  a remount.
+- **Fail:** more anchor erases.
+- **Extension:** none.
+
 #### NEW-140 `mount::readerror`
 
 - **File and case:** `tests/test_mount.toml`, `test_mount_readerror`.

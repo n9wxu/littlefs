@@ -7379,21 +7379,52 @@ littlefs shall stay readable after it can no longer write.
 #### LFS3-DEG-08
 
 littlefs shall have no single block, other than the mroot anchor pair, whose
-failure makes the filesystem unwritable, and shall keep the anchor pair's
-wear bounded.
+failure makes the filesystem unwritable: a gbmap whose root, or another of
+its nodes, fails a read or check shall be dropped and built again
+elsewhere, allocation falling back to lookahead scans meanwhile; and the
+anchor pair's erases shall stay within the bound in `lfs3.h`:
+2(`block_recycles`+2) plus all erases over
+(`block_recycles`+1)(`block_size`/64).
 
 - **Source:** Proposal. At `b10efaa` a corrupt gbmap root makes every gbmap
   lookup fail, and bad anchor blocks give NOSPC once the anchor must change
-  (3-alloc R9).
-- **Measure:** behaviour with the gbmap root, then each anchor block, made
-  bad; anchor erase counts over a long run.
-- **Pass:** a bad gbmap root falls back to lookahead allocation and the gbmap
-  is rebuilt elsewhere; anchor erases stay below a documented fraction of all
-  erases.
-- **Fail:** the filesystem becomes unwritable because of one non-anchor
-  block.
-- **Verified by:** NEW (`badblocks::gbmap_root`, `relocations::anchor_wear`).
-- **Status:** Known defect (3-alloc R9).
+  (3-alloc R9). A dropped gbmap's root is erased and kept out of use until
+  remount: the on-disk gstate names it until the next commit, and a root
+  that read again after its other nodes were reused would hand out blocks
+  in use. For the same reason mount checks the gbmap's root against the
+  cksum gstate records, and a root that doesn't check is rebuilt at the
+  first write. The bad blocks the old gbmap marked are lost, and found
+  again as they fail. The anchor is erased up to `block_recycles`+1 times
+  a block while it is the first mroot, then only to compact the pointer
+  to the mroot it names, which changes once every `block_recycles`+1
+  compactions of that mroot, at least `block_size`/64 pointers to a
+  block, and once each time it extends the mroot chain. With
+  `block_recycles` -1 nothing relocates, and the anchor wears as the mroot
+  does.
+- **Measure:** writes, the gbmap's root and the old root's erases and
+  progs, with the gbmap's root unreadable, made so while mounted and
+  before a mount; anchor erases against all erases over runs of commits
+  to the mroot and to an mdir of the mtree.
+- **Pass:** `badblocks::gbmap_root`: every write succeeds; a mount that
+  finds the root bad reports `LFS3_I_MKGBMAP`, cleared once the gbmap is
+  rebuilt; the gbmap's root moves; the old root is erased at most once and
+  never programmed; every file reads back and checks, also after a
+  remount, without the flag. `badblocks::gbmap_readerror` and
+  `badblocks::live_readerror` (the gbmap's root) write on and check.
+  `relocations::anchor_wear`, with `block_recycles` 0, 1, 4 and 16 and
+  10,000 and 40,000 commits: the anchor's erases stay within the bound.
+  `badblocks::gbmap_format`: block 2 bad at format. The gbmap cases in
+  B-YGB and B-BIG, the anchor in B-DEF.
+- **Fail:** a write that fails because of the gbmap, a block in use handed
+  out, or anchor erases over the bound.
+- **Verified by:** `badblocks::gbmap_root` (NEW-147),
+  `relocations::anchor_wear` (NEW-148), `badblocks::gbmap_readerror`,
+  `badblocks::live_readerror`, `badblocks::gbmap_format`.
+- **Status:** Known defect (3-alloc R9). At `6f80e646` writes returned
+  `LFS3_ERR_CORRUPT` once they needed a gbmap that didn't read
+  (`badblocks::gbmap_readerror` expected it), the repair was
+  `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`, which `LFS3_YES_GBMAP` builds
+  lack, and the anchor's wear had no stated bound.
 - **When:** every CI run.
 
 #### LFS3-DEG-09
