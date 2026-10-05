@@ -1391,6 +1391,59 @@ Currently a gcksum mismatch at mount is fatal: the mount fails, even
 read-only, and there is no degraded mode. The gcksum costs 4 bytes in each
 commit that carries a delta, and a few ring multiplications per commit.
 
+## Settling after a power loss
+
+Checksums tell littlefs whether a commit is whole. They can't tell it
+whether the commit will still be whole at the next mount. A program
+interrupted by power loss can leave a bit half-programmed, reading 0 on one
+read and 1 on the next until the block is erased. If that bit is in the
+commit being written, the commit passes its checksum at one mount and fails
+it at the next. Worse, littlefs's logs chain their checksums, so everything
+appended after that commit fails with it: a file synced an hour after the
+power loss can vanish at a later mount, with no error. The rule littlefs
+follows is that complete files are clean and incomplete files are dirty,
+and nothing new is built on the last writes of a dirty file until they are
+re-established from bytes that pass their checksum.
+
+Re-establishing a metadata pair is called settling it. At mount, littlefs
+copies the pair's active block into its other block, one commit at a time,
+checking each commit's checksum on the bytes it copies, and reading the
+block several times so a commit that reads differently between reads is
+left out. The copy keeps the revision count, so the global checksum doesn't
+change, and its last checksum tag carries a settled generation in two bits
+that were reserved. A fetch that finds two blocks with the same revision
+count prefers the one holding a settled commit. littlefs compacts a settled
+copy before appending to it, so the bit that might flip, if the settle
+itself was cut short, is erased before anything depends on it; only a pair
+too full to compact in place takes an append instead, since refusing would
+leave a full mroot unable to commit at all.
+
+What to settle is the expensive question, because each settle costs an
+erase. littlefs has two answers:
+
+1. **By default**, only what a power loss left incomplete. A write session
+   marks its file dirty on disk with a `DIRTY` tag that rides in the
+   session's first commit, and close clears it; a new file's stickynote
+   already says the same until its first sync. A mount settles the pairs
+   holding dirty files, the pairs on the path to them from the anchor, and
+   pairs showing an interrupted write (a torn tail, or a newer block that
+   fails to fetch). A mount after a clean shutdown writes nothing. What
+   this leaves unprotected is a power loss during a commit no mark covers:
+   the close that clears the mark, `lfs3_set`, single-commit operations
+   such as `lfs3_mkdir`, `lfs3_remove` and `lfs3_rename`, and the settle
+   itself.
+
+2. **With `LFS3_M_SETTLE`**, everything written since the last mount. A
+   pair whose last commit is settled hasn't been written since, so a mount
+   settles exactly the pairs whose last commit isn't. Only a power loss
+   during the settle itself is left, at the cost of an erase per pair
+   written since the last mount, clean shutdown or not.
+
+Data blocks have their own version of the problem: the first append after a
+remount copies the file's partly-filled last block into a new one. littlefs
+checks that block's checksum on the bytes it copies, in every build, so a
+flipped bit is reported rather than sealed under a fresh checksum.
+
 ## The block allocator
 
 v3's default allocator is v2's. littlefs doesn't keep a free list. The
@@ -1877,6 +1930,7 @@ bytes, and files of _N_ bytes:
 | operation                     | cost                                                     |
 |-------------------------------|----------------------------------------------------------|
 | mount                         | fetch and checksum every mdir: _O(m b)_ reads            |
+| mount after a power loss      | an erase and a copy per pair holding a dirty file, plus its path; with `LFS3_M_SETTLE`, per pair written since the last mount |
 | first write after mount       | a scan for leftover stickynotes, _O(m b)_ reads, unless mount or gc did it |
 | look up a path component      | _O(log_b m)_ mtree, one _O(b)_ fetch, _O(log&sup2; n)_ name search |
 | metadata commit               | _O(log n)_ bytes per tag, plus a trailer, rounded up to `prog_size` |
@@ -2037,7 +2091,8 @@ lessons from v2 are built into the format:
    flags, which it must understand to write to it; and ocompat flags, which it
    can ignore. Features can be added and removed independently, and a driver
    that doesn't understand a write-only feature can still mount read-only. The
-   optional gbmap is tracked this way.
+   optional gbmap is tracked this way, and so are settled copies, which a
+   driver that doesn't prefer them must not write to.
 
 2. **Variable-length encodings.** Most integers on disk are
    [leb128][leb128]-encoded, so the format itself puts no practical limit on

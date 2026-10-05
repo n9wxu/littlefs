@@ -31,7 +31,8 @@ code = '''
         lfs3_fs_mkconsistent(&lfs3) => 0;
     }
 
-    // check that the file doesn't _really_ exist
+    // check that the file doesn't _really_ exist, read-only, a second
+    // read-write mount could settle what our open file is writing
     lfs3_t lfs3_;
     lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
     // via stat
@@ -2653,9 +2654,10 @@ code = '''
         lfs3_fs_mkconsistent(&lfs3) => 0;
     }
 
-    // check that the file doesn't _really_ exist
+    // check that the file doesn't _really_ exist, read-only, a second
+    // read-write mount could settle what our open file is writing
     lfs3_t lfs3_;
-    lfs3_mount(&lfs3_, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
     // via stat
     struct lfs3_info info;
     lfs3_stat(&lfs3_, "batman", &info) => LFS3_ERR_NOENT;
@@ -2692,7 +2694,7 @@ code = '''
         }
 
         // check that the file still doesn't _really_ exist
-        lfs3_mount(&lfs3_, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
         // via stat
         lfs3_stat(&lfs3_, "batman", &info) => LFS3_ERR_NOENT;
         // via readdir
@@ -2718,7 +2720,7 @@ code = '''
         lfs3_file_sync(&lfs3, &file) => 0;
 
         // now it should show up
-        lfs3_mount(&lfs3_, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
         // via stat
         lfs3_stat(&lfs3_, "batman", &info) => 0;
         assert(strcmp(info.name, "batman") == 0);
@@ -2762,7 +2764,7 @@ code = '''
     lfs3_file_close(&lfs3, &file) => 0;
 
     // now it should show up
-    lfs3_mount(&lfs3_, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
     // via stat
     lfs3_stat(&lfs3_, "batman", &info) => 0;
     assert(strcmp(info.name, "batman") == 0);
@@ -2802,7 +2804,7 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 
     // should still be there
-    lfs3_mount(&lfs3_, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
     // via stat
     lfs3_stat(&lfs3_, "batman", &info) => 0;
     assert(strcmp(info.name, "batman") == 0);

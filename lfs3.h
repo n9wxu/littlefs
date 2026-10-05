@@ -175,6 +175,7 @@ enum lfs3_type {
 #define LFS3_o_UNGRAFT  0x00800000  // File's leaf does not match disk
 #define LFS3_o_UNFLUSH  0x00400000  // File's cache does not match disk
 #define LFS3_o_TORN     0x00200000  // File's bshrub/btree is partially grafted
+#define LFS3_o_DIRTY    0x00080000  // File's dirty mark is on disk
 
 // an alias for all check work
 #define LFS3_O_CK (LFS3_O_CKMETA | LFS3_O_CKDATA)
@@ -304,6 +305,9 @@ enum lfs3_type {
 #ifndef LFS3_RDONLY
 #define LFS3_M_COMPACT  0x00000800  // Compact metadata logs
 #endif
+#ifndef LFS3_RDONLY
+#define LFS3_M_SETTLE   0x00004000  // Settle metadata written since last mount
+#endif
 #define LFS3_M_CKMETA   0x00001000  // Check metadata checksums
 #define LFS3_M_CKDATA   0x00002000  // Check metadata + data checksums
 
@@ -365,6 +369,9 @@ enum lfs3_type {
 #endif
 #ifndef LFS3_RDONLY
 #define LFS3_I_COMPACT  0x00000800  // Filesystem may have uncompacted metadata
+#endif
+#ifndef LFS3_RDONLY
+#define LFS3_I_SETTLE   0x00004000  // Mounted with LFS3_M_SETTLE
 #endif
 #define LFS3_I_CKMETA   0x00001000  // Metadata checksums not checked recently
 #define LFS3_I_CKDATA   0x00002000  // Data checksums not checked recently
@@ -505,15 +512,15 @@ struct lfs3_cfg {
     // May return LFS3_ERR_CORRUPT if the block should be considered bad.
     //
     // Note littlefs assumes a prog interrupted by power-loss changes no
-    // bytes outside of that prog, and that the bytes it does change read
-    // the same on every read until the block is erased. Bits left
-    // metastable, reading 0 on one read and 1 on the next, can make the
+    // bytes outside of that prog. Bits it leaves metastable, reading 0 on
+    // one read and 1 on the next until the block is erased, can make the
     // commit being written at the power-loss appear on one mount and not
-    // on the next. With LFS3_M_CKMETAPARITY and LFS3_M_CKDATACKSUMS reads
-    // return LFS3_ERR_CORRUPT instead of most flipped bits, but syncs
-    // that completed after such a commit was seen can still be rolled
-    // back without an error, and so can earlier syncs if a power-loss
-    // disturbs bytes outside of the interrupted prog.
+    // on the next. A read-write mount rewrites such commits before
+    // anything is built on them, see the note on power loss at
+    // lfs3_mount. With LFS3_M_CKMETAPARITY and LFS3_M_CKDATACKSUMS reads
+    // return LFS3_ERR_CORRUPT instead of most flipped bits. A power-loss
+    // that disturbs bytes outside of the interrupted prog can roll back
+    // earlier syncs without an error.
     //
     #ifndef LFS3_RDONLY
     int (*prog)(const struct lfs3_cfg *c, lfs3_block_t block,
@@ -941,6 +948,9 @@ enum lfs3_tag {
     LFS3_TAG_BMERASED       = 0x0442,
     LFS3_TAG_BMBAD          = 0x0443,
 
+    // file state tags
+    LFS3_TAG_DIRTY          = 0x0500,
+
     // user/sys attributes
     LFS3_TAG_ATTR           = 0x0600,
     LFS3_TAG_UATTR          = 0x0600,
@@ -960,6 +970,7 @@ enum lfs3_tag {
     LFS3_TAG_CKSUM          = 0x3000,
     LFS3_TAG_PHASE          = 0x0003,
     LFS3_TAG_PERTURB        = 0x0004,
+    LFS3_TAG_SETTLED        = 0x0018,
     LFS3_TAG_NOTE           = 0x3100,
     LFS3_TAG_ECKSUM         = 0x3200,
     LFS3_TAG_GCKSUMDELTA    = 0x3300,
@@ -1020,6 +1031,7 @@ enum lfs3_tag {
 #define LFS3_WCOMPAT_RDONLY      0x00000002 // Writing is disallowed
 #define LFS3_WCOMPAT_GCKSUM      0x00040000 // Global-checksum in use
 #define LFS3_WCOMPAT_GBMAP       0x00080000 // Global on-disk block-map in use
+#define LFS3_WCOMPAT_SETTLED     0x00100000 // Pairs may hold settled copies
 #define LFS3_WCOMPAT_DIR         0x01000000 // Directory files in use
 // internally used flags
 #define LFS3_wcompat_OVERFLOW    0x80000000 // Can't represent all flags
@@ -1429,6 +1441,10 @@ typedef struct lfs3 {
     lfs3_ssize_t graft_count;
     // error from a failed sync after a commit we kept
     int syncerr;
+    // what the last mdir fetch found, and what mount found, used to
+    // decide which mdirs mount must settle
+    uint8_t mfetch;
+    uint8_t msettle;
     #endif
 
     // global state
@@ -1512,6 +1528,54 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // be zeroed for defaults and backwards compatibility.
 //
 // Returns a negative error code on failure.
+//
+// Note on power loss
+//
+// After a power loss every file reads as of its last lfs3_file_sync or
+// lfs3_file_close that returned 0, or as of the sync in progress. Data
+// written since the last sync may be lost, synced data is not, except
+// in the residual cases below.
+//
+// A prog interrupted by power loss can leave bits that read differently
+// on each read until their block is erased, so the commit being written
+// can read as whole at one mount and as torn at a later one, taking any
+// commit appended after it along. So before anything is appended, a
+// read-write mount settles the metadata pairs at risk: it copies each
+// into its other block, checking every commit's checksum on the bytes
+// it copies, and the next write to a settled pair compacts it, unless
+// it's too full to compact in place. Once a pair is settled, the next
+// compaction of the mroot sets the SETTLED wcompat flag, which keeps
+// drivers without these rules from writing the filesystem.
+//
+// By default a write session marks its file dirty on disk, in a commit
+// the session makes anyway, until lfs3_file_close. A mount settles the
+// pairs of dirty files, the pairs on their path, and pairs showing an
+// interrupted write. A mount after a clean shutdown writes nothing. A
+// power loss during these is not covered:
+//
+// 1. the commit that ends a write session (lfs3_file_close) or
+//    lfs3_set's single commit,
+// 2. the last commit of a metadata operation outside a write session:
+//    lfs3_mkdir, lfs3_remove, lfs3_rename, lfs3_setattr,
+//    lfs3_removeattr, lfs3_fs_grow, and the repairs of
+//    lfs3_fs_mkconsistent,
+// 3. the settling itself.
+//
+// If the interrupted commit reads as whole at one mount and something is
+// committed after it, both may be lost at a later mount, without an
+// error.
+//
+// LFS3_M_SETTLE settles every pair written since the last mount, which
+// leaves only case 3. It costs one erase and one copy per pair written
+// since the last mount, at every read-write mount after a write, and a
+// compaction at the next write to each, where the default costs
+// nothing after a clean shutdown and an erase per pair on a dirty file's
+// path after a power loss.
+// Use it when a completed sync must never be lost, for example when a
+// sync acknowledges data to another system, and the flash can be cut
+// mid-prog (NOR or NAND without power-loss protection); writes between
+// mounts outnumbering mounts keeps its cost small. Use the default when
+// mounts are frequent and the residual cases are acceptable.
 int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
         const struct lfs3_cfg *cfg);
 
@@ -1638,7 +1702,9 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 // Releases any allocated resources, even if there is an error.
 //
 // Readonly and desynchronized files do not touch disk and will always
-// return 0.
+// return 0. A file with nothing pending only clears its dirty mark, see
+// the note on power loss at lfs3_mount, and returns 0 even if that
+// commit fails, the mark then stays until lfs3_fs_mkconsistent.
 //
 // Note an error in an earlier write, flush, sync, truncate, fruncate, or
 // read that needed to flush, desynchronizes the file, so close does not

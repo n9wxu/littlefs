@@ -35,6 +35,7 @@ WCOMPAT_NONSTANDARD = 0x00000001 # Non-standard filesystem format
 WCOMPAT_RDONLY      = 0x00000002 # Writing is disallowed
 WCOMPAT_GCKSUM      = 0x00040000 # Global-checksum in use
 WCOMPAT_GBMAP       = 0x00080000 # Global on-disk block-map in use
+WCOMPAT_SETTLED     = 0x00100000 # Pairs may hold settled copies
 WCOMPAT_DIR         = 0x01000000 # Directory file types in use
 
 TAG_NULL        = 0x0000    ##  v--- ---- +--- ----
@@ -73,6 +74,7 @@ TAG_BMFREE      = 0x0440    #   v--- -1-- +1-- ----
 TAG_BMINUSE     = 0x0441    #   v--- -1-- +1-- ---1
 TAG_BMERASED    = 0x0442    #   v--- -1-- +1-- --1-
 TAG_BMBAD       = 0x0443    #   v--- -1-- +1-- --11
+TAG_DIRTY       = 0x0500    #   v--- -1-1 +--- ----
 TAG_ATTR        = 0x0600    ##  v--- -11a +aaa aaaa
 TAG_UATTR       = 0x0600    #   v--- -11- +aaa aaaa
 TAG_SATTR       = 0x0700    #   v--- -111 +aaa aaaa
@@ -82,9 +84,10 @@ TAG_B           = 0x0000
 TAG_R           = 0x2000
 TAG_LE          = 0x0000
 TAG_GT          = 0x1000
-TAG_CKSUM       = 0x3000    ##  v-11 ---- ++++ +pqq
+TAG_CKSUM       = 0x3000    ##  v-11 ---- +++s spqq
 TAG_PHASE       = 0x0003
 TAG_PERTURB     = 0x0004
+TAG_SETTLED     = 0x0018
 TAG_NOTE        = 0x3100    ##  v-11 ---1 ++++ ++++
 TAG_ECKSUM      = 0x3200    ##  v-11 --1- ++++ ++++
 TAG_GCKSUMDELTA = 0x3300    ##  v-11 --11 ++++ ++++
@@ -230,6 +233,8 @@ class Tag:
                     r.append('q%d' % t.get('q', tag))
                 if 'p' in t and tag & TAG_PERTURB:
                     r.append('p')
+                if 's' in t and t.get('s', tag):
+                    r.append('s%d' % (t.get('s', tag) >> t.min('s')))
 
                 # include unmatched fields, but not just redund, and
                 # only reserved bits if non-zero

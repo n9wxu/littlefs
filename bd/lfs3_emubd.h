@@ -325,6 +325,10 @@ int lfs3_emubd_mkgood(const struct lfs3_cfg *cfg, lfs3_block_t block);
 lfs3_ssize_t lfs3_emubd_badbit(const struct lfs3_cfg *cfg,
         lfs3_block_t block);
 
+// Whether a given block holds a metastable bit, reads of which return
+// random values until the block is next progged or erased
+int lfs3_emubd_metastable(const struct lfs3_cfg *cfg, lfs3_block_t block);
+
 // Set which bit should fail in a given block
 int lfs3_emubd_setbadbit(const struct lfs3_cfg *cfg,
         lfs3_block_t block, lfs3_size_t bit);

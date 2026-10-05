@@ -1534,6 +1534,21 @@ lfs3_ssize_t lfs3_emubd_badbit(const struct lfs3_cfg *cfg,
     return bad_bit;
 }
 
+int lfs3_emubd_metastable(const struct lfs3_cfg *cfg, lfs3_block_t block) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_metastable(%p, %"PRIu32")",
+            (void*)cfg, block);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if block is valid
+    LFS3_ASSERT(block < cfg->block_count);
+
+    const lfs3_emubd_block_t *b = bd->blocks[block];
+    int metastable = (b && b->metastable) ? 1 : 0;
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_metastable -> %d", metastable);
+    return metastable;
+}
+
 int lfs3_emubd_setbadbit(const struct lfs3_cfg *cfg,
         lfs3_block_t block, lfs3_size_t bit) {
     LFS3_EMUBD_TRACE("lfs3_emubd_setbadbit(%p, %"PRIu32", %"PRIu32")",

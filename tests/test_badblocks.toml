@@ -7375,8 +7375,17 @@ code = '''
                             && lfs3_emubd_ioerror(CFG, OP) == 0)) {
                         assert(err == 0);
                         if (opened) {
+                            // close clears our file's dirty mark, a
+                            // commit our error may fail, but our sync
+                            // before it holds, so close still succeeds
+                            remaining = lfs3_emubd_ioerror(CFG, OP);
                             lfs3_file_close(&lfs3, &file) => 0;
                             opened = false;
+                            if (remaining > 0
+                                    && lfs3_emubd_ioerror(CFG, OP) == 0) {
+                                assert(!fired);
+                                fired = true;
+                            }
                         }
                         break;
                     }

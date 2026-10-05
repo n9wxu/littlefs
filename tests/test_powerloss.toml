@@ -17,6 +17,15 @@ after = [
 
 # helpers for test_powerloss_metastable
 code = '''
+#include <setjmp.h>
+
+// a powerloss callback that abandons the interrupted operation, the way
+// the linear runner does
+__attribute__((unused))
+static void test_powerloss_longjmp(void *data) {
+    longjmp(*(jmp_buf*)data, 1);
+}
+
 // one op of test_powerloss_metastable's workload
 typedef struct test_metastable_op {
     uint8_t op;
@@ -76,6 +85,34 @@ static void test_metastable_op(uint32_t *prng,
     // also move a directory around, and grow every so often
     o->dop = TEST_PRNG(prng) % 4;
     o->grow = (TEST_PRNG(prng) % 8 == 0);
+}
+
+// what was running when a power loss left a block metastable, a
+// bitmask so callers can choose which ones they excuse
+#define TEST_METASTABLE_SESSION 0x1 // write/truncate/fruncate/sync
+#define TEST_METASTABLE_OP      0x2 // open, close, namespace, grow
+#define TEST_METASTABLE_MOUNT   0x4 // mount and its repairs
+
+// record what left each metastable block metastable, emubd keeps one
+// metastable bit per block until the block is erased, and returns
+// whether any still-metastable block was left by an op in mask
+__attribute__((unused))
+static bool test_metastable_exposed(const struct lfs3_cfg *cfg,
+        uint8_t op, uint8_t *ops, lfs3_ssize_t *bits, uint8_t mask) {
+    bool exposed = false;
+    for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
+        if (lfs3_emubd_metastable(cfg, b)) {
+            lfs3_ssize_t bit = lfs3_emubd_badbit(cfg, b);
+            if (!ops[b] || bits[b] != bit) {
+                ops[b] = op;
+                bits[b] = bit;
+            }
+            exposed |= (ops[b] & mask) != 0;
+        } else {
+            ops[b] = 0;
+        }
+    }
+    return exposed;
 }
 
 // rebuild every file as of its step, returns the number of ops if the
@@ -947,6 +984,8 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
+# metastable bits need mount to settle what a powerloss left
+defines.SETTLE_FLAGS = '(POWERLOSS_BEHAVIOR == LFS3_EMUBD_POWERLOSS_METASTABLE) ? LFS3_M_SETTLE : 0'
 defines.N = 8
 defines.SIZE = ['8', 'BLOCK_SIZE/2']
 if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
@@ -954,7 +993,7 @@ reentrant = true
 code = '''
     // format unless we find a complete filesystem
     lfs3_t lfs3;
-    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG);
     assert(!err || err == LFS3_ERR_CORRUPT);
     if (!err) {
         struct lfs3_info info;
@@ -969,7 +1008,7 @@ code = '''
                 LFS3_F_RDWR
                     | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
                 CFG) => 0;
-        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG) => 0;
     }
 
     // create some files
@@ -987,7 +1026,7 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 
     for (int remount = 0; remount < 2; remount++) {
-        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG) => 0;
 
         // check our files
         prng = 42;
@@ -1524,6 +1563,7 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
     'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
 defines.GBMAP = [false, true]
@@ -1534,8 +1574,12 @@ defines.F_FLAGS = '''
     ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0)
         | ((PREERASE) ? LFS3_IFDEF_PREERASE(LFS3_F_REVPERTURB, -1) : 0)
 '''
+# metastable bits need mount to settle what a powerloss left
 defines.M_FLAGS = '''
     ((PREERASE) ? LFS3_IFDEF_PREERASE(LFS3_M_REVPERTURB, -1) : 0)
+        | ((POWERLOSS_BEHAVIOR == LFS3_EMUBD_POWERLOSS_METASTABLE)
+            ? LFS3_M_SETTLE
+            : 0)
 '''
 defines.GC_FLAGS = '''
     LFS3_GC_GC
@@ -1817,8 +1861,11 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
     'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
+# metastable bits need mount to settle what a powerloss left
+defines.SETTLE_FLAGS = '(POWERLOSS_BEHAVIOR == LFS3_EMUBD_POWERLOSS_METASTABLE) ? LFS3_M_SETTLE : 0'
 # repopulate the gbmap rarely or often
 defines.LOOKGBMAP_THRESH = ['BLOCK_COUNT/4', '7*BLOCK_COUNT/8']
 defines.N = 4
@@ -1833,10 +1880,10 @@ in = 'lfs3.c'
 code = '''
     // format once per test, note the lack of gbmap flag
     lfs3_t lfs3;
-    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG);
     if (err) {
         lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
-        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG) => 0;
     }
 
     // how far did we get?
@@ -2000,7 +2047,7 @@ code = '''
         // remount?
         if (remount) {
             lfs3_unmount(&lfs3) => 0;
-            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR | SETTLE_FLAGS, CFG) => 0;
         }
 
         // check the gbmap and our files
@@ -2048,8 +2095,11 @@ defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',
     'LFS3_EMUBD_POWERLOSS_MOSTBITS',
     'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_METASTABLE',
     'LFS3_EMUBD_POWERLOSS_TORNTAIL',
 ]
+# metastable bits need mount to settle what a powerloss left
+defines.SETTLE_FLAGS = '(POWERLOSS_BEHAVIOR == LFS3_EMUBD_POWERLOSS_METASTABLE) ? LFS3_M_SETTLE : 0'
 defines.GC_FLAGS = 'LFS3_GC_PREERASE'
 defines.GC_STEPS = 1
 defines.GC_PREERASE_COUNT = ['4', '-1']
@@ -2069,12 +2119,16 @@ in = 'lfs3.c'
 code = '''
     // format once per test, note preerasing needs revperturb
     lfs3_t lfs3;
-    int err = lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG);
+    int err = lfs3_mount(&lfs3,
+            LFS3_M_RDWR | LFS3_M_REVPERTURB | SETTLE_FLAGS,
+            CFG);
     if (err) {
         lfs3_format(&lfs3,
                 LFS3_F_RDWR | LFS3_F_REVPERTURB | LFS3_F_GBMAP,
                 CFG) => 0;
-        lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+        lfs3_mount(&lfs3,
+                LFS3_M_RDWR | LFS3_M_REVPERTURB | SETTLE_FLAGS,
+                CFG) => 0;
     }
 
     // how far did we get?
@@ -2217,7 +2271,9 @@ code = '''
         // remount?
         if (remount) {
             lfs3_unmount(&lfs3) => 0;
-            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_REVPERTURB, CFG) => 0;
+            lfs3_mount(&lfs3,
+                LFS3_M_RDWR | LFS3_M_REVPERTURB | SETTLE_FLAGS,
+                CFG) => 0;
         }
 
         // check our files
@@ -2540,25 +2596,158 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# A commit left metastable by a powerloss, then built on
+#
+# The powerloss interrupts the last prog of a commit, so the commit is
+# whole, but one bit of that prog reads randomly until its block is
+# erased. A mount that reads the commit as whole may build a synced
+# commit on it, which a later mount that reads it as torn would lose,
+# unless mount settled the commit first: by default when the commit is
+# a sync inside an open write session (KIND=1), with LFS3_M_SETTLE
+# (MODE=1) always. lfs3_set's single commit (KIND=0) is a residual case
+# of the default mode, there we count and print
+#
+[cases.test_powerloss_metastable_builton]
+defines.MODE = [0, 1]
+defines.KIND = [0, 1]
+defines.MOUNTS = 64
+defines.BD_SEED = 'range(8)'
+code = '''
+    const uint32_t mflags = LFS3_M_RDWR | ((MODE) ? LFS3_M_SETTLE : 0);
+
+    // our own emubd, so we choose where power is lost
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = LFS3_EMUBD_POWERLOSS_METASTABLE,
+        .powerloss_cb = test_powerloss_longjmp,
+        .powerloss_data = &powerloss_jmp,
+        .seed = BD_SEED,
+    };
+
+    // count the progs and erases of our commit, then do it all again,
+    // losing power at its last prog
+    volatile lfs3_emubd_powercycles_t cycles = 0;
+    for (int i = 0; i < 2; i++) {
+        lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+        lfs3_mount(&lfs3, mflags, &cfg) => 0;
+        lfs3_set(&lfs3, "x", "0", 1) => 0;
+
+        // a write session that hasn't ended?
+        lfs3_file_t file;
+        if (KIND == 1) {
+            lfs3_file_open(&lfs3, &file, "a",
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            lfs3_file_write(&lfs3, &file, "0", 1) => 1;
+            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_rewind(&lfs3, &file) => 0;
+            lfs3_file_write(&lfs3, &file, "1", 1) => 1;
+        }
+
+        lfs3_emubd_setpowercycles(&cfg,
+                (i == 0) ? (lfs3_emubd_powercycles_t)-1 : cycles) => 0;
+        if (!setjmp(powerloss_jmp)) {
+            if (KIND == 0) {
+                lfs3_set(&lfs3, "a", "1", 1) => 0;
+            } else {
+                lfs3_file_sync(&lfs3, &file) => 0;
+            }
+
+            // first time? count, and clean up
+            assert(i == 0);
+            cycles = (lfs3_emubd_powercycles_t)-1
+                    - lfs3_emubd_powercycles(&cfg);
+            lfs3_emubd_setpowercycles(&cfg, 0) => 0;
+            if (KIND == 1) {
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_emubd_destroy(&cfg) => 0;
+            continue;
+        }
+
+        // power lost at our commit's last prog
+        assert(i == 1);
+        lfs3_emubd_setpowercycles(&cfg, 0) => 0;
+    }
+
+    // mount until our commit reads as whole, and build on it
+    lfs3_t lfs3;
+    for (int i = 0;; i++) {
+        assert(i < 1000);
+        int err = lfs3_mount(&lfs3, mflags, &cfg);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err) {
+            continue;
+        }
+
+        uint8_t buf[1];
+        lfs3_ssize_t d = lfs3_get(&lfs3, "a", buf, 1);
+        assert(d == 1 || d == LFS3_ERR_NOENT || d == LFS3_ERR_CORRUPT);
+        // settled away? build on what we have
+        if ((d == 1 && buf[0] == '1') || i >= 16) {
+            // a sync that returns 0
+            lfs3_set(&lfs3, "b", "2", 1) => 0;
+            lfs3_unmount(&lfs3) => 0;
+            break;
+        }
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // b was synced, every mount must see it or fail
+    lfs3_size_t lost = 0;
+    for (lfs3_size_t i = 0; i < MOUNTS; i++) {
+        int err = lfs3_mount(&lfs3, mflags, &cfg);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (err) {
+            lost += 1;
+            continue;
+        }
+
+        uint8_t buf[1];
+        lfs3_ssize_t d = lfs3_get(&lfs3, "b", buf, 1);
+        assert(d == 1 || d == LFS3_ERR_NOENT || d == LFS3_ERR_CORRUPT);
+        if (d != 1) {
+            lost += 1;
+        } else {
+            assert(buf[0] == '2');
+        }
+        lfs3_unmount(&lfs3) => 0;
+    }
+    printf("builton: synced b lost in %d of %d mounts\n",
+            (int)lost, (int)MOUNTS);
+    if (MODE == 1 || KIND == 1) {
+        assert(lost == 0);
+    }
+
+    lfs3_emubd_destroy(&cfg) => 0;
+'''
+
 # Metastable bits under powerloss
 #
-# With METASTABLE, the interrupted write lands, but one bit of the block
-# reads randomly until the block is next progged or erased. Mounted with
-# parity and data checksums, any operation may fail with
-# LFS3_ERR_CORRUPT, and no operation may assert or return another error
+# With METASTABLE, the interrupted write lands, but one bit of it reads
+# randomly until its block is erased. Mounted with parity and data
+# checksums, any operation may fail with LFS3_ERR_CORRUPT, and no
+# operation may assert or return another error
 #
-# littlefs can't promise more than this under METASTABLE (see the note
-# on prog in lfs3.h), so we only count, and print:
-# - files whose step rolls back past their last completed sync, or
-#   past a step we read
-# - files that read other than as of the step committed with them, or
-#   whose step is not one we wrote, ckparity misses some bit flips in
-#   tag sizes
-# and reformat when our steps no longer follow our ops, or a disk keeps
-# failing
+# No completed sync may be lost, and no read may return data that
+# neither a completed sync nor the sync in progress wrote: with
+# LFS3_M_SETTLE (MODE=1) ever, by default (MODE=0) unless a block still
+# metastable was left by an operation the default mode doesn't protect
+# (LFS3-DEG-12), these we count and print
+#
+# Each file's step is committed with its data as a file-attached
+# attribute, and each file is rebuilt as of its own step. We reformat
+# when our steps no longer follow our ops, or a disk keeps failing
 #
 [cases.test_powerloss_metastable]
 defines.POWERLOSS_BEHAVIOR = 'LFS3_EMUBD_POWERLOSS_METASTABLE'
+defines.MODE = [0, 1]
 defines.BLOCK_RECYCLES = [-1, 1]
 defines.FORMAT_BLOCK_COUNT = 'BLOCK_COUNT/2'
 defines.N = 4
@@ -2574,7 +2763,12 @@ ifdef = ['LFS3_CKMETAPARITY', 'LFS3_CKDATACKSUMS']
 code = '''
     const uint32_t mflags = LFS3_M_RDWR
             | LFS3_M_CKMETAPARITY
-            | LFS3_M_CKDATACKSUMS;
+            | LFS3_M_CKDATACKSUMS
+            | ((MODE) ? LFS3_M_SETTLE : 0);
+    // which metastable blocks excuse a loss
+    const uint8_t excuse = (MODE)
+            ? 0
+            : TEST_METASTABLE_OP | TEST_METASTABLE_MOUNT;
 
     // the step each file last read or synced, the step of its last
     // sync that returned 0, and the newest step we tried to sync, these
@@ -2585,7 +2779,36 @@ code = '''
     // set while formatting, after a powerloss here we can't know what
     // the disk holds
     static bool formatting = true;
+    // what we're doing, and what left each block metastable
+    static uint8_t op = TEST_METASTABLE_MOUNT;
+    static uint8_t ops[1024];
+    static lfs3_ssize_t bits[1024];
+    // residual losses, excused, and everything we count, an excuse
+    // lasts until a mount finds every completed sync and nothing left
+    // metastable by an unprotected op, damage built on a metastable
+    // commit can show up after its block is erased
+    static bool excused = false;
+    static lfs3_size_t residual = 0;
+    static lfs3_size_t flickers = 0;
     assert(N <= 16);
+    assert(BLOCK_COUNT <= 1024);
+
+    // a fresh disk? the runner may reuse our statics across permutations
+    if (lfs3_emubd_blockprogs(CFG, 0) == 0
+            && lfs3_emubd_blockprogs(CFG, 1) == 0) {
+        for (lfs3_size_t x = 0; x < N; x++) {
+            synced[x] = 0;
+            acked[x] = 0;
+            tried[x] = 0;
+        }
+        formatting = true;
+        op = TEST_METASTABLE_MOUNT;
+        memset(ops, 0, sizeof(ops));
+        memset(bits, 0, sizeof(bits));
+        excused = false;
+        residual = 0;
+        flickers = 0;
+    }
 
     lfs3_t lfs3;
     uint32_t steps[N];
@@ -2596,7 +2819,13 @@ code = '''
     while (true) {
         assert(fails < 16*STUCK);
 
+        // did our last powerloss leave anything metastable?
+        bool exposed = test_metastable_exposed(CFG, op, ops, bits, excuse);
+        excused |= exposed;
+        bool lost = false;
+
         // mount, or reformat if a metastable bit stops our mount
+        op = TEST_METASTABLE_MOUNT;
         int err = lfs3_mount(&lfs3, mflags, CFG);
         assert(!err || err == LFS3_ERR_CORRUPT);
         lfs3_ssize_t k_ = -1;
@@ -2637,6 +2866,7 @@ code = '''
                 if (steps[x] > tried[x]) {
                     printf("metastable: file%03x misread step %d (> %d)\n",
                             x, steps[x], tried[x]);
+                    lost = true;
                     err = LFS3_ERR_CORRUPT;
                 }
             }
@@ -2651,6 +2881,7 @@ code = '''
                     steps, (uint8_t*)sims, sim_sizes, &prng);
             if (k_ == -2) {
                 printf("metastable: misread steps\n");
+                lost = true;
             }
 
             // every file should read as of its step, or fail
@@ -2659,10 +2890,10 @@ code = '''
                     printf("metastable: file%03x lost a completed sync "
                                 "%d -> %d\n",
                             x, acked[x], steps[x]);
+                    lost = true;
                 } else if (steps[x] < synced[x]) {
-                    printf("metastable: file%03x lost a step it read "
-                                "%d -> %d\n",
-                            x, synced[x], steps[x]);
+                    // the sync in progress may come and go
+                    flickers += 1;
                 }
                 if (steps[x] == 0) {
                     continue;
@@ -2677,6 +2908,7 @@ code = '''
                         || err_ == LFS3_ERR_CORRUPT);
                 if (err_ == LFS3_ERR_NOENT) {
                     printf("metastable: file%03x misread as missing\n", x);
+                    lost = true;
                 }
                 if (err_) {
                     continue;
@@ -2688,6 +2920,7 @@ code = '''
                         || memcmp(rbuf, sims[x], sim_sizes[x]) != 0)) {
                     printf("metastable: file%03x misread data at step %d\n",
                             x, steps[x]);
+                    lost = true;
                 }
                 lfs3_file_close(&lfs3, &file) => 0;
             }
@@ -2697,11 +2930,18 @@ code = '''
         }
 
         // can't read our steps, our steps don't follow our ops, or stuck?
-        // start over
+        // start over, losing every completed sync
         if (err || k_ < 0 || fails >= STUCK) {
             if (!err) {
                 lfs3_unmount(&lfs3) => 0;
             }
+            for (lfs3_size_t x = 0; x < N; x++) {
+                if (acked[x] > 0 && !formatting) {
+                    printf("metastable: file%03x lost to a reformat\n", x);
+                    lost = true;
+                }
+            }
+
             printf("metastable: reformatting\n");
             formatting = true;
             struct lfs3_cfg cfg = *CFG;
@@ -2720,6 +2960,20 @@ code = '''
             fails = 0;
             verified = 0;
         }
+
+        // lost something? only a block left metastable by an op our mode
+        // doesn't protect excuses this
+        if (lost) {
+            if (!excused) {
+                printf("metastable: lost data, no excuse\n");
+                assert(false);
+            }
+            residual += 1;
+            printf("metastable: residual loss %d\n", (int)residual);
+        } else if (!err && !exposed) {
+            excused = false;
+        }
+
         for (lfs3_size_t x = 0; x < N; x++) {
             synced[x] = steps[x];
             acked[x] = lfs3_min(acked[x], steps[x]);
@@ -2731,6 +2985,8 @@ code = '''
             lfs3_unmount(&lfs3) => 0;
             verified += 1;
             if (verified > 2) {
+                printf("metastable: residual losses %d, flickers %d\n",
+                        (int)residual, (int)flickers);
                 break;
             }
             continue;
@@ -2745,6 +3001,7 @@ code = '''
                     &o);
 
             // namespace ops are idempotent, so they can be redone
+            op = TEST_METASTABLE_OP;
             char dname[256];
             sprintf(dname, "dir%03x", (unsigned)(k % 4));
             char dname_[256];
@@ -2797,6 +3054,7 @@ code = '''
                     &filecfg);
             assert(!err || err == LFS3_ERR_CORRUPT);
             if (!err) {
+                op = TEST_METASTABLE_SESSION;
                 if (o.op <= 1) {
                     lfs3_soff_t off_ = lfs3_file_seek(&lfs3, &file,
                             o.off, LFS3_SEEK_SET);
@@ -2817,21 +3075,174 @@ code = '''
                     err = lfs3_file_sync(&lfs3, &file);
                     assert(!err || err == LFS3_ERR_CORRUPT);
                 }
-                lfs3_file_close(&lfs3, &file) => 0;
+                if (!err) {
+                    steps[x] = step;
+                    synced[x] = step;
+                    acked[x] = step;
+                }
+
+                // close ends our session, clearing our dirty mark
+                op = TEST_METASTABLE_OP;
+                int err_ = lfs3_file_close(&lfs3, &file);
+                assert(!err_ || err_ == LFS3_ERR_CORRUPT);
+                err = (err) ? err : err_;
             }
 
-            // a metastable bit got in the way? the bit settles on the
-            // block's next prog or erase, so remount and try again
+            // a metastable bit got in the way? remount and try again
             if (err) {
                 fails += 1;
                 break;
             }
-            steps[x] = step;
-            synced[x] = step;
-            acked[x] = step;
             fails = 0;
         }
 
+        op = TEST_METASTABLE_OP;
         lfs3_unmount(&lfs3) => 0;
     }
+'''
+
+# Dirty marks
+#
+# A write session's first commit marks its file dirty on disk, a new
+# file's stickynote standing as its mark until its first sync, its syncs
+# keep the mark, and close clears it with at most one extra small commit
+# and no erase. After a session a power loss ends, mount settles
+# the file's mdir and its path, the first mkconsistent removes the
+# stale mark, and compacting the settled mroot sets the SETTLED wcompat
+# flag. A mount with nothing dirty writes nothing
+#
+[cases.test_powerloss_dirty_mark]
+defines.SIZE = ['8', 'BLOCK_SIZE/8', '2*BLOCK_SIZE']
+defines.SYNCS = [0, 1, 3]
+in = 'lfs3.c'
+code = '''
+    // is a file's dirty mark on disk?
+    #define TEST_ISDIRTY(_lfs3, _path, _dirty) do { \
+            const char *path_ = _path; \
+            lfs3_mdir_t mdir_; \
+            lfs3_stag_t tag_ = lfs3_mtree_pathlookup(_lfs3, &path_, \
+                    &mdir_, NULL); \
+            assert(tag_ == LFS3_TAG_REG); \
+            tag_ = lfs3_rbyd_lookup(_lfs3, &mdir_.r, \
+                    lfs3_mrid(_lfs3, mdir_.mid), LFS3_TAG_DIRTY, \
+                    NULL); \
+            assert(tag_ == LFS3_TAG_DIRTY || tag_ == LFS3_ERR_NOENT); \
+            _dirty = (tag_ == LFS3_TAG_DIRTY); \
+        } while (0)
+    bool dirty;
+
+    // the wcompat flags on disk
+    #define TEST_WCOMPAT(_lfs3, _wcompat) do { \
+            lfs3_data_t data_; \
+            lfs3_stag_t tag_ = lfs3_mdir_lookup(_lfs3, &(_lfs3)->mroot, \
+                    LFS3_TAG_WCOMPAT, &data_); \
+            assert(tag_ == LFS3_TAG_WCOMPAT); \
+            int err_ = lfs3_data_readwcompat(_lfs3, &data_, &_wcompat); \
+            assert(!err_); \
+        } while (0)
+    lfs3_wcompat_t wcompat;
+
+    uint8_t wbuf[SIZE];
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        wbuf[i] = 'a' + (i % 26);
+    }
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    TEST_WCOMPAT(&lfs3, wcompat);
+    assert(!(wcompat & LFS3_WCOMPAT_SETTLED));
+
+    // a write session, creating a file commits a stickynote, which is
+    // our first commit and our mark
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_stag_t tag = lfs3_rbyd_lookup(&lfs3, &file.b.h.mdir.r,
+            lfs3_mrid(&lfs3, file.b.h.mdir.mid), LFS3_TAG_STICKYNOTE,
+            NULL);
+    assert(tag == LFS3_TAG_STICKYNOTE);
+    tag = lfs3_rbyd_lookup(&lfs3, &file.b.h.mdir.r,
+            lfs3_mrid(&lfs3, file.b.h.mdir.mid), LFS3_TAG_DIRTY,
+            NULL);
+    assert(tag == LFS3_ERR_NOENT);
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    for (lfs3_size_t i = 0; i < SYNCS; i++) {
+        lfs3_file_sync(&lfs3, &file) => 0;
+        TEST_ISDIRTY(&lfs3, "f", dirty);
+        assert(dirty);
+    }
+
+    // close clears our mark, with one commit if we were already synced,
+    // and no erase
+    lfs3_emubd_sio_t erased = lfs3_emubd_erased(CFG);
+    lfs3_emubd_sio_t progged = lfs3_emubd_progged(CFG);
+    lfs3_file_close(&lfs3, &file) => 0;
+    TEST_ISDIRTY(&lfs3, "f", dirty);
+    assert(!dirty);
+    assert(lfs3_emubd_erased(CFG) == erased);
+    if (SYNCS > 0) {
+        // one small commit, a few tags and a cksum
+        assert(lfs3_emubd_progged(CFG) - progged
+                <= 2*lfs3_alignup(64, PROG_SIZE));
+    }
+
+    // an existing file's session marks with its first commit too
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY) => 0;
+    TEST_ISDIRTY(&lfs3, "f", dirty);
+    assert(!dirty);
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    TEST_ISDIRTY(&lfs3, "f", dirty);
+    assert(dirty);
+    lfs3_file_close(&lfs3, &file) => 0;
+    TEST_ISDIRTY(&lfs3, "f", dirty);
+    assert(!dirty);
+
+    // lfs3_set's single commit never marks
+    lfs3_set(&lfs3, "g", "g", 1) => 0;
+    TEST_ISDIRTY(&lfs3, "g", dirty);
+    assert(!dirty);
+
+    // a session a power loss ends, desync so close doesn't write
+    lfs3_file_open(&lfs3, &file, "h", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    TEST_ISDIRTY(&lfs3, "h", dirty);
+    assert(dirty);
+    lfs3_file_desync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount settles the dirty file's mdir, which is our mroot
+    erased = lfs3_emubd_erased(CFG);
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    assert(lfs3_emubd_erased(CFG) > erased);
+    TEST_WCOMPAT(&lfs3, wcompat);
+    assert(!(wcompat & LFS3_WCOMPAT_SETTLED));
+    // the stale mark stays until our first mkconsistent
+    TEST_ISDIRTY(&lfs3, "h", dirty);
+    assert(dirty);
+    // removing it compacts our settled mroot, which flags the
+    // filesystem as holding settled copies
+    lfs3_fs_mkconsistent(&lfs3) => 0;
+    TEST_ISDIRTY(&lfs3, "h", dirty);
+    assert(!dirty);
+    TEST_WCOMPAT(&lfs3, wcompat);
+    assert(wcompat & LFS3_WCOMPAT_SETTLED);
+    lfs3_unmount(&lfs3) => 0;
+
+    // nothing dirty? mount writes nothing
+    erased = lfs3_emubd_erased(CFG);
+    progged = lfs3_emubd_progged(CFG);
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    assert(lfs3_emubd_erased(CFG) == erased);
+    assert(lfs3_emubd_progged(CFG) == progged);
+
+    // and everything reads back
+    uint8_t rbuf[SIZE];
+    lfs3_get(&lfs3, "f", rbuf, SIZE) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_get(&lfs3, "h", rbuf, SIZE) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_unmount(&lfs3) => 0;
 '''

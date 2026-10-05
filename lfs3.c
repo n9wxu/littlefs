@@ -41,6 +41,23 @@ static inline int lfs3_ckfound(int err) {
     return (err == LFS3_ERR_NOENT) ? LFS3_ERR_CORRUPT : err;
 }
 
+// what the last mdir fetch found, in lfs3->mfetch
+#ifndef LFS3_RDONLY
+#define LFS3_MFETCH_SETTLED 0x01 // last commit is a settled copy
+#define LFS3_MFETCH_TORN    0x02 // a write was interrupted
+#define LFS3_MFETCH_RDERR   0x04 // a read failed, not just a checksum
+#endif
+
+// what mount found, in lfs3->msettle
+#ifndef LFS3_RDONLY
+#define LFS3_MSETTLE_TORN    0x01 // an mdir shows an interrupted write
+#define LFS3_MSETTLE_DIRTY   0x02 // an unsettled mdir has dirty files
+#define LFS3_MSETTLE_SETTLE  0x04 // an mdir is unsettled with LFS3_M_SETTLE
+#define LFS3_MSETTLE_NEEDED  0x07
+#define LFS3_MSETTLE_SEEN    0x08 // an mdir is a settled copy
+#define LFS3_MSETTLE_WCOMPAT 0x10 // the SETTLED wcompat flag is on disk
+#endif
+
 
 /// Simple bd wrappers (asserts go here) ///
 
@@ -64,6 +81,10 @@ static int lfs3_bd_read__(lfs3_t *lfs3, lfs3_block_t block, lfs3_size_t off,
     if (err) {
         LFS3_INFO("Bad read 0x%"PRIx32".%"PRIx32" %"PRIu32" (%d)",
                 block, off, size, err);
+        // a failed read says nothing about what was written
+        #ifndef LFS3_RDONLY
+        lfs3->mfetch |= LFS3_MFETCH_RDERR;
+        #endif
         return err;
     }
 
@@ -1150,6 +1171,17 @@ static inline uint8_t lfs3_tag_phase(lfs3_tag_t tag) {
 
 static inline bool lfs3_tag_perturb(lfs3_tag_t tag) {
     return tag & LFS3_TAG_PERTURB;
+}
+
+// a settled copy's generation, 1, 2 or 3, each copy takes the next, so
+// the copy of a copy can be told from the copy it copied, 0 if not a
+// settled copy
+static inline uint8_t lfs3_tag_settled(lfs3_tag_t tag) {
+    return (tag & LFS3_TAG_SETTLED) >> 3;
+}
+
+static inline uint8_t lfs3_settled_next(uint8_t settled) {
+    return (settled % 3) + 1;
 }
 
 static inline bool lfs3_tag_isinternal(lfs3_tag_t tag) {
@@ -2776,6 +2808,7 @@ static int lfs3_data_readecksum(lfs3_t *lfs3, lfs3_data_t *data,
 
 #define LFS3_RBYD_ISSHRUB 0x80000000
 #define LFS3_RBYD_ISPERTURB 0x80000000
+#define LFS3_RBYD_ISSETTLED 0x40000000
 
 // helper functions
 static void lfs3_rbyd_init(lfs3_rbyd_t *rbyd, lfs3_block_t block) {
@@ -2812,6 +2845,15 @@ static inline bool lfs3_rbyd_isfetched(const lfs3_rbyd_t *rbyd) {
 #ifndef LFS3_RDONLY
 static inline bool lfs3_rbyd_isperturb(const lfs3_rbyd_t *rbyd) {
     return rbyd->eoff & LFS3_RBYD_ISPERTURB;
+}
+#endif
+
+// a settled copy keeps its erased state under LFS3_RBYD_ISSETTLED, which
+// puts eoff past the block, see lfs3_mdir_commit__
+#ifndef LFS3_RDONLY
+static inline bool lfs3_rbyd_issettled(const lfs3_rbyd_t *rbyd) {
+    return rbyd->eoff != (lfs3_size_t)-1
+            && (rbyd->eoff & LFS3_RBYD_ISSETTLED);
 }
 #endif
 
@@ -2902,10 +2944,30 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
         lfs3_srid_t *rid_, lfs3_rid_t *weight_, lfs3_data_t *data_,
         lfs3_rheight_t *rheight_);
 
+// what a fetch found about an rbyd's commits
+typedef struct lfs3_finfo {
+    // where the last and the second-to-last valid commits start
+    lfs3_size_t t0;
+    lfs3_size_t t1;
+    // where the last valid commit ends
+    lfs3_size_t eoff;
+    // how many valid commits we found
+    lfs3_size_t count;
+    // the last valid commit is a settled copy, see lfs3_mdir_settle,
+    // and its generation
+    uint8_t settled;
+    // the generation of the settled commit this block was written as,
+    // a copy's only settled commit, which commits may follow
+    uint8_t lineage;
+    // a write after the last valid commit was interrupted
+    bool torn;
+} lfs3_finfo_t;
+
 // fetch an rbyd
 static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
         lfs3_rbyd_t *rbyd, uint32_t *gcksumdelta,
-        lfs3_block_t block, lfs3_size_t trunk) {
+        lfs3_block_t block, lfs3_size_t trunk,
+        lfs3_finfo_t *info) {
     // set up some initial state
     rbyd->blocks[0] = block;
     rbyd->trunk = 0;
@@ -2913,6 +2975,12 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
     #ifndef LFS3_RDONLY
     rbyd->eoff = 0;
     #endif
+
+    // keep track of where commits start
+    lfs3_finfo_t info_ = {
+        .t0=0, .t1=0, .eoff=0, .count=0, .settled=0, .lineage=0,
+        .torn=false};
+    lfs3_size_t t0 = sizeof(uint32_t);
 
     // if we're quick fetching, we can start from the trunk,
     // otherwise we start from 0 and try to find the trunk
@@ -3038,6 +3106,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
                         }
                         return err;
                     }
+
                 }
 
             // is an end-of-commit cksum
@@ -3094,6 +3163,17 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
                 ecksum = ecksum_;
                 ecksum_.cksize = -1;
                 #endif
+
+                // keep track of commits
+                info_.t1 = info_.t0;
+                info_.t0 = t0;
+                info_.eoff = eoff;
+                info_.count += 1;
+                info_.settled = lfs3_tag_settled(tag);
+                if (info_.settled) {
+                    info_.lineage = info_.settled;
+                }
+                t0 = eoff;
 
                 // revert to canonical checksum and perturb if necessary
                 cksum__ = cksum_ ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
@@ -3156,6 +3236,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
     bool erased = false;
     if (lfs3_ecksum_isecksum(&ecksum)) {
         // check the erased-state checksum
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         int err = lfs3_rbyd_ckecksum(lfs3, rbyd, &ecksum);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
@@ -3163,13 +3244,32 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
 
         // found valid erased-state?
         erased = (err != LFS3_ERR_CORRUPT);
+
+        // a commit's own erased-state not matching means a write after
+        // it was interrupted, unless we couldn't read it
+        info_.torn = !erased
+                && lfs3_rbyd_eoff(rbyd) < lfs3->cfg->block_size
+                && lfs3_rbyd_eoff(rbyd) % lfs3->cfg->prog_size == 0
+                && (lfs3_size_t)ecksum.cksize
+                    <= lfs3->cfg->block_size - lfs3_rbyd_eoff(rbyd)
+                && lfs3_ecksum_iswide(lfs3, &ecksum, lfs3_rbyd_eoff(rbyd))
+                && !(lfs3->mfetch & LFS3_MFETCH_RDERR);
     }
 
-    // used eoff=-1 to indicate when there is no erased-state
-    if (!erased) {
+    // used eoff=-1 to indicate when there is no erased-state, and
+    // don't append to a settled copy, a power loss may have left the
+    // copy's last commit reading differently each time
+    if (info_.settled) {
+        rbyd->eoff = LFS3_RBYD_ISSETTLED
+                | ((erased) ? rbyd->eoff : lfs3->cfg->block_size);
+    } else if (!erased) {
         rbyd->eoff = -1;
     }
     #endif
+
+    if (info) {
+        *info = info_;
+    }
 
     #ifdef LFS3_DBGRBYDFETCHES
     if (lfs3_rbyd_isquickfetch(trunk)) {
@@ -3249,7 +3349,7 @@ static int lfs3_rbyd_fetch(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     // why would you try to fetch a shrub?
     LFS3_ASSERT(!(trunk & LFS3_RBYD_ISSHRUB));
 
-    return lfs3_rbyd_fetch_(lfs3, rbyd, NULL, block, trunk);
+    return lfs3_rbyd_fetch_(lfs3, rbyd, NULL, block, trunk, NULL);
 }
 
 // a more reckless fetch when checksum is known
@@ -3266,7 +3366,7 @@ static int lfs3_rbyd_fetchquick(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     rbyd->cksum = cksum;
 
     int err = lfs3_rbyd_fetch_(lfs3, rbyd, NULL,
-            block, LFS3_RBYD_QUICKFETCH | trunk);
+            block, LFS3_RBYD_QUICKFETCH | trunk, NULL);
     if (err) {
         return err;
     }
@@ -4647,7 +4747,7 @@ leaf:;
 
 #ifndef LFS3_RDONLY
 static int lfs3_rbyd_appendcksum_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
-        uint32_t cksum) {
+        uint32_t cksum, uint8_t settled) {
     // align to the next prog unit
     //
     // this gets a bit complicated as we have two types of cksums:
@@ -4732,6 +4832,8 @@ static int lfs3_rbyd_appendcksum_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
             // set the valid bit to the cksum parity
             | ((uint8_t)v << 7);
     cksum_buf[1] = (uint8_t)(LFS3_TAG_CKSUM >> 0)
+            // mark a settled copy, see lfs3_mdir_settle
+            | ((uint8_t)settled << 3)
             // set the perturb bit so next commit is invalid
             | ((uint8_t)perturb << 2)
             // include the lower 2 bits of the block address to help
@@ -4801,7 +4903,7 @@ static int lfs3_rbyd_appendcksum(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
     }
 
     // append checksum stuff
-    return lfs3_rbyd_appendcksum_(lfs3, rbyd, rbyd->cksum);
+    return lfs3_rbyd_appendcksum_(lfs3, rbyd, rbyd->cksum, 0);
 }
 #endif
 
@@ -7072,6 +7174,12 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
 #endif
 
 // commit to the bshrub root, i.e. the bshrub's shrub
+// needed in lfs3_bshrub_commitroot_
+#ifndef LFS3_RDONLY
+static inline bool lfs3_handle_needsmark(const lfs3_handle_t *h);
+static inline bool lfs3_o_isuncreat(uint32_t flags);
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_bshrub_commitroot_(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
         const lfs3_bcommit_t *bcommit) {
@@ -7135,18 +7243,27 @@ static int lfs3_bshrub_commitroot_(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
     // include our pending commit in the new estimate
     estimate += commit_estimate;
 
-    // commit to shrub
+    // commit to shrub, marking our file dirty if this is our session's
+    // first commit
     //
     // note we do _not_ checkpoint the allocator here, blocks may be
     // in-flight!
+    bool mark = lfs3_handle_needsmark(&bshrub->h)
+            && !lfs3_o_isuncreat(bshrub->h.flags);
     int err = lfs3_mdir_commit_(lfs3, &bshrub->h.mdir, LFS3_RATTRS(
             LFS3_RATTR(4, LFS3_tag_SHRUBCOMMIT, 0),
             LFS3_RATTR_ARG(bshrub),
             LFS3_RATTR_ARG(bcommit->bid),
             LFS3_RATTR_ARG(bcommit->rattrs),
+            (mark)
+                ? LFS3_RATTR(1, LFS3_TAG_DIRTY, 0)
+                : LFS3_RATTR_NULL,
             LFS3_RATTR_NULL));
     if (err) {
         return err;
+    }
+    if (mark) {
+        bshrub->h.flags |= LFS3_o_DIRTY;
     }
     LFS3_ASSERT(bshrub->b.r.blocks[0] == bshrub->h.mdir.r.blocks[0]);
 
@@ -7454,6 +7571,48 @@ static inline bool lfs3_o_istorn(uint32_t flags) {
     return flags & LFS3_o_TORN;
 }
 
+static inline bool lfs3_o_isdirty(uint32_t flags) {
+    return flags & LFS3_o_DIRTY;
+}
+
+// dirty marks
+//
+// a file's first commit in a write session marks it dirty on disk, and
+// the commit that ends the session clears the mark, so after a power
+// loss mount knows which mdirs the interrupted session wrote, see
+// lfs3_mountsettle
+//
+// a new file's stickynote is its own mark until the sync that creates
+// the file, and lfs3_set's single commit has nothing before it to
+// protect
+
+// does this handle's next commit need to mark its file dirty?
+#ifndef LFS3_RDONLY
+static inline bool lfs3_handle_needsmark(const lfs3_handle_t *h) {
+    return lfs3_o_type(h->flags) == LFS3_TYPE_REG
+            && !lfs3_o_isrdonly(h->flags)
+            && !lfs3_o_iswrset(h->flags)
+            && !lfs3_o_isdirty(h->flags);
+}
+#endif
+
+// is another handle's session keeping this file dirty?
+#ifndef LFS3_RDONLY
+static bool lfs3_handle_isdirtyelsewhere(const lfs3_t *lfs3,
+        const lfs3_handle_t *h) {
+    for (lfs3_handle_t *h_ = lfs3->handles; h_; h_ = h_->next) {
+        if (h_ != h
+                && lfs3_o_type(h_->flags) == LFS3_TYPE_REG
+                && h_->mdir.mid == h->mdir.mid
+                && lfs3_o_isdirty(h_->flags)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+#endif
+
 // custom attr flags
 static inline bool lfs3_a_islazy(uint32_t flags) {
     return flags & LFS3_A_LAZY;
@@ -7543,6 +7702,12 @@ static inline bool lfs3_m_isrdonly(uint32_t flags) {
     return true;
     #endif
 }
+
+#ifndef LFS3_RDONLY
+static inline bool lfs3_m_issettle(uint32_t flags) {
+    return flags & LFS3_M_SETTLE;
+}
+#endif
 
 #ifdef LFS3_REVPERTURB
 static inline bool lfs3_m_isrevperturb(uint32_t flags) {
@@ -8136,6 +8301,7 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // read both revision counts, try to figure out which block
     // has the most recent revision
     uint32_t revs[2] = {0, 0};
+    bool tie = true;
     for (int i = 0; i < 2; i++) {
         int err = lfs3_bd_read(lfs3, blocks[0], 0, 0,
                 &revs[0], sizeof(uint32_t));
@@ -8143,6 +8309,7 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             return err;
         }
         revs[0] = lfs3_fromle32(&revs[0]);
+        tie = tie && !err;
 
         if (i == 0
                 || err == LFS3_ERR_CORRUPT
@@ -8151,39 +8318,116 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             LFS3_SWAP(uint32_t, &revs[0], &revs[1]);
         }
     }
+    tie = tie && revs[0] == revs[1];
 
     // try to fetch rbyds in the order of most recent to least recent
-    for (int i = 0; i < 2; i++) {
-        int err = lfs3_rbyd_fetch_(lfs3,
+    #ifndef LFS3_RDONLY
+    lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
+    #endif
+    lfs3_finfo_t info;
+    int err = lfs3_rbyd_fetch_(lfs3,
+            &mdir->r, &mdir->gcksumdelta,
+            blocks[0], 0,
+            &info);
+    if (err && err != LFS3_ERR_CORRUPT) {
+        return err;
+    }
+    #ifndef LFS3_RDONLY
+    bool rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
+    #endif
+
+    // equal revision counts? mount settles a pair by copying its log
+    // into the other block, prefer the settled copy, or the copy of a
+    // settled copy, then the longer log, a partial copy has no settled
+    // commit
+    bool fellback = false;
+    if (tie) {
+        lfs3_rbyd_t r_;
+        uint32_t gcksumdelta_;
+        lfs3_finfo_t info_;
+        int err_ = lfs3_rbyd_fetch_(lfs3,
+                &r_, &gcksumdelta_,
+                blocks[1], 0,
+                &info_);
+        if (err_ && err_ != LFS3_ERR_CORRUPT) {
+            return err_;
+        }
+
+        if (!err_
+                && (err
+                    || (info_.lineage
+                        && (!info.lineage
+                            || info_.lineage
+                                == lfs3_settled_next(info.lineage)))
+                    || (info_.lineage == info.lineage
+                        && info_.eoff > info.eoff))) {
+            mdir->r = r_;
+            mdir->gcksumdelta = gcksumdelta_;
+            info = info_;
+            err = 0;
+            LFS3_SWAP(lfs3_block_t, &blocks[0], &blocks[1]);
+        }
+
+        // not a copy? an interrupted settle can leave a copy that reads
+        // whole only some of the time, so don't append here, the next
+        // commit compacts past both, and mount settles again
+        #ifndef LFS3_RDONLY
+        if (!err && !info.lineage) {
+            fellback = true;
+            mdir->r.eoff = -1;
+        }
+        #endif
+
+    // newer block failed? fall back to the older block
+    } else if (err) {
+        LFS3_SWAP(lfs3_block_t, &blocks[0], &blocks[1]);
+        err = lfs3_rbyd_fetch_(lfs3,
                 &mdir->r, &mdir->gcksumdelta,
-                blocks[0], 0);
+                blocks[0], 0,
+                &info);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
 
-        if (err != LFS3_ERR_CORRUPT) {
-            mdir->mid = mid;
-            // keep track of other block for compactions
-            mdir->r.blocks[1] = blocks[1];
-            #ifdef LFS3_DBGMDIRFETCHES
-            LFS3_DEBUG("Fetched mdir %"PRId32" "
-                        "0x{%"PRIx32",%"PRIx32"}.%"PRIx32" w%"PRId32", "
-                        "cksum %"PRIx32,
-                    lfs3_dbgmbid(lfs3, mdir->mid),
-                    mdir->r.blocks[0], mdir->r.blocks[1],
-                    lfs3_rbyd_trunk(&mdir->r),
-                    mdir->r.weight,
-                    mdir->r.cksum);
-            #endif
-            return 0;
+        // a newer block that fails its checksums is an interrupted
+        // compaction, which may read as whole later, so never append
+        // to the older block
+        #ifndef LFS3_RDONLY
+        if (!err && !rderr) {
+            fellback = true;
+            mdir->r.eoff = -1;
         }
-
-        LFS3_SWAP(lfs3_block_t, &blocks[0], &blocks[1]);
-        LFS3_SWAP(uint32_t, &revs[0], &revs[1]);
+        #endif
     }
 
     // could not find a non-corrupt rbyd
-    return LFS3_ERR_CORRUPT;
+    if (err) {
+        return LFS3_ERR_CORRUPT;
+    }
+
+    mdir->mid = mid;
+    // keep track of other block for compactions
+    mdir->r.blocks[1] = blocks[1];
+
+    // let mount know what we found
+    #ifndef LFS3_RDONLY
+    lfs3->mfetch = ((info.settled) ? LFS3_MFETCH_SETTLED : 0)
+            | ((info.torn || fellback) ? LFS3_MFETCH_TORN : 0);
+    #else
+    (void)fellback;
+    #endif
+
+    #ifdef LFS3_DBGMDIRFETCHES
+    LFS3_DEBUG("Fetched mdir %"PRId32" "
+                "0x{%"PRIx32",%"PRIx32"}.%"PRIx32" w%"PRId32", "
+                "cksum %"PRIx32,
+            lfs3_dbgmbid(lfs3, mdir->mid),
+            mdir->r.blocks[0], mdir->r.blocks[1],
+            lfs3_rbyd_trunk(&mdir->r),
+            mdir->r.weight,
+            mdir->r.cksum);
+    #endif
+    return 0;
 }
 
 static int lfs3_data_fetchmdir(lfs3_t *lfs3,
@@ -8464,6 +8708,359 @@ static int lfs3_mdir_swap___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
 }
 #endif
 
+// settle an mdir's log by copying it into the other block
+//
+// the copy reads each byte once, writes the bytes it read, and checks
+// each commit's checksum on them, so a bit a power loss left reading
+// differently each time can only fail the copy, never end up under a
+// fresh checksum
+//
+// the copy keeps the revision count and every byte of every trunk, so
+// offsets, canonical checksums and gstate are unchanged, only cksum
+// tags get our phase, and the last commit gets our own ecksum and the
+// copy's only settled cksum
+//
+// returns LFS3_ERR_CORRUPT if a commit doesn't check, and
+// LFS3_ERR_NOSPC if we can't write the other block
+#ifndef LFS3_RDONLY
+static int lfs3_rbyd_settle_(lfs3_t *lfs3,
+        lfs3_block_t src, lfs3_block_t dst, lfs3_size_t last,
+        uint8_t settled) {
+    // erase the other block
+    int err = lfs3_bd_erase(lfs3, dst);
+    if (err) {
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+    }
+
+    // copy the revision count
+    uint8_t rev_buf[sizeof(uint32_t)];
+    err = lfs3_bd_read(lfs3, src, 0, -1,
+            rev_buf, sizeof(uint32_t));
+    if (err) {
+        return err;
+    }
+
+    lfs3_rbyd_t rbyd = {
+        .blocks={dst, src}, .trunk=0, .weight=0, .eoff=0, .cksum=0};
+    err = lfs3_bd_prog(lfs3, dst, 0,
+            rev_buf, sizeof(uint32_t),
+            &rbyd.cksum);
+    if (err) {
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+    }
+    rbyd.eoff = sizeof(uint32_t);
+
+    // track src's checksums as fetch does, and ours as appends do
+    uint32_t cksum = lfs3_crc32c(0, rev_buf, sizeof(uint32_t));
+    uint32_t canonical = cksum;
+    uint32_t canonical_ = rbyd.cksum;
+    bool perturb = false;
+    lfs3_size_t off = sizeof(uint32_t);
+    lfs3_size_t t0 = sizeof(uint32_t);
+    while (true) {
+        lfs3_tag_t tag;
+        lfs3_rid_t weight;
+        lfs3_size_t size;
+        lfs3_ssize_t d = lfs3_bd_readtag(lfs3, src, off, -1,
+                &tag, &weight, &size,
+                NULL,
+                &cksum);
+        if (d < 0) {
+            return d;
+        }
+        // no writer sets the reserved bit
+        if (tag & 0x80) {
+            return LFS3_ERR_CORRUPT;
+        }
+
+        // end of a commit?
+        if (!lfs3_tag_isalt(tag)
+                && lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM) {
+            if (size < sizeof(uint32_t)
+                    || lfs3_tag_phase(tag) != (src & 0x3)) {
+                return LFS3_ERR_CORRUPT;
+            }
+
+            uint32_t cksum_;
+            err = lfs3_bd_read(lfs3, src, off+d, -1,
+                    &cksum_, sizeof(uint32_t));
+            if (err) {
+                return err;
+            }
+            if (lfs3_fromle32(&cksum_) != cksum) {
+                return LFS3_ERR_CORRUPT;
+            }
+
+            // last commit? end with a settled cksum, and an ecksum, so a
+            // copy too full to compact can still be appended to
+            if (t0 == last) {
+                err = lfs3_rbyd_appendcksum_(lfs3, &rbyd, canonical_,
+                        settled);
+                if (err) {
+                    return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+                }
+
+                return 0;
+            }
+
+            // copy the cksum with our phase, the same perturb bit keeps
+            // the next commit's valid bits the same, only our last
+            // commit is settled
+            if (d != 2+1+4) {
+                // only fully-expanded sizes keep our offsets
+                return LFS3_ERR_NOTSUP;
+            }
+            bool v = lfs3_parity(rbyd.cksum) ^ lfs3_rbyd_isperturb(&rbyd);
+            uint8_t cksum_buf[2+1+4+4];
+            cksum_buf[0] = (uint8_t)(LFS3_TAG_CKSUM >> 8)
+                    | ((uint8_t)v << 7);
+            cksum_buf[1] = (uint8_t)(LFS3_TAG_CKSUM >> 0)
+                    | ((uint8_t)lfs3_tag_perturb(tag) << 2)
+                    | (dst & 0x3);
+            cksum_buf[2] = 0;
+            cksum_buf[3] = 0x80 | (0x7f & (size >>  0));
+            cksum_buf[4] = 0x80 | (0x7f & (size >>  7));
+            cksum_buf[5] = 0x80 | (0x7f & (size >> 14));
+            cksum_buf[6] = 0x00 | (0x7f & (size >> 21));
+            uint32_t cksum__ = rbyd.cksum ^ ((uint32_t)v << 7);
+            cksum__ = lfs3_crc32c(cksum__, cksum_buf, 2+1+4);
+            cksum__ ^= (lfs3_rbyd_isperturb(&rbyd))
+                    ? LFS3_CRC32C_ODDZERO
+                    : 0;
+            lfs3_tole32(cksum__, &cksum_buf[2+1+4]);
+
+            err = lfs3_bd_prog(lfs3, dst, lfs3_rbyd_eoff(&rbyd),
+                    cksum_buf, 2+1+4+4,
+                    NULL);
+            if (err) {
+                return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+            }
+
+            err = lfs3_bd_flush(lfs3, NULL);
+            if (err) {
+                return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+            }
+
+            // on to the next commit
+            perturb = lfs3_tag_perturb(tag);
+            off += d + size;
+            t0 = off;
+            rbyd.eoff = ((lfs3_size_t)perturb << (8*sizeof(lfs3_size_t)-1))
+                    | off;
+            rbyd.cksum = canonical_;
+            cksum = canonical ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
+            continue;
+        }
+
+        // our last commit gets an ecksum of our own, src's describes
+        // src's erased state, checksum it as src did and move on
+        if (t0 == last && tag == LFS3_TAG_ECKSUM) {
+            err = lfs3_bd_cksum(lfs3, src, off+d, -1, size,
+                    &cksum);
+            if (err) {
+                return err;
+            }
+            off += d + size;
+            continue;
+        }
+
+        // copy the tag
+        lfs3_ssize_t d_ = lfs3_bd_progtag(lfs3,
+                dst, lfs3_rbyd_eoff(&rbyd), lfs3_rbyd_isperturb(&rbyd),
+                tag, weight, size,
+                &rbyd.cksum);
+        if (d_ < 0) {
+            return (d_ == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : d_;
+        }
+        // reencoding must not move anything
+        if (d_ != d) {
+            return LFS3_ERR_NOTSUP;
+        }
+        off += d;
+        rbyd.eoff += d;
+
+        // copy the data, checksumming the bytes we copy
+        if (!lfs3_tag_isalt(tag)) {
+            lfs3_size_t size_ = size;
+            while (size_ > 0) {
+                uint8_t *buffer__;
+                lfs3_size_t size__;
+                err = lfs3_bd_prognext(lfs3,
+                        dst, lfs3_rbyd_eoff(&rbyd), size_,
+                        &buffer__, &size__,
+                        NULL);
+                if (err) {
+                    return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_NOSPC : err;
+                }
+
+                err = lfs3_bd_read(lfs3, src, off, size_,
+                        buffer__, size__);
+                if (err) {
+                    return err;
+                }
+
+                cksum = lfs3_crc32c(cksum, buffer__, size__);
+                rbyd.cksum = lfs3_crc32c(rbyd.cksum, buffer__, size__);
+                off += size__;
+                rbyd.eoff += size__;
+                size_ -= size__;
+            }
+        }
+
+        // trunks make up the canonical checksum
+        if (lfs3_tag_istrunk(tag)) {
+            canonical = cksum ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
+            canonical_ = rbyd.cksum;
+        }
+    }
+}
+#endif
+
+// how many times we read an mdir's last commit before trusting it,
+// and how many times we try to copy it
+#ifndef LFS3_SETTLE_CKS
+#define LFS3_SETTLE_CKS 8
+#endif
+#ifndef LFS3_SETTLE_TRIES
+#define LFS3_SETTLE_TRIES 4
+#endif
+
+// settle an mdir that a power loss may have left reading differently
+// each time, see lfs3_rbyd_settle_
+//
+// a last commit that doesn't read the same every time was being
+// written at the power loss, so we may leave it out, as if torn
+//
+// this doesn't touch gstate or lfs3_t's in-RAM state, mount refetches
+// after settling
+#ifndef LFS3_RDONLY
+static int lfs3_mdir_settle_(lfs3_t *lfs3,
+        lfs3_block_t src, lfs3_block_t dst) {
+    // find our commits, reading them several times, a last commit that
+    // comes and goes was being written at the power loss, the shortest
+    // log we see is the one we can trust
+    lfs3_rbyd_t rbyd;
+    lfs3_finfo_t info;
+    int err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
+    if (err) {
+        return err;
+    }
+    bool consistent = true;
+    uint8_t lineage = info.lineage;
+    for (int i = 1; i < LFS3_SETTLE_CKS; i++) {
+        lfs3_finfo_t info_;
+        err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info_);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+        // no commit at all? our only commit comes and goes
+        if (err) {
+            return LFS3_ERR_CORRUPT;
+        }
+
+        // our copy must follow any settled commit we see, even one that
+        // comes and goes
+        if (info_.lineage) {
+            lineage = info_.lineage;
+        }
+
+        if (info_.eoff != info.eoff) {
+            consistent = false;
+            if (info_.eoff < info.eoff) {
+                info = info_;
+            }
+        }
+    }
+
+    // try to copy everything, but if our last commit keeps failing
+    // the copy, it comes and goes too, so leave it out, unless it's our
+    // only commit, then we've already erased the older state in our
+    // other block and can only keep trying
+    lfs3_size_t last = info.t0;
+    for (int i = 0; i < 4*LFS3_SETTLE_TRIES; i++) {
+        if (i == LFS3_SETTLE_TRIES && consistent && info.t1) {
+            last = info.t1;
+        } else if (i == 2*LFS3_SETTLE_TRIES && info.t1) {
+            break;
+        }
+
+        err = lfs3_rbyd_settle_(lfs3, src, dst, last,
+                lfs3_settled_next(lineage));
+        if (err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+    }
+
+    return err;
+}
+#endif
+
+#ifndef LFS3_RDONLY
+static int lfs3_mdir_settle(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
+    lfs3_block_t src = mdir->r.blocks[0];
+    lfs3_block_t dst = mdir->r.blocks[1];
+
+    // our other block went bad? leave this mdir be
+    #ifdef LFS3_GBMAP
+    if (lfs3_alloc_isbad(lfs3, dst)) {
+        LFS3_WARN("Can't settle mdir 0x{%"PRIx32",%"PRIx32"}, bad block",
+                src, dst);
+        return 0;
+    }
+    #endif
+
+    lfs3_rbyd_t rbyd;
+    lfs3_finfo_t info = {.count=0};
+    int err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
+    if (err && err != LFS3_ERR_CORRUPT) {
+        return err;
+    }
+
+    if (!err) {
+        err = lfs3_mdir_settle_(lfs3, src, dst);
+    }
+
+    // our only commit doesn't read the same twice? it's an interrupted
+    // compaction, settle the older block instead, unless we already
+    // tried copying, which erased it
+    if (err == LFS3_ERR_CORRUPT && info.count <= 1) {
+        lfs3_finfo_t info_;
+        int err_ = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, dst, 0, &info_);
+        if (err_ && err_ != LFS3_ERR_CORRUPT) {
+            return err_;
+        }
+        if (!err_) {
+            err = lfs3_mdir_settle_(lfs3, dst, src);
+        }
+    }
+
+    if (err) {
+        // can't write the other block, or no copy checks? leave this
+        // mdir be
+        if (err == LFS3_ERR_NOSPC
+                || err == LFS3_ERR_NOTSUP
+                || err == LFS3_ERR_CORRUPT
+                || err == LFS3_ERR_RANGE) {
+            LFS3_WARN("Can't settle mdir 0x{%"PRIx32",%"PRIx32"} (%d)",
+                    src, dst, err);
+            return 0;
+        }
+        return err;
+    }
+
+    // make sure our copy is on disk before anything builds on it
+    err = lfs3_bd_sync(lfs3);
+    if (err) {
+        return err;
+    }
+
+    LFS3_INFO("Settled mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"}",
+            lfs3_dbgmbid(lfs3, mdir->mid),
+            src, dst);
+    return 0;
+}
+#endif
+
 // low-level mdir commit, does not handle mtree/mlist/compaction/etc
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
@@ -8733,7 +9330,7 @@ static int lfs3_mdir_commit___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
     }
 
     // finalize commit
-    int err = lfs3_rbyd_appendcksum_(lfs3, &mdir_->r, cksum);
+    int err = lfs3_rbyd_appendcksum_(lfs3, &mdir_->r, cksum, 0);
     if (err) {
         return err;
     }
@@ -8891,6 +9488,10 @@ static const lfs3_rattr_t *lfs3_mdir_rmrattr(const lfs3_rattr_t *rattrs) {
 }
 #endif
 
+// needed in lfs3_mdir_compact___
+static inline int lfs3_data_readwcompat(lfs3_t *lfs3, lfs3_data_t *data,
+        lfs3_wcompat_t *wcompat);
+
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_compact___(lfs3_t *lfs3,
         lfs3_mdir_t *mdir_, const lfs3_mdir_t *mdir,
@@ -8942,6 +9543,31 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                     || tag == lfs3_tag_key(lfs3_rattr_tag(rm)))) {
             continue;
         }
+
+        // settled copies on disk? compacting our mroot sets the SETTLED
+        // wcompat flag, so drivers that don't prefer settled copies
+        // don't write to them, setting it in a commit of its own could
+        // leave a full mroot unable to commit
+        #ifndef LFS3_RDONLY
+        if (tag == LFS3_TAG_WCOMPAT && rid == -1
+                && (lfs3->msettle & LFS3_MSETTLE_SEEN)
+                && lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0) {
+            lfs3_wcompat_t wcompat;
+            int err = lfs3_data_readwcompat(lfs3, &data, &wcompat);
+            if (err) {
+                return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_SRCCORRUPT : err;
+            }
+
+            err = lfs3_rbyd_appendcompactrattr(lfs3, &mdir_->r,
+                    LFS3_RATTRS(
+                        LFS3_RATTR(2, tag, 0, LFS3_FROM_LE32),
+                        LFS3_RATTR_ARG(wcompat | LFS3_WCOMPAT_SETTLED)));
+            if (err) {
+                return err;
+            }
+            continue;
+        }
+        #endif
 
         // found an inlined shrub? we need to compact the shrub as well to
         // bring it along with us
@@ -9033,6 +9659,22 @@ static int lfs3_mdir_commit__(lfs3_t *lfs3,
     for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
         if (lfs3_mdir_cmp(&h->mdir, mdir) == 0) {
             lfs3_mdir_claim(&h->mdir);
+        }
+    }
+
+    // a settled copy compacts before we build on it, unless it's too
+    // full to compact in place, there we append as to any log, it's
+    // only at risk if the settle itself was interrupted
+    if (lfs3_rbyd_issettled(&mdir_->r)) {
+        lfs3_ssize_t estimate = lfs3_mdir_estimate___(lfs3, mdir,
+                start_rid, end_rid,
+                NULL);
+        if (estimate < 0) {
+            return estimate;
+        }
+
+        if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2) {
+            mdir_->r.eoff &= ~LFS3_RBYD_ISSETTLED;
         }
     }
 
@@ -10792,6 +11434,10 @@ again:;
     // compacting mdirs?
     if (lfs3_t_compact(mgc->t.h.flags)
             && tag == LFS3_TAG_MDIR
+            // settled copies compact on their next write, compacting
+            // them here would only unsettle them
+            && !lfs3_rbyd_issettled(
+                &((lfs3_mdir_t*)bptr_->d.u.buffer)->r)
             // exceed compaction threshold?
             && lfs3_rbyd_eoff(&((lfs3_mdir_t*)bptr_->d.u.buffer)->r)
                 > ((lfs3->cfg->gc_compact_thresh)
@@ -13457,7 +14103,7 @@ static int lfs3_file_fetch(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
 static void lfs3_file_close_(lfs3_t *lfs3, lfs3_file_t *file);
 #ifndef LFS3_RDONLY
 static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
-        const lfs3_rattr_t *rname);
+        const lfs3_rattr_t *rname, bool closing);
 #endif
 
 static int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
@@ -13590,7 +14236,8 @@ static int lfs3_file_opencfg_(lfs3_t *lfs3, lfs3_file_t *file,
                     LFS3_RATTR(3, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
                     LFS3_RATTR_ARG(did),
                     LFS3_RATTR_ARG(path),
-                    LFS3_RATTR_NULL));
+                    LFS3_RATTR_NULL),
+                    false);
             if (err) {
                 goto failed;
             }
@@ -13754,16 +14401,17 @@ static void lfs3_file_close_(lfs3_t *lfs3, lfs3_file_t *file) {
 }
 
 // needed in lfs3_file_close
-int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_sync__(lfs3_t *lfs3, lfs3_file_t *file, bool closing);
 
 int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
 
-    // don't call lfs3_file_sync if we're readonly or desynced
+    // don't call lfs3_file_sync if we're readonly or desynced, our last
+    // sync ends our write session
     int err = 0;
     if (!lfs3_o_isrdonly(file->b.h.flags)
             && !lfs3_o_isdesync(file->b.h.flags)) {
-        err = lfs3_file_sync(lfs3, file);
+        err = lfs3_file_sync__(lfs3, file, true);
     }
 
     // clean up resources
@@ -15249,10 +15897,10 @@ failed:;
 // this LFS3_NOINLINE is to force lfs3_file_sync_ off the stack hot-path
 LFS3_NOINLINE
 static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
-        const lfs3_rattr_t *rname) {
+        const lfs3_rattr_t *rname, bool closing) {
     // build a commit of any pending file metadata
-    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(16,
-            LFS3_IFDEF_CKMETAPARITY(16, 14))];
+    lfs3_rattr_t rattrs[LFS3_IFDEF_CKDATACKSUMS(17,
+            LFS3_IFDEF_CKMETAPARITY(17, 15))];
     lfs3_rattr_t shrub_rattrs[5];
 
     // uncreated files must be unsync
@@ -15406,6 +16054,26 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
         *r++ = LFS3_RATTR_ARG(file->cfg->attr_count);
     }
 
+    // first commit of our write session? mark our file dirty, closing?
+    // clear the mark, unless another handle's session still holds it
+    bool mark = false;
+    bool unmark = false;
+    if (closing) {
+        unmark = lfs3_o_isdirty(file->b.h.flags)
+                && !lfs3_handle_isdirtyelsewhere(lfs3, &file->b.h);
+    } else {
+        mark = r > rattrs && lfs3_handle_needsmark(&file->b.h);
+    }
+    // only clearing our mark? our data is synced, so a failure here
+    // leaves the mark to lfs3_fs_mkconsistent, a full or failing disk
+    // must still be able to close a synced file
+    bool onlyunmark = unmark && r == rattrs;
+    if (mark) {
+        *r++ = LFS3_RATTR(1, LFS3_TAG_DIRTY, 0);
+    } else if (unmark) {
+        *r++ = LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_DIRTY, 0);
+    }
+
     // pending metadata? looks like we need to write to disk
     if (r > rattrs) {
         // make sure we don't overflow our rattr buffer
@@ -15414,9 +16082,22 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
                 <= sizeof(rattrs)/sizeof(lfs3_rattr_t));
 
         // and commit!
+        int syncerr = lfs3->syncerr;
         int err = lfs3_mdir_commit(lfs3, &file->b.h.mdir, rattrs);
+        if (onlyunmark) {
+            lfs3->syncerr = syncerr;
+            if (err) {
+                return 0;
+            }
+        }
         if (err) {
             return err;
+        }
+
+        if (mark) {
+            file->b.h.flags |= LFS3_o_DIRTY;
+        } else if (unmark) {
+            file->b.h.flags &= ~LFS3_o_DIRTY;
         }
     }
 
@@ -15504,8 +16185,9 @@ static int lfs3_file_sync_(lfs3_t *lfs3, lfs3_file_t *file,
 }
 #endif
 
-int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
+static int lfs3_file_sync__(lfs3_t *lfs3, lfs3_file_t *file, bool closing) {
     (void)lfs3;
+    (void)closing;
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
 
     // removed? ignore sync requests
@@ -15556,7 +16238,7 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
     // the use of a second function here is mainly to isolate the
     // stack costs of lfs3_file_flush and lfs3_file_sync_
     //
-    err = lfs3_file_sync_(lfs3, file, NULL);
+    err = lfs3_file_sync_(lfs3, file, NULL, closing);
     if (err) {
         goto failed;
     }
@@ -15579,6 +16261,10 @@ failed:;
     file->b.h.flags |= LFS3_O_DESYNC;
     return lfs3_fs_syncerr(lfs3, err);
     #endif
+}
+
+int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
+    return lfs3_file_sync__(lfs3, file, false);
 }
 
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file) {
@@ -16089,6 +16775,7 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, 0)
                 | LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, 0)
                 | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)
+                | LFS3_IFDEF_RDONLY(0, LFS3_M_SETTLE)
                 | LFS3_IFDEF_RDONLY(0,
                     LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0)))) == 0);
     // TODO this all needs to be cleaned up
@@ -16386,6 +17073,8 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
     lfs3->syncerr = 0;
+    lfs3->mfetch = 0;
+    lfs3->msettle = 0;
     #endif
 
     // TODO are these zeros accomplished by zerogdelta in mountinited?
@@ -16472,13 +17161,22 @@ static inline lfs3_wcompat_t lfs3_wcompat(const lfs3_t *lfs3) {
             | LFS3_IFDEF_GBMAP(
                 (lfs3_f_isgbmap(lfs3->flags)) ? LFS3_WCOMPAT_GBMAP : 0,
                 0)
+            | LFS3_IFDEF_RDONLY(
+                0,
+                (lfs3->msettle
+                        & (LFS3_MSETTLE_WCOMPAT | LFS3_MSETTLE_SEEN))
+                    ? LFS3_WCOMPAT_SETTLED
+                    : 0)
             | LFS3_WCOMPAT_DIR;
 }
 
+// SETTLED is set by the first mroot compaction after a mount finds a
+// settled copy, every build understands it
 static inline lfs3_wcompat_t lfs3_wmask(const lfs3_t *lfs3) {
     (void)lfs3;
     return ~(
-            LFS3_IFYES_GBMAP(0, LFS3_WCOMPAT_GBMAP, 0));
+            LFS3_WCOMPAT_SETTLED
+                | LFS3_IFYES_GBMAP(0, LFS3_WCOMPAT_GBMAP, 0));
 }
 
 static inline lfs3_ocompat_t lfs3_ocompat(const lfs3_t *lfs3) {
@@ -16680,6 +17378,12 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
     }
     #endif
 
+    #ifndef LFS3_RDONLY
+    if (wcompat_ & LFS3_WCOMPAT_SETTLED) {
+        lfs3->msettle |= LFS3_MSETTLE_WCOMPAT;
+    }
+    #endif
+
     // we don't bother to check for any ocompatflags, we would just
     // ignore these anyways
 
@@ -16818,6 +17522,76 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
     return 0;
 }
 
+// does any file in this mdir carry a dirty mark?
+#ifndef LFS3_RDONLY
+static lfs3_sbool_t lfs3_mdir_isdirty(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
+    lfs3_srid_t rid = 0;
+    while (rid < (lfs3_srid_t)mdir->r.weight) {
+        // a stickynote is a new file's mark
+        lfs3_stag_t tag = lfs3_rbyd_lookup(lfs3, &mdir->r,
+                rid, LFS3_TAG_STICKYNOTE,
+                NULL);
+        if (tag < 0 && tag != LFS3_ERR_NOENT) {
+            return tag;
+        }
+        if (tag == LFS3_TAG_STICKYNOTE) {
+            return true;
+        }
+
+        lfs3_srid_t rid_;
+        tag = lfs3_rbyd_lookupnext(lfs3, &mdir->r,
+                rid, LFS3_TAG_DIRTY,
+                &rid_, NULL, NULL);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+            return tag;
+        }
+
+        if (rid_ == rid && tag == LFS3_TAG_DIRTY) {
+            return true;
+        }
+
+        // lookupnext may have skipped to a later rid
+        rid = (rid_ > rid) ? rid_ : rid+1;
+    }
+
+    return false;
+}
+#endif
+
+// does mount need to settle this mdir? this uses what the fetch that
+// found the mdir found, so call it right after
+#ifndef LFS3_RDONLY
+static lfs3_sbool_t lfs3_mdir_needssettle(lfs3_t *lfs3,
+        const lfs3_mdir_t *mdir, uint8_t mfetch, uint8_t msettle) {
+    // an interrupted write?
+    if (mfetch & LFS3_MFETCH_TORN) {
+        return true;
+    }
+
+    // settled and not written since?
+    if (mfetch & LFS3_MFETCH_SETTLED) {
+        return false;
+    }
+
+    // settling everything written?
+    if (lfs3_m_issettle(lfs3->flags)) {
+        return true;
+    }
+
+    // mroots are on the path to every mdir, settle these if any file
+    // is dirty
+    if (mdir->mid <= -1 && (msettle & LFS3_MSETTLE_DIRTY)) {
+        return true;
+    }
+
+    // otherwise only settle mdirs with dirty files
+    return lfs3_mdir_isdirty(lfs3, mdir);
+}
+#endif
+
 static int lfs3_mountinited(lfs3_t *lfs3) {
     // TODO should these be in lfs3_init?
 
@@ -16834,6 +17608,11 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
     // zero gcksum/gdeltas, we'll read these from our mdirs
     lfs3->gcksum = 0;
     lfs3_fs_zerogdelta(lfs3);
+
+    // and what a power loss may have left for us to settle
+    #ifndef LFS3_RDONLY
+    lfs3->msettle = 0;
+    #endif
 
     // traverse the mtree rooted at mroot 0x{1,0}
     //
@@ -16856,6 +17635,32 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
         // found an mdir?
         if (tag == LFS3_TAG_MDIR) {
             lfs3_mdir_t *mdir = (lfs3_mdir_t*)bptr.d.u.buffer;
+
+            // does a power loss mean we need to settle anything?
+            #ifndef LFS3_RDONLY
+            if (!lfs3_m_isrdonly(lfs3->flags)) {
+                uint8_t mfetch = lfs3->mfetch;
+                if (mfetch & LFS3_MFETCH_SETTLED) {
+                    lfs3->msettle |= LFS3_MSETTLE_SEEN;
+                }
+                if (mfetch & LFS3_MFETCH_TORN) {
+                    lfs3->msettle |= LFS3_MSETTLE_TORN;
+                } else if (!(mfetch & LFS3_MFETCH_SETTLED)) {
+                    if (lfs3_m_issettle(lfs3->flags)) {
+                        lfs3->msettle |= LFS3_MSETTLE_SETTLE;
+                    } else {
+                        lfs3_sbool_t dirty = lfs3_mdir_isdirty(lfs3, mdir);
+                        if (dirty < 0) {
+                            return dirty;
+                        }
+                        if (dirty) {
+                            lfs3->msettle |= LFS3_MSETTLE_DIRTY;
+                        }
+                    }
+                }
+            }
+            #endif
+
             // found an mroot?
             if (mdir->mid <= -1) {
                 // check for the magic string, all mroot should have this
@@ -17032,6 +17837,79 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
     return 0;
 }
 
+// settle any mdirs a power loss may have left reading differently each
+// time, before anything is built on them
+//
+// the traversal reaches mroots first, they're on the path to
+// everything, settling doesn't update lfs3_t, so we refetch everything
+// after
+#ifndef LFS3_RDONLY
+static int lfs3_mountsettle(lfs3_t *lfs3) {
+    uint8_t msettle = lfs3->msettle;
+    bool settled = false;
+
+    lfs3_mtrv_t mtrv;
+    lfs3_mtrv_init(&mtrv, LFS3_T_RDONLY | LFS3_T_MTREEONLY);
+    while (true) {
+        lfs3_bptr_t bptr;
+        lfs3_stag_t tag = lfs3_mtree_traverse(lfs3, &mtrv,
+                &bptr);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+            return tag;
+        }
+
+        if (tag == LFS3_TAG_MDIR) {
+            lfs3_mdir_t *mdir = (lfs3_mdir_t*)bptr.d.u.buffer;
+            lfs3_sbool_t settle = lfs3_mdir_needssettle(lfs3, mdir,
+                    lfs3->mfetch, msettle);
+            if (settle < 0) {
+                return settle;
+            }
+
+            if (settle) {
+                int err = lfs3_mdir_settle(lfs3, mdir);
+                if (err) {
+                    return err;
+                }
+                settled = true;
+
+                // continue the traversal from what we settled, the
+                // block we copied may not read the same twice
+                err = lfs3_mdir_fetch(lfs3, mdir, mdir->mid, mdir->r.blocks);
+                if (err) {
+                    return err;
+                }
+            }
+        }
+    }
+
+    // refetch everything, mount narrows our limits and sets our gbmap
+    // flag to what's on disk, so start over from our configuration
+    if (settled) {
+        #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+        lfs3->flags &= ~LFS3_I_GBMAP;
+        #endif
+        lfs3->block_count = lfs3->cfg->block_count;
+        lfs3->name_limit = (lfs3->cfg->name_limit)
+                ? lfs3->cfg->name_limit
+                : LFS3_NAME_MAX;
+        lfs3->file_limit = (lfs3->cfg->file_limit)
+                ? lfs3->cfg->file_limit
+                : LFS3_FILE_MAX;
+
+        int err = lfs3_mountinited(lfs3);
+        if (err) {
+            return err;
+        }
+    }
+
+    return 0;
+}
+#endif
+
 int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
         const struct lfs3_cfg *cfg) {
     #ifdef LFS3_YES_RDONLY
@@ -17079,11 +17957,13 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
                 | LFS3_IFDEF_RDONLY(0,
                     LFS3_IFDEF_PREERASE(LFS3_M_PREERASE, 0))
                 | LFS3_IFDEF_RDONLY(0, LFS3_M_COMPACT)
+                | LFS3_IFDEF_RDONLY(0, LFS3_M_SETTLE)
                 | LFS3_M_CKMETA
                 | LFS3_M_CKDATA)) == 0);
     // these flags require a writable filesystem
     #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_ismkconsistent(flags));
+    LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_m_issettle(flags));
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_islookahead(flags));
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_ispreerase(flags));
@@ -17107,7 +17987,8 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
                     | LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, 0)
                     | LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, 0)
                     | LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, 0)
-                    | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)),
+                    | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)
+                    | LFS3_IFDEF_RDONLY(0, LFS3_M_SETTLE)),
             cfg);
     if (err) {
         return err;
@@ -17117,6 +17998,18 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
     if (err) {
         goto failed;
     }
+
+    // settle anything a power loss may have left reading differently
+    // each time
+    #ifndef LFS3_RDONLY
+    if (!lfs3_m_isrdonly(lfs3->flags)
+            && (lfs3->msettle & LFS3_MSETTLE_NEEDED)) {
+        err = lfs3_mountsettle(lfs3);
+        if (err) {
+            goto failed;
+        }
+    }
+    #endif
 
     // run gc if requested
     if (flags & (
@@ -17322,7 +18215,7 @@ static int lfs3_formatinited(lfs3_t *lfs3) {
         }
 
         // and commit
-        err = lfs3_rbyd_appendcksum_(lfs3, &rbyd, cksum);
+        err = lfs3_rbyd_appendcksum_(lfs3, &rbyd, cksum, 0);
         if (err) {
             return err;
         }
@@ -17475,6 +18368,7 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
                     | LFS3_IFDEF_RDONLY(0, LFS3_I_MKCONSISTENT)
                     | LFS3_IFDEF_RDONLY(0, LFS3_I_LOOKAHEAD)
                     | LFS3_IFDEF_RDONLY(0, LFS3_I_COMPACT)
+                    | LFS3_IFDEF_RDONLY(0, LFS3_I_SETTLE)
                     | LFS3_I_CKMETA
                     | LFS3_I_CKDATA
                     | LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)
@@ -17636,13 +18530,39 @@ static int lfs3_mdir_mkconsistent(lfs3_t *lfs3, lfs3_mdir_t *mdir) {
         lfs3_stag_t tag = lfs3_rbyd_lookup(lfs3, &mdir->r,
                 lfs3_mrid(lfs3, mdir->mid), LFS3_TAG_STICKYNOTE,
                 NULL);
-        if (tag < 0) {
-            if (tag == LFS3_ERR_NOENT) {
-                mdir->mid += 1;
-                continue;
-            }
+        if (tag < 0 && tag != LFS3_ERR_NOENT) {
             err = tag;
             goto failed;
+        }
+
+        // not a stickynote, but a closed file with a dirty mark? a power
+        // loss ended its session, and mount has settled what it wrote
+        if (tag == LFS3_ERR_NOENT) {
+            tag = lfs3_rbyd_lookup(lfs3, &mdir->r,
+                    lfs3_mrid(lfs3, mdir->mid), LFS3_TAG_DIRTY,
+                    NULL);
+            if (tag < 0) {
+                if (tag == LFS3_ERR_NOENT) {
+                    mdir->mid += 1;
+                    continue;
+                }
+                err = tag;
+                goto failed;
+            }
+
+            LFS3_INFO("Clearing dirty mark %"PRId32".%"PRId32,
+                    lfs3_dbgmbid(lfs3, mdir->mid),
+                    lfs3_dbgmrid(lfs3, mdir->mid));
+
+            err = lfs3_mdir_commit(lfs3, mdir, LFS3_RATTRS(
+                    LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_DIRTY, 0),
+                    LFS3_RATTR_NULL));
+            if (err) {
+                goto failed;
+            }
+
+            mdir->mid += 1;
+            continue;
         }
 
         // we found an orphaned stickynote, remove

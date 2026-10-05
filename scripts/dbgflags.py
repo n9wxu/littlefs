@@ -57,6 +57,7 @@ o_UNSYNC        = 0x02000000  # i-  File's metadata does not match disk
 o_UNCRYST       = 0x01000000  # i-  File's leaf not fully crystallized
 o_UNGRAFT       = 0x00800000  # i-  File's leaf does not match disk
 o_UNFLUSH       = 0x00400000  # i-  File's cache does not match disk
+o_DIRTY         = 0x00080000  # i-  File's dirty mark is on disk
 
 # File seek flags
 SEEK_MODE       = 0xffffffff  # -m  Seek mode
@@ -111,6 +112,7 @@ M_PREERASE      = 0x00000400  # y-  Try to pre-erase free blocks
 M_COMPACT       = 0x00000800  # y-  Compact metadata logs
 M_CKMETA        = 0x00001000  # y-  Check metadata checksums
 M_CKDATA        = 0x00002000  # y-  Check metadata + data checksums
+M_SETTLE        = 0x00004000  # --  Settle metadata written since last mount
 M_CK            = 0x00003000  # a-  Alias for all check work
 M_GC            = 0x00003f00  # a-  Alias for all gc work
 
@@ -146,6 +148,7 @@ I_CKPROGS       = 0x00100000  # --  Mounted with LFS3_M_CKPROGS
 I_CKFETCHES     = 0x00200000  # --  Mounted with LFS3_M_CKFETCHES
 I_CKMETAPARITY  = 0x00400000  # --  Mounted with LFS3_M_CKMETAPARITY
 I_CKDATACKSUMS  = 0x01000000  # --  Mounted with LFS3_M_CKDATACKSUMS
+I_SETTLE        = 0x00004000  # --  Mounted with LFS3_M_SETTLE
 
 I_MKCONSISTENT  = 0x00000100  # --  Filesystem needs mkconsistent to write
 I_LOOKAHEAD     = 0x00000200  # --  Lookahead buffer is not full
@@ -208,6 +211,7 @@ WCOMPAT_NONSTANDARD = 0x00000001  # --  Non-standard filesystem format
 WCOMPAT_RDONLY      = 0x00000002  # --  Writing is disallowed
 WCOMPAT_GCKSUM      = 0x00040000  # --  Global-checksum in use
 WCOMPAT_GBMAP       = 0x00080000  # --  Global on-disk block-map in use
+WCOMPAT_SETTLED     = 0x00100000  # --  Pairs may hold settled copies
 WCOMPAT_DIR         = 0x01000000  # --  Directory file types in use
 wcompat_OVERFLOW    = 0x80000000  # i-  Can't represent all flags
 

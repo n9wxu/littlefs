@@ -505,7 +505,9 @@ building a tree during compaction. Lookups never return a null tag.
 The revision count is a le32 at offset 0 of every rbyd. The only strict
 requirement on it is that, in a [metadata pair](#metadata-pairs), the most
 recently written block has the more recent revision count, compared with
-sequence arithmetic, `(int32_t)(a - b) > 0`, to allow overflow.
+sequence arithmetic, `(int32_t)(a - b) > 0`, to allow overflow. The one
+exception is a [settled copy](#settled-copies), which keeps the revision
+count of the block it copies.
 
 Readers must not depend on any other structure in the revision count. With
 that said, the driver crams a few optional features into it:
@@ -983,10 +985,14 @@ To find the active block, a reader:
    can't be read is treated as older.
 
 2. Fetches the block with the more recent revision count, compared with
-   sequence arithmetic, first. If the revision counts are equal, the driver
-   tries the second block of the mptr first.
+   sequence arithmetic, first. If the revision counts are equal, the pair
+   holds a [settled copy](#settled-copies), and the reader fetches both
+   and picks one as described there.
 
 3. If that block has no valid commit, fetches the other block instead.
+   A writer must not append to that older block: the newer block is an
+   interrupted compaction, and an interrupted program can read as whole
+   at a later fetch. The next commit compacts.
 
 4. If neither block has a valid commit, the metadata pair is corrupt.
 
@@ -995,6 +1001,50 @@ an interrupted compaction, or garbage. When a new metadata pair is
 allocated, its second block is not even erased. This is why the writer
 derives each new revision count from the other block's revision count, see
 [Revision counts](#revision-counts).
+
+### Settled copies
+
+A program interrupted by a power loss can leave bits that read 0 on one
+read and 1 on the next until the block is erased. The commit being written
+can then pass its checksum at one fetch and fail it at the next, and any
+commit appended after it is lost with it. To avoid building on such a
+commit, the driver settles a metadata pair at mount: it copies the active
+block into the other block, commit by commit, checking each commit's
+checksum on the bytes it copies, and stops before the first commit that
+fails or that reads differently between fetches. The copy:
+
+- keeps the source's revision count, so the global checksum is unchanged,
+- copies every tag byte for byte, re-emits each `CKSUM` with the copy's
+  phase and the source's perturb bit and with its settled field cleared,
+  and recomputes the checksums over the copied bytes,
+- ends its last commit with an `ECKSUM` of its own in place of the
+  source's, and a `CKSUM` whose settled field
+  ([`CKSUM`](#0x3000-lfs3_tag_cksum) bits 3-4) holds a generation from 1
+  to 3: the successor of the source's (1 after 0 or 3, 2 after 1, 3 after
+  2).
+
+A block's generation is the settled field of the one settled commit in its
+log, 0 if it has none. A copy that a power loss interrupted has none,
+unless its last commit landed. A reader that finds equal revision counts
+fetches both blocks and takes, in order:
+
+1. the only block with a valid commit,
+2. the block with a generation, when the other has none,
+3. the block whose generation is the successor of the other's,
+4. the block with the longer log.
+
+A writer compacts a pair whose last commit is settled before appending to
+it, unless compacting needs more than half a block, then it appends as to
+any log; the settled commit stays the block's generation. A writer never
+appends to a block without a generation in a pair with equal revision
+counts: an interrupted settle can leave a copy whose last commit reads as
+whole at one fetch and torn at the next, and the next commit must compact
+past both.
+
+A metadata pair whose last commit is settled has not been written since it
+was settled. After a mount finds a settled copy, the driver sets the
+`SETTLED` [wcompat flag](#wcompat-flags) the next time it compacts the
+mroot, so drivers that don't apply these rules don't write the filesystem.
 
 ### Metadata pair contents
 
@@ -2031,10 +2081,13 @@ reserved and not implemented.
 | `0x00000002` | `RDONLY`      | Writing is disallowed                |           |
 | `0x00040000` | `GCKSUM`      | Global-checksum in use               | always    |
 | `0x00080000` | `GBMAP`       | Global on-disk block-map in use      | optional  |
+| `0x00100000` | `SETTLED`     | Pairs may hold settled copies        | optional  |
 | `0x01000000` | `DIR`         | Directory files in use               | always    |
 
-So the driver's wcompat flags are `0x01040000`, or `0x010c0000` with a
-gbmap.
+So a freshly formatted filesystem's wcompat flags are `0x01040000`, or
+`0x010c0000` with a gbmap. The driver adds `SETTLED` when it compacts the
+mroot after finding a [settled copy](#settled-copies), and never removes
+it.
 
 #### ocompat flags
 
@@ -2083,7 +2136,7 @@ with other drivers, and notes where the v0.0 driver differs.
    any wcompat flag it doesn't understand, but may mount it read-only. The
    v0.0 driver requires the wcompat flags to equal its own set exactly,
    except for `GBMAP`, which it accepts either way when built with gbmap
-   support. On a mismatch it refuses to mount read-write, but can still
+   support, and `SETTLED`, which it accepts either way. On a mismatch it refuses to mount read-write, but can still
    mount read-only.
 
 4. **ocompat flags** - May be ignored. The v0.0 driver never reads them.
@@ -2116,18 +2169,27 @@ with other drivers, and notes where the v0.0 driver differs.
 
 9. **Unknown checksum tags** - Checksum tags (`0x3000-0x3fff`) other than
    `CKSUM`, `ECKSUM`, and `GCKSUMDELTA`, such as `NOTE`, are included in
-   the commit checksum and otherwise ignored.
+   the commit checksum and otherwise ignored. A reader that ignores the
+   settled field of `CKSUM` reads every block correctly, but must not
+   write a filesystem that holds settled copies, which the `SETTLED`
+   wcompat flag says once the driver has compacted the mroot.
 
-10. **Custom attributes** - Attributes are opaque, and a driver must keep
+10. **Entry state tags** - Tags in `0x0500-0x05ff`, such as `DIRTY`, record
+    state of an entry that a driver may ignore. A driver that ignores
+    them keeps them on compaction (rule 13) and drops them with their
+    entry; a stale `DIRTY` mark costs a later driver one settle and is then
+    removed.
+
+11. **Custom attributes** - Attributes are opaque, and a driver must keep
     working when any attribute is missing.
 
-11. **Reserved bits** - Writers must write bit 7 of every tag as 0, must
+12. **Reserved bits** - Writers must write bit 7 of every tag as 0, must
     not write the `10` tag mode, and must write struct tags with the exact
     values listed here, including their low "redundancy" bits. The v0.0
     driver does not check bit 7 when reading, and treats a struct tag with
     different low bits as a different, unknown tag.
 
-12. **Preserving unknown tags** - When the driver compacts an rbyd, it
+13. **Preserving unknown tags** - When the driver compacts an rbyd, it
     copies every tag in the tree, in order, including tags it doesn't
     understand. Attributes and other tags that the driver doesn't interpret
     survive compaction.
@@ -2176,6 +2238,7 @@ tag      name          rid    weight      data
 0x0441   BMINUSE       >=0    blocks      none
 0x0442   BMERASED      >=0    blocks      optional ecksum
 0x0443   BMBAD         >=0    blocks      none
+0x0500   DIRTY         >=0    0           none
 0x06xx   UATTR         any    0           bytes
 0x07xx   SATTR         any    0           bytes
 0x1xxx   SHRUB         -      -           shrub variant of a normal tag
@@ -2722,6 +2785,26 @@ A range of bad blocks. Reserved for planned bad-block tracking: the driver
 never writes it, and treats it as in use.
 
 ---
+#### `0x0500` LFS3_TAG_DIRTY
+
+bits: `v--- -1-1 +--- ----`
+
+Marks a regular file whose write session is open. The first metadata
+commit of a session on an existing file (a shrub commit or a sync), or the
+sync that creates a new file, adds it at the file's rid, with weight 0 and
+no data, and the commit that ends the session (`lfs3_file_close`) removes
+it. Until that first sync a new file is a `STICKYNOTE`, which marks it the
+same way. A mark or a stickynote found at mount belongs to a session a
+power loss interrupted: the driver [settles](#settled-copies) the file's
+metadata pair and the pairs on the path to it from the mroot anchor before
+it appends to any of them, and its first `lfs3_fs_mkconsistent` removes
+the stale mark. `lfs3_set` commits a file in a single commit and never
+marks it.
+
+Ignorable: a driver that doesn't know it keeps it on compaction, and needs
+no compat flag.
+
+---
 #### `0x06xx` LFS3_TAG_UATTR
 
 bits: `v--- -11- +aaa aaaa`
@@ -2782,7 +2865,7 @@ An [alt pointer](#alt-pointers), an inner node of an rbyd tree.
 ---
 #### `0x3000` LFS3_TAG_CKSUM
 
-bits: `v-11 ---- ++++ +pqq`
+bits: `v-11 ---- +++s spqq`
 
 Marks the end of a commit, and provides a checksum for the commit.
 
@@ -2793,7 +2876,7 @@ Marks the end of a commit, and provides a checksum for the commit.
     |      |            |               '---------------- cksum
     |      |            '- size (4 + padding)
     |      '-------------- weight (0)
-    '--------------------- 0x3000 | perturb | phase
+    '--------------------- 0x3000 | settled | perturb | phase
 ```
 
 Cksum fields:
@@ -2807,11 +2890,16 @@ Cksum fields:
    xored with `0xfca42daf`, inverting its valid bits, see
    [Perturbation](#perturbation).
 
-3. **Cksum (32-bits)** - The running checksum of the commit up to and
+3. **Settled (2-bits, bits 3-4)** - 0, or the generation, 1 to 3, of a
+   [settled copy](#settled-copies) whose last commit this was. A settle
+   clears these bits in the commits it copies before its last, so a block
+   holds at most one settled commit.
+
+4. **Cksum (32-bits)** - The running checksum of the commit up to and
    including the `CKSUM` tag's own tag, weight, and size, with the valid bit
    cleared. A size smaller than 4 is invalid.
 
-4. **Padding** - Padding to the next `prog_size`-aligned offset, where the
+5. **Padding** - Padding to the next `prog_size`-aligned offset, where the
    next commit starts. No guarantees are made about its contents.
 
 The size's leb128 encoding depends on the padding, which depends on the
