@@ -6376,7 +6376,8 @@ defines.FRAGMENT_SIZE = 'LFS3_MIN(BLOCK_SIZE/16, 512)'
 defines.CRYSTAL_THRESH = 'BLOCK_SIZE/16'
 defines.FCACHE_SIZE = [16, 512]
 defines.CHUNK = [3, 22]
-defines.SYNC_EVERY = [1, 5]
+# 200 writes overflow every cache here
+defines.SYNC_EVERY = [1, 200]
 defines.COUNT = 16
 defines.SEED = 42
 code = '''
