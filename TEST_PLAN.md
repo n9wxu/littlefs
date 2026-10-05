@@ -767,7 +767,7 @@ Injection: `BADBLOCK_BEHAVIOR=6`: reads flip one bit with probability 1/2.
 |---|---|---|---|
 | O1 format | – | | N/A: READFLIP affects later reads; a flip after format is covered by O2 |
 | O2 mount | R | `ck::ckparity_mroot` under J-BIG | D |
-| O3 namespace, O5 sync, O6 truncate, O7 mdir, O10 gc | N | NEW-62 | D |
+| O3 namespace, O5 sync, O6 truncate, O7 mdir, O10 gc | N | NEW-62 | `ck_readflip::spam` (`test_ck_readflip_spam` in `tests/test_ck_readflip.toml`) | FAIL-09, INT-19, INT-25 | B-BIG, `BADBLOCK_BEHAVIOR=6`, mounted with `LFS3_M_CKMETAPARITY \| LFS3_M_CKDATACKSUMS`, and with `LFS3_M_CKFETCHES` too; each round flips one chosen bit of one block, metastable or on the device for the round, so a miss is put down to its class: 0, a length-preserving flip in the mroot or a B-tree node, or a data block; 1, a length-changing flip; 2, an mdir in the mtree (issue #6) | no miss in class 0 (D); with `LFS3_M_CKFETCHES`, no miss in class 1 for a B-tree node fetched while the bit was flipped on the device; other misses of classes 1 and 2 are counted | – |
 | O4 write | P | `ck::ckdatacksums_data` under J-BIG; NEW-62 | D |
 | O8 btree | R | `ck::ckparity_btree` under J-BIG | D |
 | O9 relocation | N | NEW-63 (flipped data copied by a relocation) | D |

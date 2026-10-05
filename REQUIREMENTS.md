@@ -1352,9 +1352,10 @@ flipped bits" of `lfs3.h`.
 - **Pass:** `ck::ckparity_mroot` and `ck::ckparity_btree` with PROGFLIP and
   READFLIP pass in B-BIG, and `ck_readflip::spam` finds no miss in class 0
   (length-preserving flips in the mroot and B-tree nodes, and flips in data
-  blocks), with and without `LFS3_M_CKFETCHES`, in B-BIG. It counts the
-  misses of class 1 (length-changing flips) and class 2 (mdirs in the mtree,
-  see below) without failing on them.
+  blocks), with the bit metastable and with it flipped for the round, with
+  and without `LFS3_M_CKFETCHES`, in B-BIG. It counts the misses of class 1
+  (length-changing flips) and class 2 (mdirs in the mtree, see below), and
+  the damage they leave for a remount to find, without failing on them.
 - **Fail:** the flipped value is returned without the error.
 - **Verified by:** as listed; `ck_readflip::spam` (NEW-62, in
   `tests/test_ck_readflip.toml`). An mdir in the mtree is fetched again on
@@ -1469,25 +1470,32 @@ B-tree node compaction and crystallization from a data block;
 
 #### LFS3-INT-25
 
-littlefs shall, when mounted with `LFS3_M_CKFETCHES`, return
-`LFS3_ERR_CORRUPT` for every flipped bit it reads from metadata, and never
-return the wrong data, except for the re-fetch of an mdir in the mtree
-that falls back to an older commit (issue #6).
+littlefs shall, when mounted with `LFS3_M_CKFETCHES`, verify each B-tree
+node and data block against its stored checksum when it fetches it, and
+return `LFS3_ERR_CORRUPT`, never the wrong data, for a flipped bit present
+at that fetch. A bit that reads clean at the fetch and flipped at a later
+read (a metastable bit) can be missed, and so can a flip in a block that is
+not fetched again: the mroot while mounted, and the B-tree roots and cached
+leaves held in RAM. The repairing check of issue #19 (`ck_passes`) is the
+tool for those. An mdir in the mtree that falls back to an older commit when
+fetched is issue #6.
 
-- **Source:** Proposal, decided on 2026-10-04 (issue #7, NEW-62) as the way
-  to full detection once LFS3-INT-19 was restated. `lfs3.h:283` describes
-  `LFS3_M_CKFETCHES` more narrowly: "Check block checksums before first
-  use".
-- **Measure:** results of reads while one bit of a metadata block reads
-  differently on each read (READFLIP).
+- **Source:** Proposal, decided on 2026-10-04 (issue #7, NEW-62): narrowed
+  to what fetch checks do, `lfs3.h:283` ("Check block checksums before first
+  use"), with no on-disk change and no per-rbyd buffer. Repeated reads catch
+  a metastable bit only by chance.
+- **Measure:** results of reads while one bit of a metadata block is flipped
+  on the device for a round (`FLIP=1`), or reads differently on each read
+  (`FLIP=0`, READFLIP); whether the block was fetched after the flip.
 - **Pass:** `ck_readflip::spam` with `CK=1` (`LFS3_M_CKFETCHES`, with
-  `LFS3_M_CKMETAPARITY` and `LFS3_M_CKDATACKSUMS`) finds no miss in classes
-  0 and 1, in B-BIG.
-- **Fail:** a miss in class 0 or 1.
-- **Verified by:** `ck_readflip::spam` with `CK=1`; the class 1 assertion
-  is pending as `ck_readflip_spam_ckfetches.patch`.
-- **Status:** Known defect (D-6): 15 misses in 604 class 1 rounds of
-  `ck_readflip::spam` with `CK=1`, against 18 without fetch checks.
+  `LFS3_M_CKMETAPARITY` and `LFS3_M_CKDATACKSUMS`) and `FLIP=1` finds no
+  miss in class 1 for a B-tree node fetched after the flip, in B-BIG; misses
+  from flips not present at a fetch are counted and reported.
+- **Fail:** a miss for a B-tree node fetched while the flipped bit was on
+  the device.
+- **Verified by:** `ck_readflip::spam` with `CK=1` and `FLIP=1`. The case
+  tells a fetch by its read of the revision count, which lookups never read.
+- **Status:** Untested as restated (D-6 is resolved by the restatement).
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -7121,7 +7129,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | D-3 | After a prog fails with something other than `LFS3_ERR_CORRUPT` partway through a crystallization that resumes a file's leaf block, the leaf still claims the block is erased from where the crystallization started, and the next sync progs those bytes again | `lfs3_file_crystallize_` | run (`badblocks::error_then_sync`, `LFS3_ERR_IO` on the 146th prog) | SYNC-09, CFG-15 | `4968164e` |
 | D-4 | An mdir split that finds blocks for its first sibling but not for the second, or not for the mtree node, fails with `LFS3_ERR_NOSPC` instead of compacting in place, so `lfs3_remove` fails on a nearly full disk | `lfs3_mdir_commit_` | run (`badblocks::error_then_sync` with `PROG_SIZE=16`) | ALLOC-04, SYNC-09 | `ce2a68d6` |
 | D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09; the re-fetch fallback is issue #6 |
-| D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | none, needs the bytes a lookup uses to be the bytes that were verified: a block-sized buffer, or a checksum per tag (an on-disk change) |
+| D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
 
 ### A.3 From the analyses
 
