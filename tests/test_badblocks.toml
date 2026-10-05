@@ -6622,8 +6622,8 @@ code = '''
         // sync anyways, this should either write a consistent file or
         // refuse
         err = lfs3_file_sync(&lfs3, &file);
-        assert(!err || err == LFS3_ERR_INVAL);
-        if (err == LFS3_ERR_INVAL) {
+        assert(!err || err == LFS3_ERR_BADFD);
+        if (err == LFS3_ERR_BADFD) {
             lfs3_file_resync(&lfs3, &file) => 0;
             lfs3_file_size(&lfs3, &file) => SIZE;
             lfs3_file_sync(&lfs3, &file) => 0;
@@ -9419,8 +9419,8 @@ code = '''
                 }
             }
             err = lfs3_file_sync(&lfs3, &file);
-            assert(!err || err == LFS3_ERR_INVAL);
-            if (err == LFS3_ERR_INVAL) {
+            assert(!err || err == LFS3_ERR_BADFD);
+            if (err == LFS3_ERR_BADFD) {
                 torn = true;
                 lfs3_file_resync(&lfs3, &file) => 0;
             }
