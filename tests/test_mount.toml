@@ -2990,6 +2990,7 @@ code = '''
     strcpy(wbuf, "we seem to be made to suffer");
     lfs3_file_write(&lfs3, &file, wbuf, strlen(wbuf)) => strlen(wbuf);
     lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
 
     // shift the filesystem out-of-phase
     uint8_t shift_buf[BLOCK_SIZE];

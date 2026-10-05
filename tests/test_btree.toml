@@ -38,6 +38,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 0,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # test an inlined tree
@@ -84,6 +86,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # test a single-rbyd tree
@@ -140,6 +144,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 2,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_two_backwards]
@@ -195,6 +201,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 2,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # still a single-rbyd tree, just making sure it works
@@ -262,6 +270,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 3,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_three_backwards]
@@ -328,6 +338,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 3,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # try larger trees, when exactly a tree splits depends on the disk geometry, so
@@ -382,6 +394,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, n,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_push_backwards]
@@ -434,6 +448,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, n,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_push_fuzz]
@@ -518,6 +534,7 @@ code = '''
 
     // clean up sim
     free(sim);
+
     lfs3_deinit(&lfs3) => 0;
 '''
 
@@ -588,6 +605,8 @@ code = '''
     }
     lfs3_btree_lookupnext(&lfs3, &btree, bid_+1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_push_sparse_fuzz]
@@ -727,6 +746,9 @@ code = '''
 
     // clean up sim
     free(sim);
+    free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -781,6 +803,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update_two]
@@ -847,6 +871,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 2,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update_three]
@@ -929,6 +955,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 3,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update]
@@ -987,6 +1015,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, N,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update_fuzz]
@@ -1077,6 +1107,8 @@ code = '''
 
     // clean up sim
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update_sparse]
@@ -1152,6 +1184,8 @@ code = '''
     }
     lfs3_btree_lookupnext(&lfs3, &btree, bid_+1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_update_sparse_fuzz]
@@ -1298,6 +1332,9 @@ code = '''
 
     // clean up sim
     free(sim);
+    free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -1366,6 +1403,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_two]
@@ -1447,6 +1486,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 2,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_two_other]
@@ -1528,6 +1569,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 2,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_three]
@@ -1627,6 +1670,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, 3,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop]
@@ -1711,6 +1756,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, REMAINING+1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_backwards]
@@ -1796,6 +1843,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, REMAINING+1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_fuzz]
@@ -1888,6 +1937,8 @@ code = '''
 
     // clean up sim
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_sparse]
@@ -2000,6 +2051,8 @@ code = '''
 
     lfs3_btree_lookupnext(&lfs3, &btree, bid_+1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_pop_sparse_fuzz]
@@ -2157,6 +2210,9 @@ code = '''
 
     // clean up sim
     free(sim);
+    free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -2217,6 +2273,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, n,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_split_fuzz]
@@ -2309,6 +2367,7 @@ code = '''
 
     // clean up sim
     free(sim);
+
     lfs3_deinit(&lfs3) => 0;
 '''
 
@@ -2371,6 +2430,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, n*W,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_split_sparse_fuzz]
@@ -2553,6 +2614,9 @@ code = '''
 
     // clean up sim
     free(sim);
+    free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -2633,6 +2697,8 @@ code = '''
     // and check that our pop worked
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_drop_compact]
@@ -2714,6 +2780,8 @@ code = '''
     // and check that our pop worked
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_drop_split]
@@ -2787,6 +2855,8 @@ code = '''
     // and check that our pop worked
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_drop_merge]
@@ -2878,6 +2948,8 @@ code = '''
     // and check that our pop worked
     lfs3_btree_lookupnext(&lfs3, &btree, 1,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -2989,6 +3061,8 @@ code = '''
 
     // clean up sim
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_general_sparse_fuzz]
@@ -3161,6 +3235,9 @@ code = '''
 
     // clean up sim
     free(sim);
+    free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -3193,6 +3270,8 @@ code = '''
 
     lfs3_btree_namelookup(&lfs3, &btree, 0, "aaa", 3,
             &bid_, NULL, &weight_, NULL) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_one]
@@ -3254,6 +3333,8 @@ code = '''
     assert(weight_ == 1);
     lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
     assert(memcmp(buffer, "0", 1) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_two]
@@ -3335,6 +3416,8 @@ code = '''
     assert(weight_ == 1);
     lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
     assert(memcmp(buffer, "1", 1) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_three]
@@ -3436,6 +3519,8 @@ code = '''
     assert(weight_ == 1);
     lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
     assert(memcmp(buffer, "2", 1) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_three_backwards]
@@ -3537,6 +3622,8 @@ code = '''
     assert(weight_ == 1);
     lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
     assert(memcmp(buffer, "2", 1) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find]
@@ -3613,6 +3700,8 @@ code = '''
         lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
         assert(memcmp(buffer, &(uint8_t){'0'+(i % 10)}, 1) == 0);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_fuzz]
@@ -3730,6 +3819,7 @@ code = '''
     // clean up sim
     free(sim);
     free(sim_names);
+
     lfs3_deinit(&lfs3) => 0;
 '''
 
@@ -3810,6 +3900,8 @@ code = '''
         lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
         assert(memcmp(buffer, &(uint8_t){'0'+(i % 10)}, 1) == 0);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_sparse_fuzz]
@@ -3971,6 +4063,7 @@ code = '''
     free(sim);
     free(sim_names);
     free(sim_weights);
+
     lfs3_deinit(&lfs3) => 0;
 '''
 
@@ -4156,6 +4249,8 @@ code = '''
     // clean up sim
     free(sim);
     free(sim_names);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_find_general_sparse_fuzz]
@@ -4390,6 +4485,8 @@ code = '''
     free(sim);
     free(sim_names);
     free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -4522,6 +4619,8 @@ code = '''
     // and check that we can't lookup elements that aren't in the tree
     lfs3_btree_lookupnext(&lfs3, &btree, n,
             &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_btree_traversal_fuzz]
@@ -4699,6 +4798,7 @@ code = '''
 
     // clean up sim
     free(sim);
+
     lfs3_deinit(&lfs3) => 0;
 '''
 

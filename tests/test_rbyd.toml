@@ -47,6 +47,8 @@ code = '''
             LFS3_RATTR_ARG("\xbb\xbb\xbb\xbb"),
             LFS3_RATTR_NULL)) => 0;
     lfs3_rbyd_fetch(&lfs3, &rbyd, rbyd.blocks[0], 0) => 0;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_commit]
@@ -85,6 +87,8 @@ code = '''
             LFS3_RATTR_ARG("\xbb\xbb\xbb\xbb"),
             LFS3_RATTR_NULL)) => 0;
     lfs3_rbyd_fetch(&lfs3, &rbyd, rbyd.blocks[0], 0) => 0;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_commit_fetch_commit]
@@ -119,6 +123,8 @@ code = '''
             LFS3_RATTR_ARG("\xbb\xbb\xbb\xbb"),
             LFS3_RATTR_NULL)) => 0;
     lfs3_rbyd_fetch(&lfs3, &rbyd, rbyd.blocks[0], 0) => 0;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_lookup]
@@ -237,6 +243,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(3),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_lookup]
@@ -359,6 +367,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(3),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_get]
@@ -457,6 +467,8 @@ code = '''
     lfs3_data_read(&lfs3, &data, buffer, 4) => 4;
     lfs3_rbyd_lookup(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(3),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_get]
@@ -559,6 +571,8 @@ code = '''
     lfs3_data_read(&lfs3, &data, buffer, 4) => 4;
     lfs3_rbyd_lookup(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(3),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_bifoliate]
@@ -628,6 +642,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(2));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_bflips]
@@ -701,6 +717,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(2));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_trifoliate]
@@ -788,6 +806,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(3));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_rflips]
@@ -951,6 +971,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(3));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_quadrifoliate]
@@ -1142,6 +1164,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(4));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_rotations]
@@ -1333,6 +1357,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(4));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_ysplits]
@@ -1536,6 +1562,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(4));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_quintifoliate]
@@ -1767,6 +1795,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(5));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_prunes]
@@ -1954,6 +1984,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(5));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sextifoliate]
@@ -2158,6 +2190,8 @@ code = '''
     assert(tag_ == LFS3_TAG_ATTR(6));
     assert(rid_ == -1);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_permutations]
@@ -2249,6 +2283,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_permutations]
@@ -2338,6 +2374,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_traverse]
@@ -2433,6 +2471,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_traverse]
@@ -2532,6 +2572,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_traverse_permutations]
@@ -2604,6 +2646,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_traverse_permutations]
@@ -2675,6 +2719,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -2794,6 +2840,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_large]
@@ -2860,6 +2908,8 @@ code = '''
         assert(rid_ == -1);
         assert(lfs3_data_size(&data_) == 4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -2978,6 +3028,8 @@ code = '''
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(3),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -3130,6 +3182,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -3237,6 +3291,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_remove_missing]
@@ -3392,6 +3448,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(5),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_remove_again]
@@ -3640,6 +3698,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(5),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_remove_all]
@@ -3730,6 +3790,8 @@ code = '''
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(2),
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -3862,6 +3924,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # the main purpose of this test is to try to fuzz for failures in the
@@ -3981,6 +4045,8 @@ code = '''
 
     // cleanup
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -4095,6 +4161,8 @@ code = '''
             &data) => LFS3_TAG_DATA;
     lfs3_data_read(&lfs3, &data, buffer, 4) => 4;
     assert(memcmp(buffer, "\xcc\xcc\xcc\xcc", 4) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_create]
@@ -4335,6 +4403,8 @@ code = '''
             &data) => LFS3_TAG_DATA;
     lfs3_data_read(&lfs3, &data, buffer, 4) => 4;
     assert(memcmp(buffer, "\xcc\xcc\xcc\xcc", 4) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_create_permutations]
@@ -4438,6 +4508,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_create_traverse]
@@ -4514,6 +4586,8 @@ code = '''
     assert(memcmp(buffer, "\xbb\xbb\xbb\xbb", 4) == 0);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_create_traverse]
@@ -4647,6 +4721,8 @@ code = '''
     assert(memcmp(buffer, "\xbb\xbb\xbb\xbb", 4) == 0);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_create_traverse_permutations]
@@ -4740,6 +4816,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_create_large]
@@ -4812,6 +4890,8 @@ code = '''
         assert(rid_ == x);
         assert(lfs3_data_size(&data_) == 4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -5015,6 +5095,8 @@ code = '''
             &data) => LFS3_TAG_ATTR(1);
     lfs3_data_read(&lfs3, &data, buffer, 4) => 2;
     assert(memcmp(buffer, "\xcc\xcc", 2) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_mixed]
@@ -5452,6 +5534,8 @@ code = '''
             &data) => LFS3_TAG_ATTR(1);
     lfs3_data_read(&lfs3, &data, buffer, 4) => 2;
     assert(memcmp(buffer, "\xcc\xcc", 2) == 0);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_mixed_permutations]
@@ -5570,6 +5654,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_atomic_mixed_traverse]
@@ -5686,6 +5772,8 @@ code = '''
     assert(memcmp(buffer, "\xbb\xbb", 2) == 0);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_mixed_traverse]
@@ -5907,6 +5995,8 @@ code = '''
     assert(memcmp(buffer, "\xbb\xbb", 2) == 0);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, NULL, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_mixed_traverse_permutations]
@@ -6022,6 +6112,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, NULL, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -6162,6 +6254,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -6373,6 +6467,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -6510,6 +6606,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_mixed_large]
@@ -6600,6 +6698,8 @@ code = '''
             assert(lfs3_data_size(&data_) == 2);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -6751,6 +6851,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_unrelated_mixed_permutations]
@@ -6926,6 +7028,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -7121,6 +7225,8 @@ code = '''
     assert(memcmp(buffer, "\xcc\xcc\xcc\xcc", 4) == 0);
     lfs3_rbyd_lookup(&lfs3, &rbyd, 2, LFS3_TAG_DATA,
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range]
@@ -7429,6 +7535,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 2, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # some additional delete range special cases
@@ -7770,6 +7878,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_r]
@@ -8076,6 +8186,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_y]
@@ -8500,6 +8612,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_rydy]
@@ -8900,6 +9014,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_rydy_backwards]
@@ -9300,6 +9416,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_rydye]
@@ -9670,6 +9788,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_rydye_backwards]
@@ -10040,6 +10160,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_dryy]
@@ -10556,6 +10678,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_range_dryy_backwards]
@@ -11068,6 +11192,8 @@ code = '''
             &data) => LFS3_ERR_NOENT;
     lfs3_rbyd_lookup(&lfs3, &rbyd, 3, LFS3_TAG_ATTR(1),
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -11233,6 +11359,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -11439,6 +11567,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -11570,6 +11700,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -11726,6 +11858,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # Note, "delete_all" is a weird state for rbyd trees to be in, since they
@@ -11870,6 +12004,7 @@ code = '''
     lfs3_rbyd_lookup(&lfs3, &rbyd, 0, LFS3_TAG_DATA,
             &data) => LFS3_ERR_NOENT;
 
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_delete_all_range]
@@ -12033,6 +12168,8 @@ code = '''
     assert(rbyd.weight == 0);
     lfs3_rbyd_lookup(&lfs3, &rbyd, 0, LFS3_TAG_DATA,
             &data) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -12180,6 +12317,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -12349,6 +12488,8 @@ code = '''
     if (PROG_SIZE == 1) {
         assert(worst_size / n <= 12*(2*lfs3_nlog2(n)+1)+4);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # the main purpose of this test is to try to fuzz for failures in the
@@ -12467,6 +12608,8 @@ code = '''
 
     // cleanup
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -12720,6 +12863,8 @@ code = '''
     assert(rid_ == 14);
     assert(weight_ == 5);
     assert(lfs3_data_size(&data_) == 4);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_traverse]
@@ -12832,6 +12977,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 4);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_permutations]
@@ -12924,6 +13071,8 @@ code = '''
             assert(memcmp(buffer, names[j % 6], 4) == 0);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_traverse_permutations]
@@ -13021,6 +13170,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # Weights mixed with attributes
@@ -13718,6 +13869,8 @@ code = '''
     assert(rid_ == 14);
     assert(weight_ == 0);
     assert(lfs3_data_size(&data_) == 2);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_mixed_traverse]
@@ -13987,6 +14140,8 @@ code = '''
     assert(lfs3_data_size(&data_) == 2);
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_mixed_permutations]
@@ -14107,6 +14262,8 @@ code = '''
             assert(memcmp(buffer, names[j % 6], 4) == 0);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_mixed_traverse_permutations]
@@ -14233,6 +14390,8 @@ code = '''
         lfs3_rbyd_lookupnext(&lfs3, &rbyd, rid_, tag_+1,
                 &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -14374,7 +14533,12 @@ code = '''
                 assert(memcmp(buffer, names[k % 6], 4) == 0);
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_grupdate_permutations]
@@ -14525,7 +14689,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # I don't know if this actually happens in littlefs, but this tests a specific
@@ -14691,7 +14860,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_shrink_permutations]
@@ -14830,7 +15004,12 @@ code = '''
                 assert(memcmp(buffer, names[k % 6], 4) == 0);
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_shrupdate_permutations]
@@ -14981,7 +15160,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # I don't know if this actually happens in littlefs, but this tests a specific
@@ -15147,7 +15331,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_delete_permutations]
@@ -15323,7 +15512,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_sparse_rattr_permutations]
@@ -15518,7 +15712,12 @@ code = '''
                 }
             }
         }
+
+        // cleanup
+        free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -15685,6 +15884,8 @@ code = '''
 
     // cleanup
     free(sim);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_fuzz_sparse]
@@ -15886,6 +16087,8 @@ code = '''
     // cleanup
     free(sim);
     free(sim_weights);
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -15976,6 +16179,8 @@ code = '''
             assert(lfs3_data_size(&data_) == 2);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -16122,6 +16327,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -16274,6 +16481,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_subwide_mixed_lookup_permutations]
@@ -16362,6 +16571,8 @@ code = '''
             assert(lfs3_data_size(&data_) == 2);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -16517,6 +16728,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -16678,6 +16891,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_subwide_weighted_lookup_permutations]
@@ -16762,6 +16977,8 @@ code = '''
             assert(lfs3_data_size(&data_) == 4);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -16909,6 +17126,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -17052,6 +17271,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # supertype-wide
@@ -17138,6 +17359,8 @@ code = '''
             assert(lfs3_data_size(&data_) == 4);
         }
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -17285,6 +17508,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 # NOTE if we separate physical/logical block sizes we may be able to
@@ -17440,6 +17665,8 @@ code = '''
         // cleanup
         free(backup_block);
     }
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
@@ -17492,6 +17719,8 @@ code = '''
 
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(1)+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_unreachable_hole_rm]
@@ -17546,6 +17775,8 @@ code = '''
 
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(2)+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_unreachable_hole_delete]
@@ -17602,6 +17833,8 @@ code = '''
 
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, 0, LFS3_TAG_DATA+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_unreachable_hole_subwide]
@@ -17667,6 +17900,8 @@ code = '''
 
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, -1, LFS3_TAG_ATTR(0x80)+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 [cases.test_rbyd_unreachable_hole_supwide]
@@ -17734,6 +17969,8 @@ code = '''
 
     lfs3_rbyd_lookupnext(&lfs3, &rbyd, 0, LFS3_TAG_DATA+1,
             &rid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
 '''
 
 
