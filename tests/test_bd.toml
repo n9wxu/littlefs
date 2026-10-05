@@ -700,8 +700,8 @@ code = '''
 '''
 
 # a metastable prog lands whole, but one bit in it reads randomly until
-# the block is next progged or erased, bytes outside the interrupted prog
-# never change
+# the block is erased, later progs don't settle it, and bytes outside the
+# interrupted prog never change
 [cases.test_bd_metastable]
 defines.PROG = ['PROG_SIZE', '16*PROG_SIZE']
 defines.BD_SEED = 'range(4)'
@@ -737,6 +737,8 @@ code = '''
     }
 
     // the bad bit is in the interrupted prog
+    lfs3_emubd_metastable(&cfg, 0) => 1;
+    lfs3_emubd_metastable(&cfg, 1) => 0;
     lfs3_ssize_t bit = lfs3_emubd_badbit(&cfg, 0);
     assert(bit >= 0);
     assert((lfs3_size_t)bit/8 >= 2*PROG);
@@ -757,8 +759,26 @@ code = '''
     }
     assert(flips > 0 && flips < 64);
 
+    // a later prog elsewhere in the block doesn't settle it
+    cfg.prog(&cfg, 0, 3*PROG, &wbuf[2*PROG], PROG) => 0;
+    memcpy(&wbuf[3*PROG], &wbuf[2*PROG], PROG);
+    flips = 0;
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        uint8_t rbuf[4*PROG];
+        cfg.read(&cfg, 0, 0, rbuf, 4*PROG) => 0;
+        for (lfs3_off_t j = 0; j < 4*PROG; j++) {
+            uint8_t mask = (j == (lfs3_size_t)bit/8) ? 1 << (bit%8) : 0;
+            assert((rbuf[j] & ~mask) == (wbuf[j] & ~mask));
+            if ((rbuf[j] ^ wbuf[j]) & mask) {
+                flips += 1;
+            }
+        }
+    }
+    assert(flips > 0 && flips < 64);
+
     // an erase settles it
     cfg.erase(&cfg, 0) => 0;
+    lfs3_emubd_metastable(&cfg, 0) => 0;
     for (lfs3_size_t i = 0; i < 64; i++) {
         uint8_t rbuf[4*PROG];
         cfg.read(&cfg, 0, 0, rbuf, 4*PROG) => 0;

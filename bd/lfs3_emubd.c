@@ -575,6 +575,10 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
     if (bd->power_cycles > 0) {
         bd->power_cycles -= 1;
         if (bd->power_cycles == 0) {
+            // remember any metastability in case we continue
+            bool metastable = bd->blocks[block]->metastable;
+            lfs3_size_t bad_bit = bd->blocks[block]->bad_bit;
+
             // emulating some bits? choose a random bit to flip
             if (bd->cfg->powerloss_behavior
                     == LFS3_EMUBD_POWERLOSS_SOMEBITS) {
@@ -788,6 +792,22 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
             // powerloss!
             bd->cfg->powerloss_cb(bd->cfg->powerloss_data);
 
+            // oh, continuing? the interrupted prog completes, so it leaves
+            // nothing metastable
+            if (bd->cfg->powerloss_behavior
+                    == LFS3_EMUBD_POWERLOSS_METASTABLE) {
+                lfs3_emubd_block_t *b = lfs3_emubd_mutblock(cfg,
+                        bd->blocks[block]);
+                if (!b) {
+                    LFS3_EMUBD_TRACE("lfs3_emubd_prog -> %d", LFS3_ERR_NOMEM);
+                    return LFS3_ERR_NOMEM;
+                }
+                bd->blocks[block] = b;
+
+                b->metastable = metastable;
+                b->bad_bit = bad_bit;
+            }
+
             // oh, continuing? undo out-of-order write emulation
             if (bd->cfg->powerloss_behavior == LFS3_EMUBD_POWERLOSS_OOO) {
                 for (lfs3_block_t i = 0; i < cfg->block_count; i++) {
@@ -870,12 +890,10 @@ int lfs3_emubd_prog(const struct lfs3_cfg *cfg, lfs3_block_t block,
         }
     }
 
-    // prog data
+    // prog data, a metastable bit stays metastable until the block is
+    // erased
     lfs3_emubd_memprog(cfg, &b->data[off], buffer, size);
     lfs3_emubd_markprog(cfg, b, off, size, &written);
-
-    // clear any metastability
-    b->metastable = false;
 
 progged:;
     // mirror to disk file?

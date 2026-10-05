@@ -52,9 +52,11 @@ typedef enum lfs3_emubd_powerloss_behavior {
 } lfs3_emubd_powerloss_behavior_t;
 
 // LFS3_EMUBD_POWERLOSS_METASTABLE progs the interrupted prog whole, but
-// one bit it wrote reads randomly until the block is next progged or
-// erased. An interrupted erase leaves one bit anywhere in the block
+// one bit it wrote reads randomly until the block is erased, as a
+// half-programmed cell does; later progs elsewhere in the block don't
+// settle it. An interrupted erase leaves one bit anywhere in the block
 // reading randomly. Bits outside the interrupted operation never change.
+// Each block holds at most one metastable bit, the most recent.
 
 // LFS3_EMUBD_POWERLOSS_TORNTAIL leaves the first prog_size bytes of the
 // interrupted prog erased, progs a random-length run of the bytes after
@@ -326,7 +328,7 @@ lfs3_ssize_t lfs3_emubd_badbit(const struct lfs3_cfg *cfg,
         lfs3_block_t block);
 
 // Whether a given block holds a metastable bit, reads of which return
-// random values until the block is next progged or erased
+// random values until the block is erased
 int lfs3_emubd_metastable(const struct lfs3_cfg *cfg, lfs3_block_t block);
 
 // Set which bit should fail in a given block
