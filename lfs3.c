@@ -14474,7 +14474,10 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
         // spans more than one entry? we can't do everything in one
         // commit because it might span more than one btree leaf, so
         // commit what we have and move on to next entry
-        if (pos+weight > bid+1) {
+        //
+        // unless this is our last entry, then the rest is an append
+        // into the same leaf, and one commit can't tear
+        if (pos+weight > bid+1 && bid+1 < file->b.b.r.weight) {
             LFS3_ASSERT(lfs3_bptr_size(&r_bptr) == 0);
 
             *r++ = LFS3_RATTR_NULL;
@@ -14705,6 +14708,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             + lfs3_bptr_off(&file->leaf.bptr)
             + lfs3_bptr_size(&file->leaf.bptr);
     lfs3->pcksum = lfs3_bptr_cksum(&file->leaf.bptr);
+    // where we resumed, if we write nothing past this our bptr is
+    // unchanged and doesn't need to be grafted again
+    lfs3_off_t resumed = pos_;
     while (true) {
         // crystallize data into our block
         //
@@ -14917,10 +14923,13 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                 lfs3->pcksum);
 
         // mark as ungrafted
-        file->b.h.flags |= LFS3_o_UNGRAFT;
+        if (pos_ != resumed) {
+            file->b.h.flags |= LFS3_o_UNGRAFT;
+        }
         return 0;
 
     relocate:;
+        resumed = -1;
         // allocate a new block
         //
         // if we relocate, we rewrite the entire block from block_pos
@@ -15510,12 +15519,44 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         }
 
         // flush our cache so the above can't fail
+        //
+        // appending into a data block we can resume? only flush up to
+        // the block's last prog boundary, the rest would become a
+        // fragment that more appends before the next sync replace, so
+        // keep it cached
+        lfs3_size_t flush_size = file->cache.size;
+        if (lfs3_bptr_isbptr(&file->leaf.bptr)
+                && lfs3_bptr_iserased(&file->leaf.bptr)
+                && pos == file->cache.pos + file->cache.size
+                && pos >= file->b.b.r.weight) {
+            lfs3_off_t block_start = file->leaf.pos
+                    - lfs3_bptr_off(&file->leaf.bptr);
+            lfs3_off_t block_end = file->leaf.pos
+                    + lfs3_bptr_size(&file->leaf.bptr);
+            lfs3_off_t aligned = block_start + lfs3_aligndown(
+                    pos - block_start,
+                    lfs3->cfg->prog_size);
+            if (aligned > lfs3_max(block_end, file->cache.pos)
+                    && aligned < pos) {
+                flush_size = aligned - file->cache.pos;
+            }
+        }
+
         err = lfs3_file_flush_(lfs3, file,
-                file->cache.pos, file->cache.buffer, file->cache.size);
+                file->cache.pos, file->cache.buffer, flush_size);
         if (err) {
             goto failed;
         }
-        file->b.h.flags &= ~LFS3_o_UNFLUSH;
+
+        if (flush_size < file->cache.size) {
+            lfs3_memmove(file->cache.buffer,
+                    &file->cache.buffer[flush_size],
+                    file->cache.size - flush_size);
+            file->cache.pos += flush_size;
+            file->cache.size -= flush_size;
+        } else {
+            file->b.h.flags &= ~LFS3_o_UNFLUSH;
+        }
     }
 
     // update our pos

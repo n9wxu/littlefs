@@ -6253,3 +6253,196 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# test appends that leave part of a prog unit in the file cache
+#
+# a write that flushes a full cache in the middle of an append can keep
+# the bytes past the data block's last prog boundary cached, these must
+# still read back through the handle, and reach the disk on the next
+# flush, sync or close, but not after a desync
+[cases.test_fwrite_append_tail]
+defines.PROG_SIZE = [1, 16, 256]
+defines.FRAGMENT_SIZE = 'LFS3_MIN(BLOCK_SIZE/16, 512)'
+defines.CRYSTAL_THRESH = 'BLOCK_SIZE/16'
+defines.FCACHE_SIZE = [16, 512]
+defines.CHUNK = [3, 22]
+# 0 => sync only at the end
+defines.SYNC_EVERY = [0, 1, 5]
+# 0 => sync and close
+# 1 => close
+# 2 => desync and close
+# 3 => flush, desync and close
+# 4 => truncate into the last prog unit, append it again, close
+# 5 => fruncate, close
+defines.END = [0, 1, 2, 3, 4, 5]
+defines.SIZE = '2*BLOCK_SIZE + BLOCK_SIZE/3'
+defines.SEED = 42
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t *sim = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE+1);
+    assert(sim && rbuf);
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    // start from a synced, empty file
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "log",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // append, reading back some of what we wrote now and then
+    lfs3_size_t size = 0;
+    lfs3_size_t synced = 0;
+    for (lfs3_size_t writes = 1; size < SIZE; writes++) {
+        lfs3_size_t d = lfs3_min(CHUNK, SIZE-size);
+        lfs3_file_write(&lfs3, &file, &sim[size], d) => d;
+        size += d;
+        lfs3_file_size(&lfs3, &file) => size;
+
+        if (SYNC_EVERY && writes % SYNC_EVERY == 0) {
+            lfs3_file_sync(&lfs3, &file) => 0;
+            synced = size;
+        }
+
+        if (writes % 13 == 0) {
+            lfs3_off_t off = TEST_PRNG(&prng) % size;
+            lfs3_size_t len = lfs3_min(2*PROG_SIZE + 3, size - off);
+            lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+            lfs3_file_read(&lfs3, &file, rbuf, len) => len;
+            assert(memcmp(rbuf, &sim[off], len) == 0);
+        }
+    }
+
+    // and finish
+    const uint8_t *expected = sim;
+    lfs3_size_t expected_size = size;
+    if (END == 0) {
+        lfs3_file_sync(&lfs3, &file) => 0;
+    } else if (END == 2 || END == 3) {
+        if (END == 3) {
+            lfs3_file_flush(&lfs3, &file) => 0;
+        }
+        lfs3_file_desync(&lfs3, &file) => 0;
+        expected_size = synced;
+    } else if (END == 4) {
+        lfs3_size_t cut = lfs3_max(PROG_SIZE/2, 1);
+        lfs3_file_truncate(&lfs3, &file, size-cut) => 0;
+        lfs3_file_size(&lfs3, &file) => size-cut;
+        lfs3_file_write(&lfs3, &file, &sim[size-cut], cut) => cut;
+    } else if (END == 5) {
+        lfs3_size_t cut = BLOCK_SIZE/2 + 1;
+        lfs3_file_fruncate(&lfs3, &file, size-cut) => 0;
+        expected = &sim[cut];
+        expected_size = size-cut;
+    }
+    lfs3_file_size(&lfs3, &file)
+            => (END == 2 || END == 3) ? size : expected_size;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_file_open(&lfs3, &file, "log", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => expected_size;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => expected_size;
+        assert(memcmp(rbuf, expected, expected_size) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    free(sim);
+    free(rbuf);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test appends that leave part of a prog unit in the file cache until
+# the disk runs out of space
+#
+# the file must hold what its last successful sync wrote
+[cases.test_fwrite_append_tail_nospc]
+defines.PROG_SIZE = [1, 16, 256]
+defines.FRAGMENT_SIZE = 'LFS3_MIN(BLOCK_SIZE/16, 512)'
+defines.CRYSTAL_THRESH = 'BLOCK_SIZE/16'
+defines.FCACHE_SIZE = [16, 512]
+defines.CHUNK = [3, 22]
+# 200 writes overflow every cache here
+defines.SYNC_EVERY = [1, 200]
+defines.COUNT = 16
+defines.SEED = 42
+code = '''
+    // a small disk
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = COUNT;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    lfs3_size_t cap = COUNT*BLOCK_SIZE;
+    uint8_t *sim = malloc(cap);
+    uint8_t *rbuf = malloc(cap+1);
+    assert(sim && rbuf);
+    uint32_t prng = SEED;
+    for (lfs3_size_t i = 0; i < cap; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "log",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_EXCL | LFS3_O_APPEND) => 0;
+    lfs3_file_sync(&lfs3, &file) => 0;
+
+    // append until we run out of space
+    lfs3_size_t size = 0;
+    lfs3_size_t synced = 0;
+    for (lfs3_size_t writes = 1;; writes++) {
+        assert(size + CHUNK <= cap);
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, &sim[size], CHUNK);
+        assert(d == CHUNK || d == LFS3_ERR_NOSPC);
+        if (d == LFS3_ERR_NOSPC) {
+            break;
+        }
+        size += CHUNK;
+
+        if (writes % SYNC_EVERY == 0) {
+            int err = lfs3_file_sync(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC);
+            if (err == LFS3_ERR_NOSPC) {
+                break;
+            }
+            synced = size;
+        }
+    }
+    // desynced by the error, close writes nothing
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        lfs3_file_open(&lfs3, &file, "log", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => synced;
+        lfs3_file_read(&lfs3, &file, rbuf, cap+1) => synced;
+        assert(memcmp(rbuf, sim, synced) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    free(sim);
+    free(rbuf);
+    lfs3_unmount(&lfs3) => 0;
+'''
