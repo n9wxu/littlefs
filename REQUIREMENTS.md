@@ -7126,18 +7126,30 @@ metadata block is unreadable.
 #### LFS3-DEG-05
 
 littlefs shall let the application remove files and attributes on a full or
-worn filesystem.
+worn filesystem. A removal shall never need more room in its metadata
+block than the block already holds, so that it always makes progress.
 
 - **Source:** Proposal. Reclaiming space is the application's main way to
-  keep operating.
+  keep operating, and a removal that needs room a full disk or a full mroot
+  does not have can never free that room (issue #23).
 - **Measure:** `lfs3_remove` and `lfs3_removeattr` results on a full disk,
-  with and without the gbmap, and with a full mroot.
-- **Pass:** they return 0, and space is freed.
-- **Fail:** `LFS3_ERR_NOSPC` from a removal.
+  with and without the gbmap, and with a full mroot, including an inlined
+  mroot whose compaction alone fills its block.
+- **Pass:** they return 0, and space is freed. `mtree::commit_too_big`
+  passes with its fuzz seeds and with the 44 seeds of issue #23 (34 at
+  `ERASE_SIZE` 512, 8 at 1024 and 2 at 4096), each under `-Pnone` and
+  `-Plinear`, in B-DEF, B-YGB and B-BIG.
+- **Fail:** `LFS3_ERR_NOSPC` or an assert from a removal.
 - **Verified by:** `mtree::commit_too_big`, `gbmap::nospc_remove`,
   `alloc::nospc_recover`.
 - **Status:** Known defect at `b10efaa`; fixed and tested on
-  `v3-integration` (eba40790, 60026203, f29b8985, 0535a265, 501eda31).
+  `v3-integration` for the fuzz seeds (eba40790, 60026203, f29b8985,
+  0535a265, 501eda31). Known defect for the seeds of issue #23 (D-8): of
+  12,288 runs of `mtree::commit_too_big` with `-DSEED='range(4096)'` in
+  B-DEF with `-Pnone`, 42 fail with `LFS3_ERR_NOSPC` from
+  `lfs3_removeattr("/")`, 1 with `LFS3_ERR_NOSPC` from `lfs3_remove`, and
+  in 1 an `lfs3_remove` trips `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in the
+  mtree's B-tree split.
 - **When:** every CI run.
 
 #### LFS3-DEG-06
@@ -7863,6 +7875,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09; the re-fetch fallback is issue #6 |
 | D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
 | D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | `82ab4f07`, `b5888089` (issue #22) |
+| D-8 | A commit that only removes still splits an mdir whose compaction estimate is over half a block. Splitting an inlined mroot whose root attrs fill its block moves its entries to a new mdir and needs an mtree the mroot has no room for, so `lfs3_removeattr("/")` fails with `LFS3_ERR_NOSPC` every time; splitting any other mdir needs new blocks and an mtree update that a full disk or a full mroot may not take, and can overflow the mtree's B-tree split | `lfs3_mdir_commit__`, `lfs3_mdir_commit_` | run (`mtree::commit_too_big` with `-DSEED='range(4096)'`: 44 of 12,288 in B-DEF) | DEG-05 | none (issue #23) |
 
 ### A.3 From the analyses
 
