@@ -1812,19 +1812,29 @@ littlefs shall keep a recorded bad block out of use across remounts.
 
 #### LFS3-BAD-03
 
-littlefs shall never record a block as bad while the committed filesystem
-references it, and shall remain consistent when power is lost while
-recording.
+littlefs shall record a block as bad only after it failed an erase, a prog
+or an `LFS3_M_CKPROGS` read-back (or through `lfs3_fs_mkbad`), shall record
+it whether or not the committed filesystem still references it, shall keep
+the data in a referenced bad block readable, and shall remain consistent
+when power is lost while recording.
 
-- **Source:** Derived: a mark on a referenced block would make live data
-  unreachable to the allocator's view. Design: 3-alloc §8.1 G2 (a lost mark
-  costs only a retry).
-- **Measure:** gbmap content against a traversal of referenced blocks, after
-  every power loss.
+- **Source:** Derived (issue #1 follow-up). Blocks that fail while in use
+  (an mdir's inactive block after a failed append, a file's last data block)
+  can outnumber any RAM queue, one per mdir or file, so a queue that waits
+  for their release must forget some, and it forgets them all at unmount.
+  The gbmap already keeps a bad mark on a block that is still referenced
+  (LFS3-BAD-06), and the allocator treats it as in use, so the mark hides no
+  data. Design: 3-alloc §8.1 G2 (a mark lost to power loss costs only a
+  retry).
+- **Measure:** gbmap content against emubd's bad blocks after every power
+  loss; reads of files whose blocks went bad.
 - **Pass:** NEW reentrant cases pass under `-Plinear` with PLB-TORN; after
-  every remount no BMBAD range contains a block the traversal reports, and
+  every remount every BMBAD block is bad in emubd, files whose blocks went
+  bad while in use read back, and
   `lfs3_fs_ck(LFS3_CK_CKMETA | LFS3_CK_CKDATA)` returns 0.
-- **Fail:** a referenced block is marked bad, or the check fails.
+- **Fail:** a block that never failed is marked (other than through
+  `lfs3_fs_mkbad`), a referenced bad block's data can't be read, or the
+  check fails.
 - **Verified by:** NEW.
 - **Status:** Not implemented (planned).
 - **When:** before v3-beta.
@@ -1896,33 +1906,57 @@ compile time, without `lfs3_malloc`.
 
 #### LFS3-BAD-08
 
-littlefs shall continue correctly when more blocks go bad at once than the
-pending-mark queue holds.
+littlefs shall never forget a failed block when more blocks go bad between
+two allocator checkpoints than the pending-mark queue holds runs for, and
+shall keep operating: a block that fails while the queue is full merges the
+two closest runs, and the good blocks between them are marked bad with
+them. Allocating a data block records the queue first, so a file write
+records its failed data blocks as it goes.
 
-- **Source:** Derived: marks are advisory (3-alloc §8.3); overflow may lose a
-  mark but not correctness.
-- **Measure:** results and final gbmap content.
-- **Pass:** NEW: with more simultaneous bad blocks than the queue size, the
-  workload passes, and within 3 checkpoints after the failures stop every bad
-  block is recorded.
-- **Fail:** a crash, an error while good blocks remain, or a mark never
-  recorded.
+- **Source:** Derived (issue #1 follow-up): a full queue that forgot its
+  smallest run let the allocator erase and program a known-failed block
+  again (`badblocks_gbmap::exhaustion` failed 36 of 256 seeds at
+  `3c0afc90`). Under graceful degradation a failed block is never lost
+  track of, and writes keep working: stopping the allocator until the
+  queue drains would fail writes with `LFS3_ERR_NOSPC` while good blocks
+  remain, which an unattended system reads as a full disk, while a few good
+  blocks marked with a merged run only cost capacity.
+- **Measure:** per-block erase and prog counts, results of operations, and
+  gbmap content.
+- **Pass:** `badblocks_gbmap::overflow` and `badblocks_gbmap::queue_full`
+  (NEW-134): with more separate runs of bad blocks than `LFS3_BADQ_SIZE`
+  ahead of the allocator, every write succeeds, each bad block is erased or
+  programmed exactly once and is marked, and with up to
+  `2*LFS3_BADQ_SIZE` runs no good block is marked; `badblocks_gbmap::
+  queue_inuse` (NEW-135): more blocks going bad while in use than the queue
+  holds are all marked, read back, and are never erased or programmed again
+  after their files release them; `badblocks_gbmap::queue_merge` (NEW-136):
+  a failure while the queue is full merges the two closest runs, every
+  queued block stays known bad, allocation continues, and a checkpoint
+  marks them all with the blocks between the merged runs.
+- **Fail:** a bad block erased or programmed twice, a bad block never marked,
+  or a write that fails while good blocks remain.
 - **Verified by:** NEW.
 - **Status:** Not implemented (planned).
 - **When:** before v3-beta.
 
 #### LFS3-BAD-09
 
-littlefs shall erase each block at most once after the erase or prog
-failure that made it bad, over the whole life of the device.
+littlefs shall not erase a block again after the erase or prog failure that
+made it bad, in the mount where it failed and, once the mark is on disk
+(`LFS3_I_BADBLOCKS` clear), in every later mount, to the end of the
+device's life.
 
 - **Source:** Derived from BAD-01 and BAD-02 over a device's life
   (3-alloc §8.7 item 10).
 - **Measure:** emubd per-block erase counts to end of life.
-- **Pass:** NEW variants of `exhaustion::*` with bad-block tracking find at
-  most one erase per block after its first failure, and a lifetime ratio no
-  worse than without tracking.
-- **Fail:** a dead block is erased twice, or lifetime drops.
+- **Pass:** `badblocks_gbmap::exhaustion` finds no erase of a block after
+  its first failure for every `SEED` in range(256), with `BADBLOCK_BEHAVIOR`
+  PROGERROR and ERASEERROR and `SIZE` `BLOCK_SIZE/8` and `BLOCK_SIZE`, in
+  B-YGB and B-BIG, and twice the blocks give at least 1.82 times the
+  operations.
+- **Fail:** a dead block is erased again, or the lifetime ratio drops below
+  1.82.
 - **Verified by:** NEW.
 - **Status:** Not implemented (planned).
 - **When:** before v3-beta.
@@ -6932,13 +6966,13 @@ new environment (9.2).
 | LFS3-FAIL-19 | Untested | every CI run | emubd returns `LFS3_ERR_IO` from the n-th operation |
 | LFS3-BAD-01 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen after the first failure |
 | LFS3-BAD-02 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen across 10 remounts |
-| LFS3-BAD-03 | Planned | before v3-beta | `badblocks_gbmap`: reentrant marking; no mark on a referenced block |
+| LFS3-BAD-03 | Planned | before v3-beta | `badblocks_gbmap`: reentrant marking; only failed blocks marked, referenced ones included |
 | LFS3-BAD-04 | Planned | before v3-beta | `badblocks_gbmap`: read-only mounts over bad blocks do not write |
 | LFS3-BAD-05 | Planned | before v3-beta | `compat`: an older gbmap driver on an image with BMBAD ranges |
 | LFS3-BAD-06 | Planned | before v3-beta | `badblocks_gbmap`: marks survive repopulation, grow, setbptr |
 | LFS3-BAD-07 | Planned | before v3-beta | `badblocks_gbmap` in a B-NM build with static buffers |
-| LFS3-BAD-08 | Planned | before v3-beta | `badblocks_gbmap`: more bad blocks than the queue holds |
-| LFS3-BAD-09 | Planned | before v3-beta | `exhaustion` with tracking: at most one erase per dead block |
+| LFS3-BAD-08 | Planned | before v3-beta | `badblocks_gbmap`: more runs of bad blocks than the queue holds, none forgotten (NEW-134 to NEW-136) |
+| LFS3-BAD-09 | Planned | before v3-beta | `badblocks_gbmap::exhaustion`, 256 seeds: no erase of a dead block |
 | LFS3-BAD-10 | Planned | before v3-beta | pre-erase over an ERASEERROR block records it and returns 0 |
 | LFS3-BAD-11 | Planned | before v3-beta | mark-bad API: range and anchor checks |
 | LFS3-BAD-12 | Planned | before v3-beta | clear-mark API |

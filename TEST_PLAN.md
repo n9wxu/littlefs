@@ -1343,6 +1343,68 @@ defines; procedure; pass and fail; extension needed.
   covers the padding of its last prog instead of its `cksize` bytes.
 - **Extension:** none.
 
+#### NEW-134 `badblocks_gbmap::queue_full`
+
+- **File and case:** `tests/test_badblocks_gbmap.toml`,
+  `test_badblocks_gbmap_queue_full`, and the tightened
+  `test_badblocks_gbmap_overflow` and `test_badblocks_gbmap_exhaustion`.
+  B-YGB and B-BIG.
+- **Covers:** BAD-01, BAD-08, BAD-09.
+- **Defines:** `BADBLOCK_BEHAVIOR` PROGERROR and ERASEERROR; `BADBLOCKS`
+  `LFS3_BADQ_SIZE+1`, `2*LFS3_BADQ_SIZE` and `4*LFS3_BADQ_SIZE`;
+  `exhaustion` with `SEED` range(16) in the suite and range(1024) by hand.
+- **Procedure:** Fragment free space with one-block files, removing every
+  other one, and send the allocator back over it, so the next free blocks
+  lie between blocks in use; make `BADBLOCKS` of them bad, so they form
+  that many separate runs; write a file that has to get past all of them,
+  then keep writing until the allocator comes around again. Count erases
+  and progs per block from the moment they go bad. `overflow` makes every
+  other free block bad and rewrites files; `exhaustion` wears the disk out
+  and counts erases after each block's first failure.
+- **Pass:** every write succeeds; each bad block is erased or programmed
+  exactly once and is marked, also after a remount; with up to
+  `2*LFS3_BADQ_SIZE` runs no good block is marked, with more the blocks
+  marked with them stay marked after a remount; the files read back;
+  `exhaustion` finds no erase after a failure.
+- **Fail:** a failed write, a bad block tried twice, or an unmarked bad
+  block.
+- **Extension:** none.
+
+#### NEW-135 `badblocks_gbmap::queue_inuse`
+
+- **File and case:** `tests/test_badblocks_gbmap.toml`,
+  `test_badblocks_gbmap_queue_inuse`. B-YGB and B-BIG.
+- **Covers:** BAD-02, BAD-03, BAD-08.
+- **Defines:** `N` `2*LFS3_BADQ_SIZE+1` files.
+- **Procedure:** For each file, write and sync it, make its data block bad,
+  append and flush so the block fails while in use, then desync and close,
+  so the committed file keeps the failed block. Check the marks, remount,
+  read every file, then rewrite every file so the bad blocks are released,
+  and keep writing.
+- **Pass:** every failed block is marked while still in use and after the
+  remount, every file reads back, and no failed block is erased or
+  programmed again after its failure.
+- **Fail:** an unmarked failed block, a file that doesn't read back, or a
+  failed block erased or programmed again.
+- **Extension:** none.
+
+#### NEW-136 `badblocks_gbmap::queue_merge`
+
+- **File and case:** `tests/test_badblocks_gbmap.toml`,
+  `test_badblocks_gbmap_queue_merge`, internal. B-YGB and B-BIG.
+- **Covers:** BAD-08.
+- **Defines:** none.
+- **Procedure:** Queue `LFS3_BADQ_SIZE` runs of free blocks, two free blocks
+  apart, as failures would, then queue one more failure one free block past
+  the last run, allocate, and checkpoint.
+- **Pass:** the queue keeps `LFS3_BADQ_SIZE` runs and every queued block
+  stays known bad, the last run now covering the new block and the one
+  between; the allocation succeeds with a block not queued; the checkpoint
+  empties the queue and marks every queued block and the block between.
+- **Fail:** a queued block no longer known bad, a failed allocation, or a
+  block left unmarked after the checkpoint.
+- **Extension:** none.
+
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
 
 - **File and case:** `tests/test_badblocks.toml`, two reentrant fuzz cases
