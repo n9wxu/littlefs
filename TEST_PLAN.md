@@ -1573,6 +1573,24 @@ defines; procedure; pass and fail; extension needed.
   written.
 - **Extension:** none.
 
+#### NEW-146 `alloc::health`
+
+- **File and case:** `tests/test_alloc.toml`, `test_alloc_health`,
+  internal; and `tests/test_repair.toml`, `test_repair_health`. B-DEF,
+  B-YGB and B-BIG.
+- **Covers:** DEG-09.
+- **Defines:** `GBMAP` false and true.
+- **Procedure:** Write 16 files of 2 blocks, rewrite them, remove every
+  other one, and with the gbmap mark a free block bad
+  (`lfs3_fs_mkbad`); after each step count the blocks a traversal finds
+  and call `lfs3_fs_health` and `lfs3_fs_usage`. `repair::health` adds
+  blocks that failed reads.
+- **Pass:** `inuse` is the traversal's count, `bad` the blocks marked bad,
+  `suspect` the blocks that failed reads, `free` the rest of
+  `block_count`, and `inuse` plus `bad` is `lfs3_fs_usage`.
+- **Fail:** any other count.
+- **Extension:** none.
+
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
 
 - **File and case:** `tests/test_badblocks.toml`, two reentrant fuzz cases

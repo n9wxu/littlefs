@@ -7398,21 +7398,31 @@ wear bounded.
 
 #### LFS3-DEG-09
 
-littlefs shall report its health so the application can act before it fails:
-the bad blocks, the suspect blocks, and the number of free good blocks.
+littlefs shall report its health in one call, so the application can act
+before it fails: the blocks in use, the bad blocks, the suspect blocks,
+and the good blocks left to write; `lfs3_fs_nextbad` and
+`lfs3_fs_nextsuspect` shall list which blocks are bad and suspect.
 
-- **Source:** Proposal (issues #9, #19). An unattended application can, for
-  example, log less or rotate sooner as capacity shrinks.
-- **Measure:** the reported values against the emubd state.
+- **Source:** Proposal (issues #9, #19, #21). An unattended application
+  can, for example, log less or rotate sooner as capacity shrinks. One
+  call, so firmware doesn't have to iterate two lists and run a
+  traversal; `lfs3_fs_stat` never goes to disk, and counting blocks in
+  use needs a traversal, so it's a call of its own, `lfs3_fs_health`.
+- **Measure:** the reported values against the emubd state and a
+  traversal.
 - **Pass:** `repair::health`: with blocks marked bad and blocks that
   failed reads, `lfs3_fs_nextbad` lists exactly the bad blocks,
-  `lfs3_fs_nextsuspect` exactly the suspect ones, and `block_count` minus
+  `lfs3_fs_nextsuspect` exactly the suspect ones, `block_count` minus
   `lfs3_fs_usage` (which counts bad blocks as used) equals the free good
-  blocks a traversal finds, in B-YGB and B-BIG.
-- **Fail:** a mismatch.
-- **Verified by:** `repair::health`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (f09acb9d).
+  blocks a traversal finds, and `lfs3_fs_health` reports the same
+  counts, in B-YGB and B-BIG; `alloc::health`: as files are written and
+  removed, `lfs3_fs_health` reports the blocks a traversal finds in use,
+  no bad or suspect blocks, and the rest free, in B-DEF, B-YGB and B-BIG.
+- **Fail:** a mismatch, or a free count larger than what can be written.
+- **Verified by:** `repair::health`, `alloc::health` (NEW-146).
+- **Status:** Not implemented at `b10efaa`; the lists and the usage
+  tested on `v3-integration` (f09acb9d); there was no single call at
+  `6f80e646`.
 - **When:** every CI run.
 
 #### LFS3-DEG-10
