@@ -2132,6 +2132,15 @@ code = '''
     lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => synced_size;
     assert(memcmp(rbuf, synced, synced_size) == 0);
     lfs3_file_close(&lfs3, &file) => 0;
-    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    // a compaction that failed into a block that no longer reads leaves
+    // a pair a mount can't order, so a read-only mount takes what reads,
+    // degraded, and checks report it
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    bool degraded = fsinfo.flags & LFS3_I_DEGRADED;
+    assert(!degraded
+            || BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_READERROR);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+            => (degraded) ? LFS3_ERR_CORRUPT : 0;
     lfs3_unmount(&lfs3) => 0;
 '''

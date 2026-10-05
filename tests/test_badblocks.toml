@@ -6201,16 +6201,29 @@ code = '''
         lfs3_emubd_mkbad(CFG, 1) => 0;
     }
 
-    lfs3_mount(&lfs3,
+    // a block of the anchor that doesn't read leaves us unable to tell
+    // which block is newer, a read-write mount can't build on either, a
+    // read-only mount takes what reads, degraded
+    int err = lfs3_mount(&lfs3,
             LFS3_M_RDWR
                 | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0),
-            CFG) => 0;
+            CFG);
+    if (BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_READERROR) {
+        assert(err == LFS3_ERR_CORRUPT);
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        lfs3_unmount(&lfs3) => 0;
+        return;
+    }
+    assert(!err);
 
     for (lfs3_size_t i = 0;; i++) {
         // this should eventually fail
         assert(i <= BLOCK_COUNT);
 
-        int err = lfs3_mkdir(&lfs3, "hi");
+        err = lfs3_mkdir(&lfs3, "hi");
         assert(!err || err == LFS3_ERR_NOSPC);
         if (err == LFS3_ERR_NOSPC) {
             break;
@@ -6771,10 +6784,23 @@ code = '''
         lfs3_emubd_mkbad(CFG, 1) => 0;
     }
 
-    lfs3_mount(&lfs3,
+    // a block of the anchor that doesn't read leaves us unable to tell
+    // which block is newer, a read-write mount can't build on either, a
+    // read-only mount takes what reads, degraded
+    int err_ = lfs3_mount(&lfs3,
             LFS3_M_RDWR
                 | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_M_CKPROGS, -1) : 0),
-            CFG) => 0;
+            CFG);
+    if (BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_READERROR) {
+        assert(err_ == LFS3_ERR_CORRUPT);
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        lfs3_unmount(&lfs3) => 0;
+        return;
+    }
+    assert(!err_);
     lfs3_file_t file;
     lfs3_file_open(&lfs3, &file, "a",
             LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
@@ -7917,8 +7943,37 @@ code = '''
     // can't fetch it or finds the gcksum doesn't match its older block
     if (TARGET == 0) {
         assert(err == LFS3_ERR_CORRUPT);
-        // and there's no degraded read-only mount
-        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+        // a read-only mount mounts degraded, every file outside the mdir
+        // reads, the ones inside it don't
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        lfs3_size_t readable = 0;
+        for (lfs3_size_t i = 0; i < 2*N; i++) {
+            char name[256];
+            sprintf(name, "dir%03x_with_a_longer_name/file%03x", i/2, i);
+            lfs3_size_t size = (i % 2) ? SIZE : 64;
+            uint32_t prng = SEED + i;
+            for (lfs3_size_t j = 0; j < size; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            uint8_t rbuf[SIZE];
+            err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (i == target_file) {
+                assert(err == LFS3_ERR_CORRUPT);
+            }
+            if (err) {
+                continue;
+            }
+            lfs3_file_read(&lfs3, &file, rbuf, size) => size;
+            assert(memcmp(rbuf, wbuf, size) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+            readable += 1;
+        }
+        assert(readable > 0);
+        lfs3_unmount(&lfs3) => 0;
 
     } else {
         assert(!err);
@@ -8553,8 +8608,15 @@ code = '''
             lfs3_file_close(&lfs3, &file) => 0;
         }
 
+        // a mount can't tell which block of the anchor is newer when
+        // one doesn't read, so a read-only mount takes what reads, and
+        // says so
         if (remount) {
-            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+            bool degraded = fsinfo.flags & LFS3_I_DEGRADED;
+            assert(degraded == ((BADBLOCKS & 0x2)
+                    && BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_READERROR));
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+                    => (degraded) ? LFS3_ERR_CORRUPT : 0;
         }
     }
 

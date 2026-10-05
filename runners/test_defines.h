@@ -57,9 +57,9 @@
         #ifdef LFS3_GBMAP
         .gc_lookgbmap_thresh            = GC_LOOKGBMAP_THRESH,
         .lookgbmap_thresh               = LOOKGBMAP_THRESH,
-        .ck_retries                     = CK_RETRIES,
         .ck_passes                      = CK_PASSES,
         #endif
+        .ck_retries                     = CK_RETRIES,
         #ifdef LFS3_PREERASE
         .gc_preerase_count              = GC_PREERASE_COUNT,
         #endif

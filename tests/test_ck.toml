@@ -6041,7 +6041,8 @@ code = '''
 # mount find a rollback of any mdir but the one committed most recently,
 # that one only an externally stored lfs3_fs_cksum can find
 #
-# ROLLBACK=0 => roll back A before mounting, mount fails
+# ROLLBACK=0 => roll back A before mounting, a read-write mount fails, a
+#               read-only one mounts degraded
 # ROLLBACK=1 => roll back B before mounting, mount succeeds, but
 #               lfs3_fs_cksum differs and the filesystem stays usable
 # ROLLBACK=2 => roll back A while mounted, the next metadata check fails
@@ -6177,7 +6178,16 @@ code = '''
         lfs3_unmount(&lfs3) => 0;
         TEST_ROLLBACK_LOAD(a_pair, a_old);
         lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
-        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x59);
+        uint32_t cksum_d;
+        lfs3_fs_cksum(&lfs3, &cksum_d) => LFS3_ERR_CORRUPT;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
 
         // put X back, and everything is as it was
         TEST_ROLLBACK_LOAD(a_pair, a_new);

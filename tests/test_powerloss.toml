@@ -3367,10 +3367,9 @@ code = '''
 
 # A newer block that fails reads when mount settles its pair
 #
-# The fetch takes the older block, but a failed read doesn't prove the
-# newer block is gone, so settling must read the newer block again and
-# copy it over the older one when it reads the same every time, and never
-# copy the older block over a newer one it can't read
+# A failed read doesn't prove the newer block is gone, so the fetch reads
+# it again, up to ck_retries times, and fails rather than take the older
+# block; settling never copies the older block over the newer one
 #
 # MODE=0 => default mode, a dirty file in the pair
 # MODE=1 => LFS3_M_SETTLE
@@ -3379,6 +3378,7 @@ code = '''
 [cases.test_powerloss_settle_newer]
 defines.MODE = [0, 1]
 defines.FAILS = [1, 3, 64]
+defines.CK_RETRIES = [0, 3]
 in = 'lfs3.c'
 code = '''
     const uint32_t mflags = LFS3_M_RDWR | ((MODE) ? LFS3_M_SETTLE : 0);
@@ -3406,15 +3406,18 @@ code = '''
     lfs3_file_close(&lfs3, &file) => 0;
     lfs3_unmount(&lfs3) => 0;
 
-    // the newer block fails some reads as we mount
+    // the newer block fails some reads as we mount, the mount reads it
+    // again up to ck_retries times, and fails rather than take the
+    // older block
     lfs3_emubd_mktransient(CFG, newer, FAILS) => 0;
-    lfs3_mount(&lfs3, mflags, CFG) => 0;
+    int err = lfs3_mount(&lfs3, mflags, CFG);
+    assert(err == ((FAILS <= CK_RETRIES) ? 0 : LFS3_ERR_CORRUPT));
     uint8_t buf[8];
-    if (lfs3_emubd_transient(CFG, newer) == 0) {
+    if (!err) {
         lfs3_get(&lfs3, "a", buf, sizeof(buf)) => 6;
         assert(memcmp(buf, "second", 6) == 0);
+        lfs3_unmount(&lfs3) => 0;
     }
-    lfs3_unmount(&lfs3) => 0;
 
     // once it reads again, the newer block is still there
     lfs3_emubd_mktransient(CFG, newer, 0) => 0;

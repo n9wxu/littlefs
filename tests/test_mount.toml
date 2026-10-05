@@ -598,9 +598,21 @@ code = '''
 # test that on-mount traversals do what they say they do
 
 # test that mount never swallows a read error
+# fail each read of a mount in turn, with an IO error, or a read error as
+# a bad block reports it
+#
+# An IO error is returned, never swallowed. A failed read may be read
+# again (ck_retries), but never decides which commit of a metadata pair
+# is the latest: the mount fails, or finds everything as written, it
+# never falls back to an older block and loses a commit (issue #6). A
+# read-only mount may mount degraded around an mdir it couldn't read
+#
+# N=64 => enough for an mtree
 [cases.test_mount_readerror]
 defines.RDONLY = [false, true]
-defines.N = [1, 8]
+defines.N = [1, 8, 64]
+defines.ERR = ['LFS3_ERR_IO', 'LFS3_ERR_CORRUPT']
+defines.CK_RETRIES = [0, 3]
 code = '''
     lfs3_t lfs3;
     lfs3_format(&lfs3,
@@ -629,38 +641,356 @@ code = '''
 
     // fail every read during mount, one at a time
     for (uint32_t i = 1;; i++) {
-        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, i, 0) => 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, i, ERR) => 0;
         int err = lfs3_mount(&lfs3,
                 (RDONLY) ? LFS3_M_RDONLY : LFS3_M_RDWR,
                 CFG);
-        // our read error should never be swallowed
-        assert(err == LFS3_ERR_IO || (!err
-                && lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_READ) > 0));
+        bool failed = (lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_READ) == 0);
         lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, 0, 0) => 0;
-        if (!err) {
+        // our read error should never be swallowed, unless read again,
+        // and IO is never read again
+        assert(!err || (failed && err == ERR));
+        assert(err || ERR != LFS3_ERR_IO || !failed);
+        if (err) {
+            continue;
+        }
+
+        // only a read-only mount degrades, around a read that failed
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        bool degraded = fsinfo.flags & LFS3_I_DEGRADED;
+        assert(!degraded
+                || (RDONLY && failed && ERR == LFS3_ERR_CORRUPT));
+
+        // check we can still read everything, nothing rolled back, a
+        // degraded mount may have taken an mroot's older block, but says
+        // so, and never returns wrong data
+        for (lfs3_size_t j = 0; j < N; j++) {
+            char name[256];
+            sprintf(name, "dir%03d", j);
+            struct lfs3_info info;
+            err = lfs3_stat(&lfs3, name, &info);
+            assert(!err || (degraded
+                    && (err == LFS3_ERR_NOENT || err == LFS3_ERR_CORRUPT)));
+            assert(err || info.type == LFS3_TYPE_DIR);
+
+            sprintf(name, "file%03d", j);
+            lfs3_file_t file;
+            err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+            assert(!err || (degraded
+                    && (err == LFS3_ERR_NOENT || err == LFS3_ERR_CORRUPT)));
+            if (err) {
+                continue;
+            }
+            uint8_t wbuf[BLOCK_SIZE/2];
+            memset(wbuf, 'a'+(j % 26), BLOCK_SIZE/2);
+            uint8_t rbuf[BLOCK_SIZE/2];
+            lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE/2);
+            assert(d == BLOCK_SIZE/2 || (degraded && d == LFS3_ERR_CORRUPT));
+            assert(d < 0 || memcmp(rbuf, wbuf, BLOCK_SIZE/2) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+                => (degraded) ? LFS3_ERR_CORRUPT : 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // done once mount no longer reaches the nth read
+        if (!failed) {
             break;
         }
     }
+'''
 
-    // check we can still read everything
-    for (lfs3_size_t i = 0; i < N; i++) {
-        char name[256];
-        sprintf(name, "dir%03d", i);
-        struct lfs3_info info;
-        lfs3_stat(&lfs3, name, &info) => 0;
-        assert(info.type == LFS3_TYPE_DIR);
+# the newer block of an mdir in the mtree fails reads while we're mounted
+#
+# Lookups fetch mdirs in the mtree again each time. A lookup reads the
+# newer block again, up to ck_retries times, and returns LFS3_ERR_CORRUPT
+# rather than the older block's state (issue #6)
+#
+# FAILS => reads of the newer block that fail, 64 keeps failing
+[cases.test_mount_readerror_mounted]
+defines.FAILS = [1, 3, 64]
+defines.CK_RETRIES = [0, 3]
+defines.SIZE = 'BLOCK_SIZE/16'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
 
-        sprintf(name, "file%03d", i);
-        lfs3_file_t file;
-        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
-        uint8_t wbuf[BLOCK_SIZE/2];
-        memset(wbuf, 'a'+(i % 26), BLOCK_SIZE/2);
-        uint8_t rbuf[BLOCK_SIZE/2];
-        lfs3_file_read(&lfs3, &file, rbuf, BLOCK_SIZE/2) => BLOCK_SIZE/2;
-        assert(memcmp(rbuf, wbuf, BLOCK_SIZE/2) == 0);
-        lfs3_file_close(&lfs3, &file) => 0;
+    // enough files for an mtree
+    uint8_t wbuf[SIZE];
+    lfs3_size_t n = 0;
+    char name[256];
+    while (lfs3.mtree.r.weight == 0) {
+        assert(n < BLOCK_COUNT);
+        sprintf(name, "spider%03d", n);
+        memset(wbuf, 'a'+(n % 26), SIZE);
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+        n += 1;
+    }
+
+    // sync a first version into an mdir of the mtree, compact so the
+    // older block keeps it, then sync a second version into the newer
+    // block
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "jellyfish",
+            LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "first", 5) => 5;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    assert(file.b.h.mdir.mid >= 0);
+    assert(lfs3_mptr_cmp(file.b.h.mdir.r.blocks, lfs3.mroot.r.blocks) != 0);
+    lfs3_mdir_compact(&lfs3, &file.b.h.mdir) => 0;
+    lfs3_block_t newer = file.b.h.mdir.r.blocks[0];
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, "second", 6) => 6;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    assert(file.b.h.mdir.r.blocks[0] == newer);
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // the newer block fails reads, never read the first version
+    lfs3_emubd_mktransient(CFG, newer, FAILS) => 0;
+    uint8_t buf[8];
+    lfs3_ssize_t d = lfs3_get(&lfs3, "jellyfish", buf, sizeof(buf));
+    assert(d == ((FAILS <= CK_RETRIES) ? 6 : LFS3_ERR_CORRUPT));
+    if (d == 6) {
+        assert(memcmp(buf, "second", 6) == 0);
+    }
+    struct lfs3_info info;
+    int err = lfs3_stat(&lfs3, "jellyfish", &info);
+    assert(err == 0 || err == LFS3_ERR_CORRUPT);
+    if (!err) {
+        assert(info.size == 6);
+    }
+
+    // once it reads again, so does everything else
+    lfs3_emubd_mktransient(CFG, newer, 0) => 0;
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_get(&lfs3, "jellyfish", buf, sizeof(buf)) => 6;
+        assert(memcmp(buf, "second", 6) == 0);
+        for (lfs3_size_t i = 0; i < n; i++) {
+            sprintf(name, "spider%03d", i);
+            uint8_t rbuf[SIZE];
+            lfs3_get(&lfs3, name, rbuf, SIZE) => SIZE;
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     }
     lfs3_unmount(&lfs3) => 0;
+'''
+
+# a damaged mdir in the mtree
+#
+# A read-write mount fails, a read-only mount mounts degraded: it reports
+# LFS3_I_DEGRADED, serves everything outside the damaged mdir, and
+# returns LFS3_ERR_CORRUPT inside it
+#
+# DAMAGE=0 => both blocks fail every read
+# DAMAGE=1 => both blocks erased, nothing in them checks
+# DAMAGE=2 => both blocks rolled back to an older copy, which checks, but
+#             the gcksum doesn't
+# WHICH=0  => the first mdir of the mtree, with the root's bookmark
+# WHICH=1  => the last mdir of the mtree
+[cases.test_mount_degraded]
+defines.DAMAGE = [0, 1, 2]
+defines.WHICH = [0, 1]
+defines.SIZE = 'BLOCK_SIZE/16'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // enough files for three mdirs in the mtree
+    #define TEST_DEGRADED_MAX 1024
+    uint8_t wbuf[SIZE];
+    lfs3_size_t n = 0;
+    char name[256];
+    while (lfs3.mtree.r.weight < (3U << lfs3.mbits)) {
+        assert(n < TEST_DEGRADED_MAX);
+        sprintf(name, "spider%03d", n);
+        memset(wbuf, 'a'+(n % 26), SIZE);
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+        n += 1;
+    }
+
+    // which files are in our mdir?
+    lfs3_block_t pair[2];
+    lfs3_file_t file;
+    sprintf(name, "spider%03d", (WHICH == 0) ? 0 : (int)n-1);
+    lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+    pair[0] = file.b.h.mdir.r.blocks[0];
+    pair[1] = file.b.h.mdir.r.blocks[1];
+    lfs3_file_close(&lfs3, &file) => 0;
+    bool damaged[TEST_DEGRADED_MAX];
+    lfs3_size_t damaged_count = 0;
+    for (lfs3_size_t i = 0; i < n; i++) {
+        sprintf(name, "spider%03d", i);
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        damaged[i] = (lfs3_mptr_cmp(file.b.h.mdir.r.blocks, pair) == 0);
+        damaged_count += damaged[i];
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    assert(damaged_count > 0 && damaged_count < n);
+    assert(lfs3_mptr_cmp(pair, lfs3.mroot.r.blocks) != 0);
+
+    // a rollback needs an older copy, and a commit elsewhere after it
+    uint8_t (*old)[BLOCK_SIZE] = malloc(2*BLOCK_SIZE);
+    assert(old);
+    if (DAMAGE == 2) {
+        for (int j = 0; j < 2; j++) {
+            CFG->read(CFG, pair[j], 0, old[j], BLOCK_SIZE) => 0;
+        }
+        for (lfs3_size_t i = 0; i < n; i++) {
+            if (damaged[i]) {
+                sprintf(name, "spider%03d", i);
+                lfs3_set(&lfs3, name, "!", 1) => 0;
+            }
+        }
+        for (lfs3_size_t i = 0; i < n; i++) {
+            if (!damaged[i]) {
+                sprintf(name, "spider%03d", i);
+                memset(wbuf, 'a'+(i % 26), SIZE);
+                lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+                break;
+            }
+        }
+        for (lfs3_size_t i = 0; i < n; i++) {
+            if (damaged[i]) {
+                sprintf(name, "spider%03d", i);
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                assert(lfs3_mptr_cmp(file.b.h.mdir.r.blocks, pair) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+                break;
+            }
+        }
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // damage the mdir
+    for (int j = 0; j < 2; j++) {
+        if (DAMAGE == 0) {
+            lfs3_emubd_mktransient(CFG, pair[j], 0xffffffff) => 0;
+        } else if (DAMAGE == 1) {
+            CFG->erase(CFG, pair[j]) => 0;
+        } else {
+            CFG->erase(CFG, pair[j]) => 0;
+            CFG->prog(CFG, pair[j], 0, old[j], BLOCK_SIZE) => 0;
+        }
+    }
+    free(old);
+
+    // a read-write mount fails
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    // so do mount-time checks
+    lfs3_mount(&lfs3, LFS3_M_RDONLY | LFS3_M_CKMETA, CFG)
+            => LFS3_ERR_CORRUPT;
+
+    // a read-only mount mounts degraded
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_RDONLY);
+    assert(fsinfo.flags & LFS3_I_DEGRADED);
+    assert(!(fsinfo.flags & LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)));
+
+    // everything outside the damaged mdir reads, inside it a rollback
+    // reads as it was, anything else is corrupt
+    for (lfs3_size_t i = 0; i < n; i++) {
+        sprintf(name, "spider%03d", i);
+        uint8_t rbuf[SIZE];
+        lfs3_ssize_t d = lfs3_get(&lfs3, name, rbuf, SIZE);
+        struct lfs3_info info;
+        int err = lfs3_stat(&lfs3, name, &info);
+        if (damaged[i] && DAMAGE != 2) {
+            assert(d == LFS3_ERR_CORRUPT);
+            assert(err == LFS3_ERR_CORRUPT);
+        } else {
+            assert(d == SIZE);
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+            assert(err == 0);
+            assert(info.size == SIZE);
+        }
+    }
+
+    // a directory reads up to the damaged mdir, the root's bookmark is in
+    // the first
+    lfs3_dir_t dir;
+    lfs3_size_t seen = 0;
+    int err = lfs3_dir_open(&lfs3, &dir, "/");
+    assert(err == ((WHICH == 0 && DAMAGE != 2) ? LFS3_ERR_CORRUPT : 0));
+    while (!err) {
+        struct lfs3_info info;
+        err = lfs3_dir_read(&lfs3, &dir, &info);
+        assert(!err || err == LFS3_ERR_NOENT || err == LFS3_ERR_CORRUPT);
+        if (err == LFS3_ERR_CORRUPT) {
+            assert(DAMAGE != 2);
+            // and stays there
+            lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_CORRUPT;
+            lfs3_dir_close(&lfs3, &dir) => 0;
+            break;
+        }
+        if (err == LFS3_ERR_NOENT) {
+            assert(DAMAGE == 2 || !damaged[n-1]);
+            break;
+        }
+        if (strcmp(info.name, ".") != 0 && strcmp(info.name, "..") != 0) {
+            lfs3_size_t i;
+            assert(sscanf(info.name, "spider%u", &i) == 1);
+            assert(i == seen);
+            assert(!damaged[i] || DAMAGE == 2);
+            seen += 1;
+        }
+    }
+    if (!err || err == LFS3_ERR_NOENT) {
+        lfs3_dir_close(&lfs3, &dir) => 0;
+    }
+    assert(seen == ((DAMAGE == 2) ? n
+            : (WHICH == 0) ? 0
+            : n - damaged_count));
+
+    // nothing checks, and what we can't know we don't report
+    uint32_t cksum;
+    lfs3_fs_cksum(&lfs3, &cksum) => LFS3_ERR_CORRUPT;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+    #ifdef LFS3_GBMAP
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+    #endif
+    lfs3_unmount(&lfs3) => 0;
+
+    // once it reads, everything is there
+    if (DAMAGE == 0) {
+        for (int j = 0; j < 2; j++) {
+            lfs3_emubd_mktransient(CFG, pair[j], 0) => 0;
+        }
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!(fsinfo.flags & LFS3_I_DEGRADED));
+        for (lfs3_size_t i = 0; i < n; i++) {
+            sprintf(name, "spider%03d", i);
+            uint8_t rbuf[SIZE];
+            lfs3_get(&lfs3, name, rbuf, SIZE) => SIZE;
+            memset(wbuf, 'a'+(i % 26), SIZE);
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        }
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
 '''
 
 [cases.test_mount_t_lookahead]
@@ -3172,6 +3502,8 @@ code = '''
                 LFS3_RATTR_ARG("oh no!"),
                 LFS3_RATTR_NULL)) => 0;
         ERR = LFS3_ERR_CORRUPT;
+        // a read-only mount without checks mounts degraded
+        rdonly_ok = (M == 2);
     }
     if (FAILURE != 16) {
         lfs3_unmount(&lfs3) => 0;
@@ -3201,6 +3533,9 @@ code = '''
         memset(&lfs3, 0xab, sizeof(lfs3));
         lfs3_mount(&lfs3, flags, CFG) => (ok) ? 0 : ERR;
         if (ok) {
+            struct lfs3_fsinfo fsinfo;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(!(fsinfo.flags & LFS3_I_DEGRADED) == (FAILURE != 17));
             lfs3_unmount(&lfs3) => 0;
         }
         lfs3_emubd_progs(CFG) => progs;

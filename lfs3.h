@@ -100,6 +100,18 @@ typedef uint32_t lfs3_ocompat_t;
 #endif
 
 
+// Maximum number of blocks kept in RAM that littlefs failed to write as
+// the next state of a metadata pair, so a read that fails on one never
+// stops the pair's other block being read. Each costs a block address in
+// lfs3_t. If more fail, the oldest are forgotten. Limited to <= 32.
+#ifndef LFS3_MFAILED_SIZE
+#define LFS3_MFAILED_SIZE 4
+#endif
+#if LFS3_MFAILED_SIZE < 1 || LFS3_MFAILED_SIZE > 32
+#error "LFS3_MFAILED_SIZE must be in 1..32"
+#endif
+
+
 // Possible error codes, these are negative to allow
 // valid positive return values
 enum lfs3_err {
@@ -348,6 +360,7 @@ enum lfs3_type {
 
 // Filesystem info flags
 #define LFS3_I_RDONLY   0x00000001  // Mounted read only
+#define LFS3_I_DEGRADED 0x00000004  // Mounted read only around damage
 #ifdef LFS3_GBMAP
 #define LFS3_I_GBMAP    0x02000000  // Global on-disk block-map in use
 #endif
@@ -856,28 +869,31 @@ struct lfs3_cfg {
 
     // Number of times to read a block again when it fails a check, in
     // lfs3_fs_ck, lfs3_fs_gc, traversals, and mounts with LFS3_M_CKMETA
-    // or LFS3_M_CKDATA. Only data blocks and B-tree nodes are read again,
-    // their checksums are recorded where they're referenced.
+    // or LFS3_M_CKDATA, and when the block device fails a read that
+    // decides a metadata pair's latest state. Data blocks and B-tree
+    // nodes are read again where their checksums are recorded. A metadata
+    // pair is read again, at mount and while mounted, when a read of a
+    // revision count or of its newer block's log fails: littlefs never
+    // takes the older block for the latest because a read failed, the
+    // pair is damaged instead, see lfs3_mount.
     //
     // A read can fail while the supply is low and pass later, so a failed
-    // check doesn't prove the data is lost. A block that needed a retry
-    // stays listed by lfs3_fs_nextsuspect, and on a writable filesystem
-    // lfs3_fs_ck, lfs3_fs_gc and mount-time checks move its contents,
-    // exactly the bytes of a read that passed the checksum, to a new
-    // block. The old block is used again if it then erases and progs
-    // cleanly, and marked bad if it doesn't, or if it needs moving again
-    // in the same mount. LFS3_ERR_CORRUPT is returned only if every read
-    // fails. An mdir is settled into its other block instead, see
-    // lfs3_mount, when no open handle holds it, its log reads back as
-    // written, and its other block holds an older revision. mtree nodes
-    // aren't moved.
+    // check doesn't prove the data is lost. With LFS3_GBMAP, a block that
+    // needed a retry stays listed by lfs3_fs_nextsuspect, and on a
+    // writable filesystem lfs3_fs_ck, lfs3_fs_gc and mount-time checks
+    // move its contents, exactly the bytes of a read that passed the
+    // checksum, to a new block. The old block is used again if it then
+    // erases and progs cleanly, and marked bad if it doesn't, or if it
+    // needs moving again in the same mount. LFS3_ERR_CORRUPT is returned
+    // only if every read fails. An mdir is settled into its other block
+    // instead, see lfs3_mount, when no open handle holds it, its log reads
+    // back as written, and its other block holds an older revision. mtree
+    // nodes aren't moved.
     //
     // 0 doesn't read again or move anything. Where the supply can sag or
     // power can be lost mid-write, we suggest 3: a block that fails 4
     // reads in a row is unlikely to be readable later.
-    #ifdef LFS3_GBMAP
     lfs3_size_t ck_retries;
-    #endif
 
     // Number of times lfs3_fs_ck, and mounts and formats with
     // LFS3_M_CKMETA, LFS3_M_CKDATA, LFS3_F_CKMETA or LFS3_F_CKDATA, check
@@ -1543,10 +1559,15 @@ typedef struct lfs3 {
     lfs3_ssize_t graft_count;
     // error from a failed sync after a commit we kept
     int syncerr;
+    #endif
     // what the last mdir fetch found, and what mount found, used to
     // decide which mdirs mount must settle
     uint8_t mfetch;
+    #ifndef LFS3_RDONLY
     uint8_t msettle;
+    // blocks we failed to write as a metadata pair's next state
+    lfs3_block_t mfailed[LFS3_MFAILED_SIZE];
+    uint8_t mfailed_count;
     #endif
 
     // global state
@@ -1648,6 +1669,26 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // feature or geometry this build or configuration doesn't have, LFS3_ERR_IO
 // if the block device fails, LFS3_ERR_NOMEM if a buffer can't be allocated,
 // or, with mount-time work that writes, LFS3_ERR_NOSPC if the disk is full.
+// A read-only mount of damaged metadata succeeds, degraded, see below.
+//
+// Note on damage
+//
+// A metadata pair of the mtree that doesn't read or check, or a global
+// checksum or global state that doesn't check, fails a read-write mount,
+// and any mount with LFS3_M_CKMETA or LFS3_M_CKDATA, with
+// LFS3_ERR_CORRUPT. A read-only mount without them mounts degraded
+// instead, and lfs3_fs_stat reports LFS3_I_DEGRADED: every file in an
+// undamaged pair reads as stored, and anything that needs a damaged pair
+// returns LFS3_ERR_CORRUPT, as do lfs3_dir_read at the first damaged pair
+// of its directory, lfs3_fs_cksum and lfs3_fs_ck. After a global checksum
+// mismatch every pair reads, but one of them is older than last written,
+// and which can't be told. A degraded mount has no gbmap and no pending
+// removes, so a file that a power loss left half removed or renamed may
+// show under its old name as well. An mroot one of whose blocks doesn't
+// read is taken from the block that does, which may be the older,
+// nothing past it could be served otherwise; an mroot with no block that
+// checks, or a damaged B-tree node of the mtree, still fails the mount.
+// See ERRORS.md for the smallest repair.
 //
 // Note on power loss
 //
@@ -2178,7 +2219,8 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
 // Also note this is only a 32-bit checksum. Collisions should be
 // expected.
 //
-// Returns 0, cksum never fails.
+// Returns 0 on success, or LFS3_ERR_CORRUPT on a degraded mount
+// (LFS3_I_DEGRADED), where the checksum is unknown.
 int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum);
 
 // Attempt to make the filesystem consistent and ready for writing

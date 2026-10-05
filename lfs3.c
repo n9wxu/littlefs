@@ -32,6 +32,9 @@ enum lfs3_ierr {
     // a copy could not read its source, unlike LFS3_ERR_CORRUPT this
     // says nothing about the destination, so relocating can't help
     LFS3_ERR_SRCCORRUPT = -0x1054,
+    // a read the block device failed decides which commit of a metadata
+    // pair is its latest, reading again may decide it
+    LFS3_ERR_RDCORRUPT  = -0x1055,
 };
 
 // for lookups of things an earlier read says exist, not finding them
@@ -45,8 +48,8 @@ static inline int lfs3_ckfound(int err) {
 #ifndef LFS3_RDONLY
 #define LFS3_MFETCH_SETTLED 0x01 // last commit is a settled copy
 #define LFS3_MFETCH_TORN    0x02 // a write was interrupted
-#define LFS3_MFETCH_RDERR   0x04 // a read failed, not just a checksum
 #endif
+#define LFS3_MFETCH_RDERR   0x04 // a read failed, not just a checksum
 
 // what mount found, in lfs3->msettle
 #ifndef LFS3_RDONLY
@@ -84,9 +87,7 @@ static int lfs3_bd_read__(lfs3_t *lfs3, lfs3_block_t block, lfs3_size_t off,
         LFS3_INFO("Bad read 0x%"PRIx32".%"PRIx32" %"PRIu32" (%d)",
                 block, off, size, err);
         // a failed read says nothing about what was written
-        #ifndef LFS3_RDONLY
         lfs3->mfetch |= LFS3_MFETCH_RDERR;
-        #endif
         #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
         if (err == LFS3_ERR_CORRUPT) {
             lfs3_alloc_pushsuspect(lfs3, block);
@@ -126,6 +127,52 @@ static int lfs3_bd_prog__(lfs3_t *lfs3, lfs3_block_t block, lfs3_size_t off,
 }
 #endif
 
+// blocks we failed to write as a metadata pair's next state
+//
+// a compaction or settle into a pair's other block that fails leaves
+// that block behind, maybe with a newer revision count and a log that
+// doesn't read, which a fetch must not take for the pair's latest state,
+// littlefs forgets one once it erases it again
+#ifndef LFS3_RDONLY
+static lfs3_ssize_t lfs3_mdir_findfailed(const lfs3_t *lfs3,
+        lfs3_block_t block) {
+    for (lfs3_size_t i = 0; i < lfs3->mfailed_count; i++) {
+        if (lfs3->mfailed[i] == block) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static void lfs3_mdir_pushfailed(lfs3_t *lfs3, lfs3_block_t block) {
+    if (lfs3_mdir_findfailed(lfs3, block) >= 0) {
+        return;
+    }
+
+    // full? forget the oldest
+    if (lfs3->mfailed_count == LFS3_MFAILED_SIZE) {
+        lfs3_memmove(&lfs3->mfailed[0], &lfs3->mfailed[1],
+                (LFS3_MFAILED_SIZE-1) * sizeof(lfs3_block_t));
+        lfs3->mfailed_count -= 1;
+    }
+
+    lfs3->mfailed[lfs3->mfailed_count] = block;
+    lfs3->mfailed_count += 1;
+}
+
+static void lfs3_mdir_dropfailed(lfs3_t *lfs3, lfs3_block_t block) {
+    lfs3_ssize_t i = lfs3_mdir_findfailed(lfs3, block);
+    if (i < 0) {
+        return;
+    }
+
+    lfs3_memmove(&lfs3->mfailed[i], &lfs3->mfailed[i+1],
+            (lfs3->mfailed_count - (i+1)) * sizeof(lfs3_block_t));
+    lfs3->mfailed_count -= 1;
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_bd_erase__(lfs3_t *lfs3, lfs3_block_t block) {
     // must be in-bounds
@@ -145,6 +192,8 @@ static int lfs3_bd_erase__(lfs3_t *lfs3, lfs3_block_t block) {
         return err;
     }
 
+    // a fresh erase, whatever failed here before is gone
+    lfs3_mdir_dropfailed(lfs3, block);
     return 0;
 }
 #endif
@@ -2997,6 +3046,8 @@ typedef struct lfs3_finfo {
     uint8_t lineage;
     // a write after the last valid commit was interrupted
     bool torn;
+    // a read the block device failed ended our scan, the log may go on
+    bool rdstop;
 } lfs3_finfo_t;
 
 // fetch an rbyd
@@ -3015,8 +3066,12 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
     // keep track of where commits start
     lfs3_finfo_t info_ = {
         .t0=0, .t1=0, .eoff=0, .count=0, .settled=0, .lineage=0,
-        .torn=false};
+        .torn=false, .rdstop=false};
     lfs3_size_t t0 = sizeof(uint32_t);
+
+    // any read that fails ends our scan, note if one did
+    uint8_t rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
+    lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
 
     // if we're quick fetching, we can start from the trunk,
     // otherwise we start from 0 and try to find the trunk
@@ -3034,6 +3089,11 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
         int err = lfs3_bd_cksum(lfs3, block, 0, -1, sizeof(uint32_t),
                 &cksum_);
         if (err) {
+            info_.rdstop = true;
+            if (info) {
+                *info = info_;
+            }
+            lfs3->mfetch |= rderr;
             return err;
         }
     }
@@ -3262,8 +3322,14 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
         off_ = off__;
     }
 
+    info_.rdstop = lfs3->mfetch & LFS3_MFETCH_RDERR;
+    lfs3->mfetch |= rderr;
+
     // no valid commits?
     if (!lfs3_rbyd_trunk(rbyd)) {
+        if (info) {
+            *info = info_;
+        }
         return LFS3_ERR_CORRUPT;
     }
 
@@ -3272,7 +3338,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
     bool erased = false;
     if (lfs3_ecksum_isecksum(&ecksum)) {
         // check the erased-state checksum
-        uint8_t rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
+        rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
         lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         int err = lfs3_rbyd_ckecksum(lfs3, rbyd, &ecksum);
         if (err && err != LFS3_ERR_CORRUPT) {
@@ -3457,12 +3523,8 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
 }
 
 // number of times to read a block again when it fails a check
-//
-// note this being a function keeps gcc's -Wtype-limits quiet without
-// the gbmap, where it's always 0
 static inline lfs3_size_t lfs3_ckretries(const lfs3_t *lfs3) {
-    (void)lfs3;
-    return LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0);
+    return lfs3->cfg->ck_retries;
 }
 
 // check an rbyd against the cksum its parent records, reading it again up
@@ -7918,6 +7980,10 @@ static inline bool lfs3_m_issettle(uint32_t flags) {
 }
 #endif
 
+static inline bool lfs3_m_isdegraded(uint32_t flags) {
+    return flags & LFS3_I_DEGRADED;
+}
+
 #ifdef LFS3_REVPERTURB
 static inline bool lfs3_m_isrevperturb(uint32_t flags) {
     (void)flags;
@@ -8498,15 +8564,30 @@ static inline void lfs3_mdir_sync(lfs3_mdir_t *a, const lfs3_mdir_t *b) {
     a->gcksumdelta = b->gcksumdelta;
 }
 
+// a block of a pair that can't be its latest state, the other block of
+// our mroot, whose newer block we know, or one we failed to write
+static inline bool lfs3_mdir_isstale(const lfs3_t *lfs3,
+        const lfs3_block_t mptr[static 2], lfs3_block_t block) {
+    return (lfs3_mptr_cmp(mptr, lfs3->mroot.r.blocks) == 0
+                && block != lfs3->mroot.r.blocks[0])
+            || LFS3_IFDEF_RDONLY(
+                false,
+                lfs3_mdir_findfailed(lfs3, block) >= 0);
+}
+
 // mdir operations
-static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
-        lfs3_smid_t mid, const lfs3_block_t mptr[static 2]) {
-    // create a copy of the mptr, both so we can swap the blocks to keep
-    // track of the current revision, and to prevents issues if mptr
-    // references the blocks in the mdir
+//
+// lenient takes what reads for the latest, a read-only mount falls back on
+// this, reported, when nothing else could be served
+static int lfs3_mdir_fetch_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
+        lfs3_smid_t mid, const lfs3_block_t mptr[static 2],
+        bool lenient) {
+    // create a copy of the mptr so we can swap the blocks to keep track
+    // of the current revision
     lfs3_block_t blocks[2] = {mptr[0], mptr[1]};
     // read both revision counts, try to figure out which block
-    // has the most recent revision
+    // has the most recent revision, a revision count we can't read may
+    // be the newer one, unless the block can't be
     uint32_t revs[2] = {0, 0};
     bool tie = true;
     for (int i = 0; i < 2; i++) {
@@ -8515,11 +8596,16 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
+        if (err
+                && !lenient
+                && !lfs3_mdir_isstale(lfs3, mptr, blocks[0])) {
+            return LFS3_ERR_RDCORRUPT;
+        }
         revs[0] = lfs3_fromle32(&revs[0]);
         tie = tie && !err;
 
         if (i == 0
-                || err == LFS3_ERR_CORRUPT
+                || err
                 || lfs3_scmp(revs[1], revs[0]) > 0) {
             LFS3_SWAP(lfs3_block_t, &blocks[0], &blocks[1]);
             LFS3_SWAP(uint32_t, &revs[0], &revs[1]);
@@ -8527,10 +8613,9 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     }
     tie = tie && revs[0] == revs[1];
 
-    // try to fetch rbyds in the order of most recent to least recent
-    #ifndef LFS3_RDONLY
-    lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
-    #endif
+    // try to fetch rbyds in the order of most recent to least recent,
+    // a read that fails may hide commits, so never fall back past one,
+    // unless the block can't be the latest
     lfs3_finfo_t info;
     int err = lfs3_rbyd_fetch_(lfs3,
             &mdir->r, &mdir->gcksumdelta,
@@ -8539,9 +8624,12 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     if (err && err != LFS3_ERR_CORRUPT) {
         return err;
     }
-    #ifndef LFS3_RDONLY
-    bool rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
-    #endif
+    if (info.rdstop && !lenient) {
+        if (!lfs3_mdir_isstale(lfs3, mptr, blocks[0])) {
+            return LFS3_ERR_RDCORRUPT;
+        }
+        err = LFS3_ERR_CORRUPT;
+    }
 
     // equal revision counts? mount settles a pair by copying its log
     // into the other block, prefer the settled copy, or the copy of a
@@ -8558,6 +8646,12 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
                 &info_);
         if (err_ && err_ != LFS3_ERR_CORRUPT) {
             return err_;
+        }
+        if (info_.rdstop && !lenient) {
+            if (!lfs3_mdir_isstale(lfs3, mptr, blocks[1])) {
+                return LFS3_ERR_RDCORRUPT;
+            }
+            err_ = LFS3_ERR_CORRUPT;
         }
 
         if (!err_
@@ -8578,14 +8672,12 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         // not a copy? an interrupted settle can leave a copy that reads
         // whole only some of the time, so don't append here, the next
         // commit compacts past both, and mount settles again
-        #ifndef LFS3_RDONLY
         if (!err && !info.lineage) {
             fellback = true;
-            mdir->r.eoff = -1;
         }
-        #endif
 
-    // newer block failed? fall back to the older block
+    // newer block failed its checksums? that's an interrupted
+    // compaction, fall back to the older block
     } else if (err) {
         LFS3_SWAP(lfs3_block_t, &blocks[0], &blocks[1]);
         err = lfs3_rbyd_fetch_(lfs3,
@@ -8595,16 +8687,13 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
-
-        // a newer block that fails its checksums is an interrupted
-        // compaction, which may read as whole later, so never append
-        // to the older block
-        #ifndef LFS3_RDONLY
-        if (!err && !rderr) {
-            fellback = true;
-            mdir->r.eoff = -1;
+        if (info.rdstop && !lenient) {
+            return LFS3_ERR_RDCORRUPT;
         }
-        #endif
+
+        // the interrupted compaction may read as whole later, so never
+        // append to the older block
+        fellback = true;
     }
 
     // could not find a non-corrupt rbyd
@@ -8618,6 +8707,9 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
 
     // let mount know what we found
     #ifndef LFS3_RDONLY
+    if (fellback) {
+        mdir->r.eoff = -1;
+    }
     lfs3->mfetch = ((info.settled) ? LFS3_MFETCH_SETTLED : 0)
             | ((info.torn || fellback) ? LFS3_MFETCH_TORN : 0);
     #else
@@ -8635,6 +8727,40 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
             mdir->r.cksum);
     #endif
     return 0;
+}
+
+// a read the block device fails says nothing about what was written,
+// so read again, up to ck_retries times, rather than take an older
+// state for the latest, a pair that never reads is damaged
+//
+// a read-only mount, which builds nothing on it, takes what reads and
+// reports itself degraded
+static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
+        lfs3_smid_t mid, const lfs3_block_t mptr[static 2]) {
+    // mptr may reference the blocks in the mdir
+    const lfs3_block_t mptr_[2] = {mptr[0], mptr[1]};
+    for (lfs3_size_t i = 0;; i++) {
+        int err = lfs3_mdir_fetch_(lfs3, mdir, mid, mptr_, false);
+        if (err != LFS3_ERR_RDCORRUPT) {
+            return err;
+        }
+
+        if (i >= lfs3_ckretries(lfs3)) {
+            LFS3_ERROR("Can't read mdir 0x{%"PRIx32",%"PRIx32"}",
+                    mptr_[0], mptr_[1]);
+            if (lfs3_m_isrdonly(lfs3->flags)) {
+                LFS3_WARN("Taking what reads of mdir "
+                            "0x{%"PRIx32",%"PRIx32"}, degraded",
+                        mptr_[0], mptr_[1]);
+                lfs3->flags |= LFS3_I_DEGRADED;
+                return lfs3_mdir_fetch_(lfs3, mdir, mid, mptr_, true);
+            }
+            return LFS3_ERR_CORRUPT;
+        }
+
+        // read past any cached copy
+        lfs3_bd_droprcache(lfs3);
+    }
 }
 
 static int lfs3_data_fetchmdir(lfs3_t *lfs3,
@@ -8809,29 +8935,33 @@ static int lfs3_mdir_alloc___(lfs3_t *lfs3, lfs3_mdir_t *mdir,
     // default to zero gcksumdelta
     mdir->gcksumdelta = 0;
 
-    if (!partial) {
-        // allocate one block without an erase
-        lfs3_sblock_t block = lfs3_alloc(lfs3, 0);
-        if (block < 0) {
-            return block;
-        }
-        mdir->r.blocks[1] = block;
-    }
-
     // read the new revision count
     //
     // we use whatever is on-disk to avoid needing to rewrite the
-    // redund block
+    // redund block, but a fetch must be able to read it, or it can't
+    // tell which block is newer, so allocate one that reads
     uint32_t rev;
-    int err = lfs3_bd_read(lfs3, mdir->r.blocks[1], 0, 0,
-            &rev, sizeof(uint32_t));
-    if (err && err != LFS3_ERR_CORRUPT) {
-        return err;
+    for (bool alloc = !partial;; alloc = true) {
+        if (alloc) {
+            // allocate one block without an erase
+            lfs3_sblock_t block = lfs3_alloc(lfs3, 0);
+            if (block < 0) {
+                return block;
+            }
+            mdir->r.blocks[1] = block;
+        }
+
+        int err = lfs3_bd_read(lfs3, mdir->r.blocks[1], 0, 0,
+                &rev, sizeof(uint32_t));
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+        if (!err) {
+            break;
+        }
     }
-    // note we allow corrupt errors here, as long as they are consistent
-    rev = (err != LFS3_ERR_CORRUPT) ? lfs3_fromle32(&rev) : 0;
     // reset recycle bits in revision count, add low-effort debug bits
-    rev = lfs3_rev_init(lfs3, rev) | 'm';
+    rev = lfs3_rev_init(lfs3, lfs3_fromle32(&rev)) | 'm';
 
 relocate:;
     // allocate another block with an erase
@@ -8846,7 +8976,7 @@ relocate:;
     mdir->r.cksum = 0;
 
     // write our revision count
-    err = lfs3_rbyd_appendrev(lfs3, &mdir->r, rev);
+    int err = lfs3_rbyd_appendrev(lfs3, &mdir->r, rev);
     if (err) {
         // bad prog? try another block
         if (err == LFS3_ERR_CORRUPT) {
@@ -8867,15 +8997,23 @@ static int lfs3_mdir_swap___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
     // reset to zero gcksumdelta, upper layers should handle this
     mdir_->gcksumdelta = 0;
 
-    // first thing we need to do is read our current revision count
+    // first thing we need to do is read our current revision count, ours
+    // must be newer, so if it never reads, relocate
     uint32_t rev;
-    int err = lfs3_bd_read(lfs3, mdir->r.blocks[0], 0, 0,
-            &rev, sizeof(uint32_t));
-    if (err && err != LFS3_ERR_CORRUPT) {
-        return err;
+    for (lfs3_size_t i = 0;; i++) {
+        int err = lfs3_bd_read(lfs3, mdir->r.blocks[0], 0, 0,
+                &rev, sizeof(uint32_t));
+        if (!err) {
+            break;
+        }
+        if (err != LFS3_ERR_CORRUPT || i >= lfs3_ckretries(lfs3)) {
+            return err;
+        }
+
+        // read past any cached copy
+        lfs3_bd_droprcache(lfs3);
     }
-    // note we allow corrupt errors here, as long as they are consistent
-    rev = (err != LFS3_ERR_CORRUPT) ? lfs3_fromle32(&rev) : 0;
+    rev = lfs3_fromle32(&rev);
 
     // decide if we need to relocate
     if (!force && lfs3_rev_needsrelocation(lfs3, rev)) {
@@ -8903,7 +9041,7 @@ static int lfs3_mdir_swap___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
     mdir_->r.cksum = 0;
 
     // erase, preparing for compact
-    err = lfs3_bd_erase(lfs3, mdir_->r.blocks[0]);
+    int err = lfs3_bd_erase(lfs3, mdir_->r.blocks[0]);
     if (err) {
         return err;
     }
@@ -9216,6 +9354,10 @@ static int lfs3_mdir_settle_(lfs3_t *lfs3,
         lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         err = lfs3_rbyd_settle_(lfs3, src, dst, last,
                 lfs3_settled_next(lineage));
+        // couldn't write our copy? it's no state of this pair
+        if (err == LFS3_ERR_NOSPC) {
+            lfs3_mdir_pushfailed(lfs3, dst);
+        }
         if (err != LFS3_ERR_CORRUPT) {
             return err;
         }
@@ -10061,6 +10203,9 @@ compact:;
     err = lfs3_mdir_swap___(lfs3, mdir_, mdir, false);
     if (err) {
         if (err == LFS3_ERR_NOSPC || err == LFS3_ERR_CORRUPT) {
+            if (err == LFS3_ERR_CORRUPT) {
+                lfs3_mdir_pushfailed(lfs3, mdir->r.blocks[1]);
+            }
             overrecyclable &= (err != LFS3_ERR_CORRUPT);
             goto relocate;
         }
@@ -10090,6 +10235,11 @@ compact:;
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
+                // only our pair's other block, a block we relocate to
+                // isn't referenced yet
+                if (!relocated) {
+                    lfs3_mdir_pushfailed(lfs3, mdir_->r.blocks[0]);
+                }
                 overrecyclable &= relocated;
                 goto relocate;
             }
@@ -10106,6 +10256,11 @@ compact:;
         if (err) {
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
+                // only our pair's other block, a block we relocate to
+                // isn't referenced yet
+                if (!relocated) {
+                    lfs3_mdir_pushfailed(lfs3, mdir_->r.blocks[0]);
+                }
                 overrecyclable &= relocated;
                 goto relocate;
             }
@@ -10139,6 +10294,7 @@ compact:;
             if (err) {
                 // bad prog? can't do much here, mdir stuck
                 if (err == LFS3_ERR_CORRUPT) {
+                    lfs3_mdir_pushfailed(lfs3, mdir->r.blocks[1]);
                     LFS3_ERROR("Stuck mdir 0x{%"PRIx32",%"PRIx32"}",
                             mdir->r.blocks[0],
                             mdir->r.blocks[1]);
@@ -10680,6 +10836,7 @@ commit:;
             if (err) {
                 // bad prog? can't do much here, mroot stuck
                 if (err == LFS3_ERR_CORRUPT) {
+                    lfs3_mdir_pushfailed(lfs3, mrootchild.r.blocks[1]);
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
@@ -10700,6 +10857,7 @@ commit:;
                 LFS3_ASSERT(err != LFS3_ERR_NOENT);
                 // bad prog? can't do much here, mroot stuck
                 if (err == LFS3_ERR_CORRUPT) {
+                    lfs3_mdir_pushfailed(lfs3, mrootanchor_.r.blocks[0]);
                     LFS3_ERROR("Stuck mroot 0x{%"PRIx32",%"PRIx32"}",
                             mrootanchor_.r.blocks[0],
                             mrootanchor_.r.blocks[1]);
@@ -11612,6 +11770,14 @@ eot:;
         LFS3_ERROR("Found gcksum mismatch, cksum %08"PRIx32" (!= %08"PRIx32")",
                 mtrv->gcksum,
                 lfs3->gcksum);
+        return LFS3_ERR_CORRUPT;
+    }
+
+    // a degraded mount found damage that no check passes
+    if ((lfs3_t_isckmeta(mtrv->h.flags)
+                || lfs3_t_isckdata(mtrv->h.flags))
+            && !lfs3_t_ismtreeonly(mtrv->h.flags)
+            && lfs3_m_isdegraded(lfs3->flags)) {
         return LFS3_ERR_CORRUPT;
     }
 
@@ -17704,9 +17870,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     lfs3->graft = NULL;
     lfs3->graft_count = 0;
     lfs3->syncerr = 0;
-    lfs3->mfetch = 0;
     lfs3->msettle = 0;
+    lfs3->mfailed_count = 0;
     #endif
+    lfs3->mfetch = 0;
 
     // TODO are these zeros accomplished by zerogdelta in mountinited?
     // should the zerogdelta be dropped?
@@ -18067,11 +18234,17 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
         return tag;
     }
     if (tag != LFS3_ERR_NOENT) {
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         err = lfs3_data_readleb128(lfs3, &data, &name_limit);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
+        // too large to decode is larger than ours, a read that failed is
+        // still corrupt
         if (err == LFS3_ERR_CORRUPT) {
+            if (lfs3->mfetch & LFS3_MFETCH_RDERR) {
+                return err;
+            }
             name_limit = -1;
         }
     }
@@ -18105,11 +18278,17 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
         return tag;
     }
     if (tag != LFS3_ERR_NOENT) {
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         err = lfs3_data_readleb128(lfs3, &data, &file_limit);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
         }
+        // too large to decode is larger than ours, a read that failed is
+        // still corrupt
         if (err == LFS3_ERR_CORRUPT) {
+            if (lfs3->mfetch & LFS3_MFETCH_RDERR) {
+                return err;
+            }
             file_limit = -1;
         }
     }
@@ -18266,6 +18445,19 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
+
+            // an mdir in the mtree we can't read? a read-only mount can
+            // serve everything else, lookups find the damage again, the
+            // traversal moves on to the next mdir
+            if (tag == LFS3_ERR_CORRUPT
+                    && lfs3_m_isrdonly(lfs3->flags)
+                    && mtrv.h.mdir.mid >= 0
+                    && mtrv.u.btrv.bid == LFS3_BID_MDIR) {
+                LFS3_WARN("Damaged mdir %"PRId32", mounting degraded",
+                        lfs3_dbgmbid(lfs3, mtrv.h.mdir.mid));
+                lfs3->flags |= LFS3_I_DEGRADED;
+                continue;
+            }
             return tag;
         }
 
@@ -18387,12 +18579,30 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
     // 1->1 mapping of t(g) in 2^31 fields, and losing at most 3-bits of
     // info when calculating d_i.
     //
-    if (lfs3_crc32c_cube(lfs3->gcksum) != lfs3->gcksum_d) {
+    // a mismatch means some mdir isn't as last written, we can't tell
+    // which, a read-only mount can still serve them
+    if (!lfs3_m_isdegraded(lfs3->flags)
+            && lfs3_crc32c_cube(lfs3->gcksum) != lfs3->gcksum_d) {
         LFS3_ERROR("Found gcksum mismatch, cksum^3 %08"PRIx32" "
                     "(!= %08"PRIx32")",
                 lfs3_crc32c_cube(lfs3->gcksum),
                 lfs3->gcksum_d);
-        return LFS3_ERR_CORRUPT;
+        if (!lfs3_m_isrdonly(lfs3->flags)) {
+            return LFS3_ERR_CORRUPT;
+        }
+        LFS3_WARN("Mounting degraded");
+        lfs3->flags |= LFS3_I_DEGRADED;
+    }
+
+    // gstate is the sum of every mdir's deltas, and a damaged mdir takes
+    // its share with it, so a degraded mount does without, no pending
+    // grms, and no gbmap
+    if (lfs3_m_isdegraded(lfs3->flags)) {
+        lfs3_memset(lfs3->grm_d, 0, LFS3_GRM_DSIZE);
+        #ifdef LFS3_GBMAP
+        lfs3->flags &= ~LFS3_I_GBMAP;
+        lfs3_memset(lfs3->gbmap_d, 0, LFS3_GBMAP_DSIZE);
+        #endif
     }
 
     // keep track of the current gcksum
@@ -18414,8 +18624,17 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
             &LFS3_DATA_BUF(lfs3->grm_d, LFS3_GRM_DSIZE),
             &lfs3->grm);
     if (err) {
-        // TODO switch to read-only?
-        return err;
+        // a grm we can't decode? a read-only mount does without
+        if (err != LFS3_ERR_CORRUPT || !lfs3_m_isrdonly(lfs3->flags)) {
+            return err;
+        }
+        LFS3_WARN("Found corrupt grm, mounting degraded");
+        lfs3->flags |= LFS3_I_DEGRADED;
+        lfs3->grm.queue[0] = 0;
+        lfs3->grm.queue[1] = 0;
+        #ifdef LFS3_GBMAP
+        lfs3->flags &= ~LFS3_I_GBMAP;
+        #endif
     }
 
     // found pending grms? this should only happen if we lost power
@@ -18433,16 +18652,22 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
 
     #ifndef LFS3_RDONLY
     if (LFS3_IFDEF_GBMAP(
-            lfs3_f_isgbmap(lfs3->flags),
+            lfs3_f_isgbmap(lfs3->flags)
+                && !lfs3_m_isdegraded(lfs3->flags),
             false)) {
         #ifdef LFS3_GBMAP
-        // decode the global block-map
+        // decode the global block-map, a read-only mount can do without
         err = lfs3_data_readgbmap(lfs3,
                 &LFS3_DATA_BUF(lfs3->gbmap_d, LFS3_GBMAP_DSIZE),
                 &lfs3->gbmap);
         if (err) {
-            // TODO switch to read-only?
-            return err;
+            if (err != LFS3_ERR_CORRUPT || !lfs3_m_isrdonly(lfs3->flags)) {
+                return err;
+            }
+            LFS3_WARN("Found corrupt gbmap, mounting degraded");
+            lfs3->flags |= LFS3_I_DEGRADED;
+            lfs3->flags &= ~LFS3_I_GBMAP;
+            lfs3_gbmap_init(&lfs3->gbmap);
         }
 
         // if we have a gbmap, position our lookahead buffer at the last
@@ -19008,6 +19233,7 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
     // return various filesystem flags
     fsinfo->flags = (lfs3->flags & (
                 LFS3_I_RDONLY
+                    | LFS3_I_DEGRADED
                     | LFS3_I_FLUSH
                     | LFS3_I_SYNC
                     | LFS3_IFDEF_REVPERTURB(LFS3_I_REVPERTURB, 0)
@@ -19082,7 +19308,7 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
 
     // count bad blocks, these can't be used either
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
-    if (lfs3_f_isgbmap(lfs3->flags)) {
+    if (lfs3_f_isgbmap(lfs3->flags) && !lfs3_m_isdegraded(lfs3->flags)) {
         for (lfs3_block_t block = 0;; block++) {
             lfs3_sblock_t block_ = lfs3_gbmap_nextbad(lfs3, block);
             if (block_ < 0) {
@@ -19103,6 +19329,11 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
 
 // get the filesystem checksum
 int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum) {
+    // a degraded mount couldn't read, or check, every mdir
+    if (lfs3_m_isdegraded(lfs3->flags)) {
+        return LFS3_ERR_CORRUPT;
+    }
+
     *cksum = lfs3->gcksum;
     return 0;
 }
@@ -19669,6 +19900,10 @@ static int lfs3_mdir_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         if (!err) {
             err = lfs3_rbyd_settle_(lfs3, src, dst, info.t0,
                     lfs3_settled_next(info.lineage));
+            // couldn't write our copy? it's no state of this pair
+            if (err == LFS3_ERR_NOSPC) {
+                lfs3_mdir_pushfailed(lfs3, dst);
+            }
         }
     }
 
@@ -20376,8 +20611,8 @@ int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block) {
 // find the next bad block
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
-    // no gbmap? no bad blocks
-    if (!lfs3_f_isgbmap(lfs3->flags)) {
+    // no gbmap? no bad blocks, a degraded mount can't trust its gbmap
+    if (!lfs3_f_isgbmap(lfs3->flags) || lfs3_m_isdegraded(lfs3->flags)) {
         return LFS3_ERR_NOENT;
     }
 

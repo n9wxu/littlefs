@@ -88,6 +88,26 @@ fail once and pass later. Reads that fail are listed by
 3. Only damaged metadata leaves no repair but a reformat, which loses
    everything, see [Contingencies](#contingencies).
 
+From `lfs3_mount`, CORRUPT means no filesystem was found, or its
+metadata is damaged: a metadata pair that doesn't read or check, or a
+global checksum or global state that doesn't check. A read-write mount
+can't build on damage, and littlefs never takes the older block of a
+pair for the latest because a read failed. **Rebuild**:
+
+1. Mount again with `ck_retries` set (we suggest 3), after the supply has
+   recovered: a pair is read again whenever a read fails.
+2. Mount read-only (`LFS3_M_RDONLY`, without `LFS3_M_CKMETA` or
+   `LFS3_M_CKDATA`). A filesystem whose damage is confined to metadata
+   pairs of the mtree, or to its global checksum, mounts degraded:
+   `lfs3_fs_stat` reports `LFS3_I_DEGRADED`, every file outside the
+   damaged pairs reads, and what needs a damaged pair returns
+   `LFS3_ERR_CORRUPT`. An mroot one of whose blocks doesn't read is
+   taken from the block that does, which may be the older. Copy out what
+   matters. An mroot with no block that checks, or a damaged B-tree node
+   of the mtree, still fails this mount.
+3. The filesystem can't be written while it is damaged. Reformat, once
+   what reads has been copied out, see [Contingencies](#contingencies).
+
 ### `LFS3_ERR_NOSPC`
 
 No free block was left, or an entry or attribute doesn't fit in its
@@ -259,7 +279,9 @@ Their meaning, and the action, is the block device's.
 ### Mount and format
 
 - After an error from `lfs3_mount`, the filesystem isn't mounted and nothing
-  stays allocated. A mount without mount-time work writes nothing. Mount-time
+  stays allocated. A mount without mount-time work writes nothing. A
+  degraded mount (`LFS3_I_DEGRADED`) is read-only and has no gbmap, no
+  pending removes and no `lfs3_fs_cksum`; remount to try again. Mount-time
   work (`LFS3_M_MKCONSISTENT`, `LFS3_M_LOOKAHEAD`, `LFS3_M_COMPACT`, and the
   repairs of `LFS3_M_CKMETA` and `LFS3_M_CKDATA` with `ck_retries`) leaves
   what it wrote as the janitorial calls do. So does settling, the mount-time
@@ -309,7 +331,9 @@ order of how much they cost:
 2. **Give up on the file, not the filesystem.** Remove a damaged file, or
    leave it and write to a new one; the other files stay usable.
 3. **Remount read-only** (`LFS3_M_RDONLY`) and keep serving what can be
-   read, while writes are dropped and counted, or kept in RAM.
+   read, while writes are dropped and counted, or kept in RAM. A
+   filesystem with damaged metadata mounts this way, degraded
+   (`LFS3_I_DEGRADED`).
 4. **Run without storage**, if the product can.
 5. **Reformat**, best on the next boot after copying out what still reads.
    This loses everything on the filesystem, so it is the last resort.
