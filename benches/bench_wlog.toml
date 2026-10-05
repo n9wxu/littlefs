@@ -172,6 +172,14 @@ code = '''
 '''
 
 [cases.bench_wlog_fresh]
+# v2.11.3's erases in 10 minutes of the same workload (REQUIREMENTS.md
+# Appendix B.1), which W-LOG must not exceed (LFS3-PERF-08, PERF-09),
+# 0 for no check
+defines.V2_ERASES = '''
+    (RATE == 1) ? ((PROG_SIZE == 256) ? 627 : 587)
+        : (RATE == 50) ? ((PROG_SIZE == 256) ? 807 : 767)
+        : 0
+'''
 if = [
     'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)',
     'GBMAP || !PREERASE',
@@ -207,13 +215,21 @@ code = '''
 
     uint32_t seq = 0;
     bench_wlog_calls_t calls = {0};
+    bench_sio_t erases = bench_wlog_erases(CFG);
     bench_wlog_log(&lfs3, &file, CFG, SECONDS, &seq, &calls);
 
     BENCH_START("log");
     lfs3_file_close(&lfs3, &file) => 0;
     BENCH_STOP("log", SECONDS);
+    erases = bench_wlog_erases(CFG) - erases;
     bench_wlog_results(SECONDS, seq, &calls);
     lfs3_unmount(&lfs3) => 0;
+
+    // no more erases than v2, and with pre-erasing, at most one erase in
+    // any call
+    assert(!V2_ERASES
+            || (uintmax_t)erases*600 <= (uintmax_t)V2_ERASES*SECONDS);
+    assert(!PREERASE || calls.max_erases <= 1);
 
     // remount and check every row
     BENCH_START("mount");

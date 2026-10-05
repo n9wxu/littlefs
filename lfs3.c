@@ -14611,6 +14611,9 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
             + lfs3_bptr_off(&file->leaf.bptr)
             + lfs3_bptr_size(&file->leaf.bptr);
     lfs3->pcksum = lfs3_bptr_cksum(&file->leaf.bptr);
+    // where we resumed, if we write nothing past this our bptr is
+    // unchanged and doesn't need to be grafted again
+    lfs3_off_t resumed = pos_;
     while (true) {
         // crystallize data into our block
         //
@@ -14823,10 +14826,13 @@ static int lfs3_file_crystallize_(lfs3_t *lfs3, lfs3_file_t *file,
                 lfs3->pcksum);
 
         // mark as ungrafted
-        file->b.h.flags |= LFS3_o_UNGRAFT;
+        if (pos_ != resumed) {
+            file->b.h.flags |= LFS3_o_UNGRAFT;
+        }
         return 0;
 
     relocate:;
+        resumed = -1;
         // allocate a new block
         //
         // if we relocate, we rewrite the entire block from block_pos
