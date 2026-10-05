@@ -14388,7 +14388,10 @@ static int lfs3_file_graft_(lfs3_t *lfs3, lfs3_file_t *file,
         // spans more than one entry? we can't do everything in one
         // commit because it might span more than one btree leaf, so
         // commit what we have and move on to next entry
-        if (pos+weight > bid+1) {
+        //
+        // unless this is our last entry, then the rest is an append
+        // into the same leaf, and one commit can't tear
+        if (pos+weight > bid+1 && bid+1 < file->b.b.r.weight) {
             LFS3_ASSERT(lfs3_bptr_size(&r_bptr) == 0);
 
             *r++ = LFS3_RATTR_NULL;

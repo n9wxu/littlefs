@@ -6527,6 +6527,93 @@ code = '''
     assert(OP == 0 || torn > 0);
 '''
 
+# test that an error in an append that replaces only the file's last
+# fragment never tears the handle
+#
+# each append coalesces with the last fragment, so its graft carves
+# that fragment and appends past it, which must be one commit
+[cases.test_badblocks_append_torn]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+]
+defines.PROG_SIZE = [1, 16]
+defines.FRAGMENT_SIZE = 64
+defines.CHUNK = 16
+defines.SIZE = '4*BLOCK_SIZE + CHUNK'
+defines.APPENDS = 64
+defines.SEED = 42
+code = '''
+    // no crystallization, the file stays fragments
+    struct lfs3_cfg cfg = *CFG;
+    cfg.crystal_thresh = -1;
+
+    // test all possible bad blocks
+    lfs3_size_t failed = 0;
+    for (lfs3_block_t badblock = 0; badblock < BLOCK_COUNT; badblock++) {
+        // write a file out of many fragments, the last one partial
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t sim[SIZE+APPENDS*CHUNK];
+        uint32_t prng = SEED;
+        for (lfs3_size_t i = 0; i < SIZE+APPENDS*CHUNK; i++) {
+            sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        for (lfs3_size_t i = 0; i < SIZE; i += CHUNK) {
+            lfs3_file_write(&lfs3, &file, &sim[i], CHUNK) => CHUNK;
+            lfs3_file_flush(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // append with a bad block until an append fails
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_APPEND) => 0;
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+        int err = 0;
+        for (lfs3_size_t i = 0; i < APPENDS && !err; i++) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    &sim[SIZE+i*CHUNK], CHUNK);
+            assert(d == CHUNK || d == LFS3_ERR_CORRUPT);
+            err = (d < 0) ? d : lfs3_file_flush(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+        }
+        if (err) {
+            failed += 1;
+        }
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+
+        // sync must never find the handle torn
+        lfs3_file_sync(&lfs3, &file) => 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // disk should have the old contents and some of the appends
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[2*(SIZE+APPENDS*CHUNK)];
+        lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf,
+                2*(SIZE+APPENDS*CHUNK));
+        assert(d >= SIZE && d <= SIZE+APPENDS*CHUNK);
+        assert((d - SIZE) % CHUNK == 0);
+        assert(memcmp(rbuf, sim, d) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // make sure appends actually failed
+    printf("failed: %d\n", failed);
+    assert(BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_READERROR
+            || failed > 0);
+'''
+
 # test that a stuck mroot doesn't leave a half-applied gcksum/grm behind
 [cases.test_badblocks_mrootanchor_stuck]
 defines.BADBLOCKS = [0x1, 0x2]
