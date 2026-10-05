@@ -1620,7 +1620,8 @@ mounted.
   `badblocks::mrootanchor_stuck`, `badblocks::grow`.
 - **Status:** Known defect at `6f80e646` (issue #6): every permutation of
   `mount::readerror` with `LFS3_ERR_CORRUPT` and of
-  `mount::readerror_mounted` found the older state.
+  `mount::readerror_mounted` found the older state. Fixed and tested on
+  `v3-r21` (`862e3695`).
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -7114,7 +7115,8 @@ the device reported bad.
   a change to the code, tested by `errs::ioerror` (3c7a175e); the CORRUPT
   half is issue #6 (LFS3-INT-26). At `6f80e646` a read error in a
   configuration's name or file limit at mount returned
-  `LFS3_ERR_NOTSUP`, as if the limit were too large.
+  `LFS3_ERR_NOTSUP`, as if the limit were too large. The CORRUPT half
+  tested on `v3-r21` (`862e3695`).
 - **When:** every CI run.
 
 #### LFS3-ERR-06
@@ -7234,7 +7236,8 @@ its blocks unreferenced.
   damaged file that can't be removed or still references blocks.
 - **Verified by:** `badblocks::confined_data` (NEW-143).
 - **Status:** Partly tested at `6f80e646` (reads return CORRUPT; removal
-  of a damaged file was untested).
+  of a damaged file was untested). Tested on `v3-r21` (`dced877c`),
+  without a change to the code.
 - **When:** every CI run.
 
 #### LFS3-DEG-03
@@ -7286,7 +7289,8 @@ return `LFS3_ERR_CORRUPT`. A read-write mount, or a mount with
   error, or a read-write mount that succeeds.
 - **Verified by:** `mount::degraded` (NEW-142), `mount::fail_nowrite`,
   `ck::rollback`, `mount::readerror` (NEW-140).
-- **Status:** Not implemented at `6f80e646`.
+- **Status:** Not implemented at `6f80e646`; tested on `v3-r21`
+  (`862e3695`).
 - **Limits:** a pair one of whose blocks doesn't read is taken from the
   block that does, which may be the older, and the mount reports it; an
   mroot with no block that checks, or a damaged
@@ -7331,7 +7335,8 @@ write needs a scan.
   `badblocks::live_readerror`, `badblocks::confined_data`.
 - **Status:** Known defect (3-alloc R7). At `6f80e646` a gbmap
   repopulation that met the damage failed the write that checkpointed
-  the allocator, and every write after it.
+  the allocator, and every write after it. Fixed and tested on `v3-r21`
+  (`320dc4a8`).
 - **When:** every CI run.
 
 #### LFS3-DEG-05
@@ -7432,7 +7437,9 @@ anchor pair's erases shall stay within the bound in `lfs3.h`:
   `LFS3_ERR_CORRUPT` once they needed a gbmap that didn't read
   (`badblocks::gbmap_readerror` expected it), the repair was
   `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`, which `LFS3_YES_GBMAP` builds
-  lack, and the anchor's wear had no stated bound.
+  lack, and the anchor's wear had no stated bound. Fixed and tested on
+  `v3-r21` (`73001c31`); the anchor's bound tested on `v3-r21`
+  (`4ac1a1bb`).
 - **When:** every CI run.
 
 #### LFS3-DEG-09
@@ -7461,7 +7468,7 @@ and the good blocks left to write; `lfs3_fs_nextbad` and
 - **Verified by:** `repair::health`, `alloc::health` (NEW-146).
 - **Status:** Not implemented at `b10efaa`; the lists and the usage
   tested on `v3-integration` (f09acb9d); there was no single call at
-  `6f80e646`.
+  `6f80e646`. `lfs3_fs_health` tested on `v3-r21` (`ad8752d1`).
 - **When:** every CI run.
 
 #### LFS3-DEG-10
@@ -7523,7 +7530,9 @@ with the degraded read-only mount (LFS3-DEG-03) to copy out what reads.
   newer block fell back to the older one without an error (issue #6,
   LFS3-INT-26). mtree nodes were not moved at `6f80e646`, that needed a
   commit through the mtree and the mroot, as gbmap nodes have; one that
-  needed a retry stayed listed as suspect. A damaged metadata pair, a
+  needed a retry stayed listed as suspect. Moved and tested on `v3-r21`
+  (`7aa70764`); the gbmap rebuilt at the next write on `v3-r21`
+  (`73001c31`). A damaged metadata pair, a
   directory's entries, has no repair in place: the degraded read-only
   mount (LFS3-DEG-03) copies out what reads before a reformat; a repair
   that drops the pair needs the decision of Q27.
@@ -8054,7 +8063,7 @@ new environment (9.2).
 | LFS3-INT-19 | Partly | every CI run | enable `CKMETAPARITY` in `ck::spam_*` |
 | LFS3-INT-21 | Partly | every CI run | replace an mdir with an older copy after mount; `lfs3_fs_ck` must fail |
 | LFS3-INT-22 | Untested | every CI run | bit flips in gbmap nodes |
-| LFS3-INT-26 | Defect | every CI run | `mount::readerror` with `LFS3_ERR_CORRUPT`, `mount::readerror_mounted` (NEW-140, NEW-141) |
+| LFS3-INT-26 | Tested | every CI run | `mount::readerror` with `LFS3_ERR_CORRUPT`, `mount::readerror_mounted` (NEW-140, NEW-141), on `v3-r21` (`862e3695`) |
 | LFS3-FAIL-04 | Untested | every CI run | READERROR on a live mdir, file B-tree node and gbmap node |
 | LFS3-FAIL-07 | Untested | nightly | PROGNOOP/ERASENOOP without CKPROGS: no unsynced data returned |
 | LFS3-FAIL-12 | Untested | every CI run | after end of life, read-only remount reads every synced file |
