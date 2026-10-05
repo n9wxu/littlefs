@@ -7201,19 +7201,32 @@ power loss during the mount-time repair itself.
 
 #### LFS3-DEG-02
 
-littlefs shall confine damage to a file's data to that file: other files stay
-readable and writable, and the damaged file can be removed.
+littlefs shall confine damage to a file's data blocks or B-tree nodes to
+that file: reads that need the damage return `LFS3_ERR_CORRUPT`, every
+other file stays readable, and writable as far as LFS3-DEG-04 allows, and
+the damaged file can be removed without reading the damage, which leaves
+its blocks unreferenced.
 
 - **Source:** Proposal. A bad block in one file must not cost the others.
-- **Measure:** operations on other files, and `lfs3_remove` of the damaged
-  file, after its data block becomes unreadable.
-- **Pass:** reads of the damaged range return `LFS3_ERR_CORRUPT`; every other
-  file reads and writes correctly; the remove returns 0 and frees the file's
-  good blocks.
-- **Fail:** an error on another file, or the damaged file can't be removed.
-- **Verified by:** NEW (`badblocks::confined_data`).
-- **Status:** Partly tested (reads return CORRUPT; removal of a damaged file
-  is untested).
+  A scan for free blocks can't see past a B-tree node it can't read, so
+  writes that need one wait for the damaged file's removal
+  (LFS3-DEG-04).
+- **Measure:** reads and writes of the other files, `lfs3_remove` of the
+  damaged file, and a traversal after it, once a data block or the
+  B-tree root of one file fails every read.
+- **Pass:** `badblocks::confined_data`: the file's reads return
+  `LFS3_ERR_CORRUPT` (opening it may, with a damaged B-tree root); every
+  other file reads as written and can be rewritten, except, with a
+  damaged B-tree node and no gbmap, writes that need a scan, which return
+  `LFS3_ERR_CORRUPT` until the file is removed; `lfs3_remove` returns 0,
+  no traversal finds the file's blocks after it, then every file writes
+  and `lfs3_fs_ck` returns 0, also after a remount. In B-DEF, B-YGB and
+  B-BIG.
+- **Fail:** an error on another file beyond the above, wrong data, or a
+  damaged file that can't be removed or still references blocks.
+- **Verified by:** `badblocks::confined_data` (NEW-143).
+- **Status:** Partly tested at `6f80e646` (reads return CORRUPT; removal
+  of a damaged file was untested).
 - **When:** every CI run.
 
 #### LFS3-DEG-03
@@ -7280,19 +7293,37 @@ return `LFS3_ERR_CORRUPT`. A read-write mount, or a mount with
 
 #### LFS3-DEG-04
 
-littlefs shall keep allocating for undamaged parts of the filesystem when one
-metadata block is unreadable.
+littlefs shall keep allocating, for writes that don't need a damaged block,
+while a block that references other blocks (an mdir, a B-tree node) can't
+be read: from the blocks the gbmap knows are free, or, without it, those
+the last lookahead scan found free; it shall never reuse a block the
+damaged block may reference, and shall return `LFS3_ERR_CORRUPT` once a
+write needs a scan.
 
-- **Source:** Proposal. At `b10efaa` a lookahead scan or gbmap repopulation
-  traverses the whole tree, so one unreadable mdir makes every write that
-  needs a scan fail (3-alloc R7).
-- **Measure:** writes to files in undamaged directories after an mdir becomes
-  unreadable.
-- **Pass:** the writes succeed while free good blocks remain; blocks the
-  damaged pair may reference are not reused.
-- **Fail:** `LFS3_ERR_CORRUPT` from writes that don't touch the damaged pair.
-- **Verified by:** NEW (`badblocks::alloc_with_damage`).
-- **Status:** Known defect (3-alloc R7).
+- **Source:** Proposal. At `b10efaa` a lookahead scan or gbmap
+  repopulation traverses the whole tree, so one unreadable mdir makes
+  every write that needs a scan fail (3-alloc R7). A scan can't see what
+  an unreadable block references, so it can't prove any block free that
+  the allocator didn't already know to be (LFS3-FAIL-04), but what it
+  knew stays true: a repopulation that meets the damage keeps the gbmap
+  it has. Without the gbmap nothing is known free after a mount, so after
+  a remount every write that allocates needs a scan; the gbmap keeps its
+  known window on disk.
+- **Measure:** rewrites of files outside an mtree mdir that stops reading
+  while mounted; progs and wear of the blocks that mdir references.
+- **Pass:** `badblocks::alloc_with_damage`: the rewrites succeed until the
+  known free blocks run out, with the gbmap also after repopulations
+  became due, then return `LFS3_ERR_CORRUPT`; no block the mdir
+  references is programmed or erased; once it reads again, everything
+  reads and checks. `badblocks::live_readerror` and
+  `badblocks::confined_data` pass. In B-DEF, B-YGB and B-BIG.
+- **Fail:** `LFS3_ERR_CORRUPT` from a write while the allocator knows a
+  free block, any other error, or a write to a referenced block.
+- **Verified by:** `badblocks::alloc_with_damage` (NEW-144),
+  `badblocks::live_readerror`, `badblocks::confined_data`.
+- **Status:** Known defect (3-alloc R7). At `6f80e646` a gbmap
+  repopulation that met the damage failed the write that checkpointed
+  the allocator, and every write after it.
 - **When:** every CI run.
 
 #### LFS3-DEG-05

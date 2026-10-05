@@ -1534,6 +1534,45 @@ defines; procedure; pass and fail; extension needed.
   pair, data inside it without an error, or a read-write mount.
 - **Extension:** none.
 
+#### NEW-143 `badblocks::confined_data`
+
+- **File and case:** `tests/test_badblocks.toml`,
+  `test_badblocks_confined_data`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-02, DEG-04.
+- **Defines:** `TARGET` 0 (a data block) and 1 (the B-tree root, no
+  shrubs); `GBMAP` false and true.
+- **Procedure:** Write 8 files of 4 blocks, note the target file's
+  blocks, make the target fail every read (`lfs3_emubd_mktransient`) and
+  remount. Read every file, rewrite every other one, remove the target,
+  traverse, then let the block read again, rewrite every other file,
+  check, and remount twice.
+- **Pass:** only the target's reads fail; the rewrites succeed, except
+  with `TARGET` 1 and no gbmap before the removal, where they may return
+  `LFS3_ERR_CORRUPT`; the removal returns 0 and no traversal finds the
+  target's blocks; the checks return 0 and every file reads back.
+- **Fail:** any other error, wrong data, or the target's blocks still
+  referenced.
+- **Extension:** none.
+
+#### NEW-144 `badblocks::alloc_with_damage`
+
+- **File and case:** `tests/test_badblocks.toml`,
+  `test_badblocks_alloc_with_damage`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-04, FAIL-04.
+- **Defines:** `GBMAP` false and true.
+- **Procedure:** Write 32 files of 2 blocks, note the data blocks of the
+  files in the first file's mdir, make both blocks of that mdir fail
+  every read while mounted, then rewrite every other file, round after
+  round, until a write fails. Count the writes made while a gbmap
+  repopulation was due. Let the mdir read again and remount.
+- **Pass:** some rewrites succeed, with the gbmap more than one after a
+  repopulation was due; the failure is `LFS3_ERR_CORRUPT`; no noted block
+  is programmed or erased; after the remount every file reads its last
+  written version and checks.
+- **Fail:** no write after the damage, another error, or a noted block
+  written.
+- **Extension:** none.
+
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
 
 - **File and case:** `tests/test_badblocks.toml`, two reentrant fuzz cases
