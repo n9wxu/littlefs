@@ -7525,13 +7525,15 @@ and the good blocks left to write; `lfs3_fs_nextbad` and
 
 littlefs shall offer repairs smaller than a reformat: moving the contents of
 a block that reads unreliably to a new block, removing a damaged file
-(LFS3-DEG-02), and rebuilding the gbmap (LFS3-DEG-08); `lfs3_fs_ck`, and a
-mount with `LFS3_M_CKMETA` or `LFS3_M_CKDATA`, shall make the first of these
-on a writable filesystem when `ck_retries` allows, and shall return
+(LFS3-DEG-02), rebuilding the gbmap (LFS3-DEG-08), and rewriting or
+dropping a damaged metadata pair (LFS3-DEG-16); `lfs3_fs_ck`, and a mount
+with `LFS3_M_CKMETA` or `LFS3_M_CKDATA`, shall make the first of these on a
+writable filesystem when `ck_retries` allows, and shall return
 `LFS3_ERR_CORRUPT` only for damage they could not read or repair; and
 ERRORS.md shall list the repairs as the Rebuild steps of
 `LFS3_ERR_CORRUPT`, smallest first, ending, for a damaged metadata pair,
-with the degraded read-only mount (LFS3-DEG-03) to copy out what reads.
+with the degraded read-only mount (LFS3-DEG-03) to copy out what reads, then
+the salvage mount (LFS3-DEG-16).
 
 - **Source:** Proposal (issues #19, #20). A reformat loses every file, which
   on an unreachable unit is the same as replacing it. A move copies exactly
@@ -7583,9 +7585,9 @@ with the degraded read-only mount (LFS3-DEG-03) to copy out what reads.
   needed a retry stayed listed as suspect. Moved and tested on `v3-r21`
   (`7aa70764`); the gbmap rebuilt at the next write on `v3-r21`
   (`73001c31`). A damaged metadata pair, a
-  directory's entries, has no repair in place: the degraded read-only
-  mount (LFS3-DEG-03) copies out what reads before a reformat; a repair
-  that drops the pair needs the decision of Q27.
+  directory's entries, had no repair in place at `v3-r21` (`195ed2ef`):
+  the degraded read-only mount (LFS3-DEG-03) copied out what read before
+  a reformat; Q27 is decided, the repair is LFS3-DEG-16.
 - **When:** every CI run.
 
 #### LFS3-DEG-11
@@ -7740,6 +7742,83 @@ crystallizes them into a new block, in every build, not only with
   checksum.
 - **Verified by:** NEW-132.
 - **Status:** Tested on `v3-rc` (`a12705da`).
+- **When:** every CI run.
+
+#### LFS3-DEG-16
+
+littlefs shall, when mounted read-write with `LFS3_M_SALVAGE`, repair
+damaged metadata in place instead of failing the mount: rewrite each
+metadata pair that one block still reads, from what reads and passes its
+checksums, into a new pair; drop each pair of the mtree that no block
+reads; remove the entries that a drop leaves unreachable, recreate the
+directory bookmarks it took, and rebuild the global checksum and the
+global state; and then mount as without the flag. The loss shall be
+bounded: nothing outside the damaged pairs; for a rewritten pair, at most
+the commits written to it since its last compaction; for a dropped pair,
+the entries it held, and the subtrees of the directories it named. After
+the salvage the filesystem shall mount read-write without
+`LFS3_M_SALVAGE`, and `lfs3_fs_ck` with `LFS3_CK_CKMETA | LFS3_CK_CKDATA`
+shall return 0 unless data blocks are damaged too.
+
+- **Source:** Proposal (issue #21, Q27 decided on 2026-10-05: "Rewrite,
+  else drop"). A damaged pair makes every read-write mount fail
+  (LFS3-DEG-03), and a reformat loses every file. Losing the damaged
+  pair's entries must be the application's call, since a failed read
+  doesn't prove them gone (principle 4), so the salvage is an explicit
+  mount flag, never automatic. A mount flag rather than a call on a
+  mounted filesystem: the damage fails a read-write mount, and a degraded
+  mount is read-only and writes nothing, so the repair has to be part of
+  the mount that makes the filesystem writable again, as `LFS3_M_SETTLE`
+  and `LFS3_M_MKCONSISTENT` are; with no damage it does nothing. The name
+  says data may be lost, unlike the repairing check of `ck_retries`
+  (LFS3-DEG-10), which never loses any.
+- **The state after:** every entry outside the damaged pairs as it was; a
+  rewritten pair as of its older block, or of the commits of its newer
+  block that still read; a dropped pair's entries gone (`LFS3_ERR_NOENT`),
+  and with them the bookmarks and entries of every directory whose name
+  was there, recursively; a directory whose bookmark was there keeps its
+  other entries under a new bookmark, the root included; no pending
+  removes, so a file a power loss left half removed or renamed may keep
+  its old name too; the gbmap rebuilt, and the bad blocks it marked
+  marked again as they fail; with `LFS3_GBMAP`, the damaged pairs' blocks
+  that failed reads tested, and marked bad if they still fail. Blocks a
+  dropped pair referenced may be reused, so it stays lost even if it
+  would read later. A damaged mroot chain with no block that checks, or a
+  damaged B-tree node of the mtree, leaves nothing to salvage from: the
+  mount returns `LFS3_ERR_CORRUPT`. A power loss during the salvage leaves
+  the filesystem damaged, a read-write mount without the flag fails until
+  a salvage completes, and the next salvage finishes the repair, losing
+  nothing more.
+- **Measure:** the mount's result, the files, directories and listings
+  after it, a read-write mount without the flag and `lfs3_fs_ck` after
+  that, with one mtree mdir damaged in each way, with a power loss at
+  each prog and erase of the salvage, and the bad and suspect lists.
+- **Pass:** `salvage::damage` (NEW-149): with the newer block of the pair
+  failing every read, every file reads, the pair's files as of its older
+  block; with both blocks failing reads or erased, the pair's files and
+  the subdirectory named in it, with its contents, are `LFS3_ERR_NOENT`,
+  a directory whose bookmark was in it lists the rest of its entries, and
+  no entry of a removed directory is left; the first mdir (the root's
+  bookmark) and the last; a rolled-back pair keeps its older state; then
+  a read-write mount without the flag returns 0, writes and remounts, and
+  `lfs3_fs_ck` returns 0; `LFS3_M_SALVAGE` on an undamaged filesystem
+  programs and erases nothing more than a plain mount.
+  `salvage::powerloss` (NEW-150): power lost at each prog and erase
+  of the salvage, under every power-loss behaviour: a read-write mount
+  without the flag returns `LFS3_ERR_CORRUPT` until a salvage completes,
+  unless the salvage hadn't written anything and the pair reads again,
+  and the next salvage leaves the state above, or loses less. `salvage::badblocks`
+  (NEW-151), with `LFS3_GBMAP`: a pair whose blocks fail every read
+  (READERROR) has them marked bad, listed by `lfs3_fs_nextbad`, and never
+  programmed or erased again; blocks that read but don't check are
+  reused. In B-DEF, B-YGB and B-BIG.
+- **Fail:** a lost entry outside the damaged pairs, an entry of a
+  rewritten pair older than its pair's last compaction, an unreachable
+  entry left, a directory that can't be listed, a filesystem that doesn't
+  mount read-write or check after the salvage, or one that mounts without
+  the flag before a salvage completes.
+- **Verified by:** NEW-149, NEW-150, NEW-151.
+- **Status:** Not implemented at `v3-r21` (`195ed2ef`).
 - **When:** every CI run.
 
 ## 7. Summary
@@ -8051,8 +8130,8 @@ Open to the maintainer's review.
 
 
 **Q27. Repairing a damaged metadata pair in place.** A metadata pair that
-doesn't read or check makes read-write mounts fail (LFS3-DEG-03), so today
-the only way back to a writable filesystem is to copy out what a degraded
+doesn't read or check makes read-write mounts fail (LFS3-DEG-03), so the
+only way back to a writable filesystem was to copy out what a degraded
 read-only mount serves and reformat. Options: (a) keep it so; (b) an
 explicit call, for example a check flag accepted only on a mount opened for
 repair, that drops each damaged mdir from the mtree, losing its entries,
@@ -8062,8 +8141,9 @@ lost+found directory, the entries whose directory's bookmark was in the
 dropped mdir; (c) for a pair with one block that reads, an explicit call
 that rewrites the pair from that block, accepting that it may be older.
 Principles 2 and 4 say any of these must be the application's call, never
-automatic; the API, and what becomes of orphaned entries, is the owner's
-choice.
+automatic. Decided on 2026-10-05: "Rewrite, else drop", (c) where a block
+reads, else (b), removing the unreachable entries, as `LFS3_M_SALVAGE`
+(LFS3-DEG-16).
 
 ## 9. Requirements that need new tests
 

@@ -1527,6 +1527,75 @@ defines; procedure; pass and fail; extension needed.
 - **Fail:** more anchor erases.
 - **Extension:** none.
 
+#### NEW-149 `salvage::damage`, `salvage::undamaged`
+
+- **File and case:** `tests/test_salvage.toml`, `test_salvage_damage`
+  and `test_salvage_undamaged`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-16, DEG-10.
+- **Defines:** `DAMAGE` 0 (the pair's newer block fails every read), 1
+  (both blocks fail every read), 2 (both erased), 3 (both rolled back to
+  an older copy); `WHICH` 0 (the first mdir of the mtree, with the
+  root's bookmark) and 1 (the last).
+- **Procedure:** Make two directories of files, one with a
+  subdirectory, then root files until the mtree has four mdirs, `BLOCK_SIZE`
+  512, and note which mdir holds each name and bookmark. With `DAMAGE` 0
+  and 3, compact the chosen mdir in place so its other block keeps the
+  older state, rewrite two of its files, and for 3 a file elsewhere.
+  Damage it, mount read-write (fails), then read-write with
+  `LFS3_M_SALVAGE`, check every entry against the model and list every
+  directory, let the blocks read again, then mount read-write without the
+  flag twice, checking, writing and reading back. Also mount an undamaged
+  filesystem with the flag, counting progs and erases.
+- **Pass:** as LFS3-DEG-16: entries outside the pair as written; with
+  `DAMAGE` 0 and 3 the pair's files at their first version; with `DAMAGE`
+  1 and 2 the pair's entries `LFS3_ERR_NOENT`, removed directories gone
+  with their contents, the other directories listing every entry they
+  kept; the later mounts and checks return 0; the undamaged mount writes
+  nothing more than without the flag.
+- **Fail:** as LFS3-DEG-16.
+- **Extension:** none.
+
+#### NEW-150 `salvage::powerloss`
+
+- **File and case:** `tests/test_salvage.toml`,
+  `test_salvage_powerloss`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-16.
+- **Defines:** `DAMAGE` 0 (newer block failing reads, which stop with
+  the power loss, as if the supply recovered) and 2 (both blocks
+  erased); `WHICH` 0 and 1; `PL_BEHAVIOR` ATOMIC, SOMEBITS, MOSTBITS and
+  OOO.
+- **Procedure:** On its own emubd, build and damage the image of
+  NEW-149, then for each n lose power at the n-th prog or erase of the
+  salvage mount (`lfs3_emubd_setpowercycles`); after each loss, mount
+  read-write without the flag, salvage if that fails, check, and mount
+  once more, until a salvage completes without reaching the n-th.
+- **Pass:** each mount without the flag before a completed salvage
+  returns `LFS3_ERR_CORRUPT`, or with `DAMAGE` 0 succeeds with nothing
+  lost when the salvage hadn't written anything yet; each salvage leaves
+  the state of NEW-149, or with `DAMAGE` 0 the newer state.
+- **Fail:** a mount that succeeds on a half-salvaged filesystem, or a
+  salvage that loses more.
+- **Extension:** none.
+
+#### NEW-151 `salvage::badblocks`
+
+- **File and case:** `tests/test_salvage.toml`,
+  `test_salvage_badblocks`, internal. B-YGB and B-BIG.
+- **Covers:** DEG-16, BAD-03, BAD-16.
+- **Defines:** `KIND` 0 (both blocks of the last mtree mdir bad,
+  READERROR), 1 (both erased, they read but nothing checks).
+- **Procedure:** Build the image of NEW-149, damage the last mdir's
+  blocks, salvage, then rewrite a file until the allocator has gone
+  around the disk twice, counting progs and erases of the damaged
+  blocks.
+- **Pass:** with `KIND` 0 both blocks are listed by `lfs3_fs_nextbad`
+  and never programmed or erased after the salvage; with `KIND` 1
+  neither is bad, and one is reused; every surviving file reads back and
+  checks.
+- **Fail:** a bad block written again, a good one left unused, or a lost
+  file.
+- **Extension:** none.
+
 #### NEW-140 `mount::readerror`
 
 - **File and case:** `tests/test_mount.toml`, `test_mount_readerror`.
