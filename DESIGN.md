@@ -1769,9 +1769,9 @@ read-only contexts.
 
 1. A block that fails an erase, a prog, or a CKPROGS read-back is never erased
    or programmed again, across remounts, once the mark is committed.
-2. Marks are advisory and power-loss safe. Losing a mark only costs a retry. A
-   mark can never make a block that is in use allocatable, or a block that
-   holds data unreadable.
+2. Marks are power-loss safe. Losing a mark to a power loss only costs a
+   retry, and nothing else loses one. A mark can never make a block that is
+   in use allocatable, or a block that holds data unreadable.
 3. Read-only builds and read-only mounts never write. Read paths never need to
    allocate.
 4. No new compat flag: drivers that already understand the gbmap already treat
@@ -1788,8 +1788,10 @@ every referenced block as in use, which would overwrite a bad mark on a block
 that still holds data. That update should leave bad entries alone.
 
 **In RAM**, a small fixed-size queue of bad blocks waiting to be committed,
-say four. If it overflows, the oldest entry is dropped, which is safe because
-marks are advisory.
+say four. It never drops a block: a block failing while it is full merges the
+two closest runs, marking any good blocks between them too, which costs a
+little space rather than a retry or a refused write. Allocating a data block,
+where most failures are found, marks the queue first.
 
 **Detection** needs to know which block failed. The block device wrappers
 would record the block that a failing prog, erase or read-back was aimed at,
@@ -1812,10 +1814,12 @@ mdir commit, like any other gbmap change. If writing the mark itself hits a
 bad block, that block joins the queue; the queue size and the allocator's
 checkpoint bound how long this can go on.
 
-**Blocks that hold data** and fail a read, or a CKDATA check, can't be marked
-until their data has been moved somewhere else. A first version would only
-mark blocks that fail as a destination, and leave read-side marking to a later
-feature that relocates the owner first.
+**Blocks that hold data** and fail an erase or prog, such as a file's last
+block failing an append, are marked while still in use: there can be more of
+them than any queue holds, and the mark only keeps the block from being
+written or allocated again. Blocks that fail a read, or a CKDATA check, are
+not marked; read-side marking is left to a later feature that relocates the
+owner first.
 
 **API sketch:**
 

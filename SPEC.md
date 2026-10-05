@@ -1928,9 +1928,11 @@ the length of the range, and the entry's tag the state:
 | `0x0443` | `BMBAD`    | none             | bad, reserved                  |
 
 The two low bits of these tags are the state: bit 0 means in use, bit 1
-means erased, and in use + erased means bad. `BMBAD` is reserved for
-bad-block tracking and never written by the driver, which treats it like
-`BMINUSE`.
+means erased, and in use + erased means bad. The driver marks a block
+`BMBAD` after an erase, a prog or a `LFS3_M_CKPROGS` read-back of it
+fails, even while a metadata pair or file still references it, and
+treats it like `BMINUSE` that never becomes free: rebuilding the gbmap
+keeps it, and it is never erased, programmed or allocated again.
 
 A `BMERASED` range may carry an erased-state checksum, the same encoding as
 an [`ECKSUM`](#0x3200-lfs3_tag_ecksum), the CRC-32C of the first `cksize`
@@ -2781,8 +2783,10 @@ The checksum applies to each block in the range: the CRC-32C of its first
 
 bits: `v--- -1-- +1-- --11`
 
-A range of bad blocks. Reserved for planned bad-block tracking: the driver
-never writes it, and treats it as in use.
+A range of bad blocks, which a writer must never erase, program or
+allocate. A bad block may still be referenced, its data stays readable,
+and its mark outlives the reference. A driver without bad-block tracking
+treats it as in use.
 
 ---
 #### `0x0500` LFS3_TAG_DIRTY
