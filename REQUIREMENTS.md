@@ -631,9 +631,9 @@ LFS3-DEG-12 and LFS3-DEG-13.
   `MODE` 0 (default) and 1 (`LFS3_M_SETTLE`), in B-BIG.
 - **Fail:** any read returns other data without an error.
 - **Verified by:** NEW-08.
-- **Status:** Untested. The tag-size flip that `LFS3_M_CKMETAPARITY` can't
-  catch (2 wrong reads in 11,039 power losses before the METASTABLE bit was
-  confined to the interrupted prog) is not seen once it is confined.
+- **Status:** Tested on `v3-rc` (`a12705da`): NEW-08 reads no wrong data in
+  either mode, 11,832 power losses by default and 14,626 with
+  `LFS3_M_SETTLE`, in B-BIG.
 - **When:** nightly.
 
 #### LFS3-PL-04
@@ -4890,7 +4890,8 @@ describes: 0, 1, less than `prog_size`, `block_size`, more than
 - **Fail:** any permutation fails, or a check reports an undamaged block
   corrupt.
 - **Verified by:** as listed, NEW-133.
-- **Status:** Partly tested (512 and -1 only).
+- **Status:** Partly tested (512 and -1 only; NEW-133 checks
+  `crystal_thresh` 0, 1 and 8 with `prog_size` 16 on `v3-rc`, `a12705da`).
 - **When:** nightly.
 
 #### LFS3-CFG-11
@@ -6329,7 +6330,10 @@ power loss during the mount-time repair itself.
   error, outside the residual cases of the mode.
 - **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`.
-- **Status:** Known defect (issue #1).
+- **Status:** Tested on `v3-rc` (`a12705da`): with `LFS3_M_SETTLE` NEW-08 loses
+  no completed sync in 14,626 power losses and NEW-130 none; by default
+  NEW-08 counts 55 residual losses in 11,832 power losses and NEW-130
+  loses `lfs3_set`'s commit in 3 of 8 seeds, both residual cases.
 - **When:** every CI run (behaviours 0-5), nightly with permute(1).
 
 #### LFS3-DEG-02
@@ -6508,7 +6512,7 @@ except at most one at close, and no erase of its own.
 - **Fail:** a session commit without the mark, a mark left after a clean
   close, or an erase at close.
 - **Verified by:** NEW-131, `badblocks::ioerror`.
-- **Status:** Not implemented.
+- **Status:** Tested on `v3-rc` (`a12705da`).
 - **When:** every CI run.
 
 #### LFS3-DEG-12
@@ -6538,7 +6542,7 @@ no such pair.
 - **Fail:** a completed sync lost outside the residual cases, or a write at
   a mount with nothing to repair.
 - **Verified by:** NEW-08, NEW-130, NEW-131.
-- **Status:** Not implemented.
+- **Status:** Tested on `v3-rc` (`a12705da`).
 - **When:** every CI run.
 
 #### LFS3-DEG-13
@@ -6562,7 +6566,7 @@ since the last mount that settled it, and every pair showing a power loss.
   without a write.
 - **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`.
-- **Status:** Not implemented.
+- **Status:** Tested on `v3-rc` (`a12705da`).
 - **When:** every CI run.
 
 #### LFS3-DEG-14
@@ -6597,7 +6601,7 @@ append to a block whose state may not read the same twice.
   a write at mount that a full metadata pair can't take.
 - **Verified by:** NEW-08, NEW-130, NEW-131, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`, `mtree::commit_too_big`.
-- **Status:** Not implemented.
+- **Status:** Tested on `v3-rc` (`a12705da`).
 - **When:** every CI run.
 
 #### LFS3-DEG-15
@@ -6617,7 +6621,7 @@ crystallizes them into a new block, in every build, not only with
 - **Fail:** the append succeeds, or the flip reads back under a valid
   checksum.
 - **Verified by:** NEW-132.
-- **Status:** Known defect (issue #1).
+- **Status:** Tested on `v3-rc` (`a12705da`).
 - **When:** every CI run.
 
 ## 7. Summary
@@ -6895,7 +6899,7 @@ new environment (9.2).
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
 | LFS3-GEN-07 | Untested | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-GEN-08 | Defect | every CI run | the LFS3-MOUNT-21 case, with bounds checks |
-| LFS3-PL-03 | Untested | nightly | `powerloss::metastable` (NEW-08) in both repair modes, B-BIG |
+| LFS3-PL-03 | Tested | nightly | `powerloss::metastable` (NEW-08) in both repair modes, B-BIG |
 | LFS3-PL-06 | Partly | every CI run | reentrant flush-without-sync case (explicit flush, `O_FLUSH`, `M_FLUSH`) |
 | LFS3-PL-11 | Partly | every CI run | reentrant `lfs3_setattr`/`lfs3_removeattr` on paths |
 | LFS3-PL-12 | Untested | every CI run | reentrant `lfs3_set` fuzz, values below and above the one-commit limit |
