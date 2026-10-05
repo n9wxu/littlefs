@@ -6072,6 +6072,10 @@ while it holds the lock, including when one public function uses another.
 - **Verified by:** NEW-89 (`threadsafe::*`), and every suite under `make
   test-threadsafe`, job test-threadsafe.
 - **Status:** Known defect (4-api R19: `lfs3.c` never calls them).
+  Fixed and tested on `v3-r8` (`ecf44d33`): `make test-threadsafe` passes
+  668,220 of 668,220 cases with the runner's checks, `threadsafe::*`
+  included, which failed before at the first block device read, outside
+  any lock, as every case of every suite did.
 - **When:** every CI run.
 
 #### LFS3-THR-02
@@ -6108,7 +6112,10 @@ shall give their action and the state after them.
 - **Fail:** any other result.
 - **Verified by:** NEW-89; `scripts/ckerrs.py` over the recordings of job
   test-threadsafe; review of ERRORS.md.
-- **Status:** Known defect (4-api R19).
+- **Status:** Known defect (4-api R19). Fixed and tested on `v3-r8`
+  (`ecf44d33`): `threadsafe::lock_fails` and `threadsafe::unlock_fails`
+  pass, and `scripts/ckerrs.py` over the B-TS recordings sees the lock
+  and unlock codes from all 48 functions of that build, with 0 errors.
 - **When:** every CI run.
 
 #### LFS3-THR-03
@@ -6146,7 +6153,10 @@ define it no code, stack or RAM.
 - **Fail:** any difference.
 - **Verified by:** comparison at the commit that implements the lock;
   J-SIZE reports the B-DEF and B-TS code sizes on every run.
-- **Status:** Not implemented at `b10efaa`, which has no lock.
+- **Status:** Not implemented at `b10efaa`, which has no lock. Met on
+  `v3-r8` (`ecf44d33`): `.text` is byte for byte that of `424c91f2` in all
+  14 builds; B-TS costs 1,528 bytes on thumb (39,540 to 41,068), 1,796
+  with `LFS3_BIGGEST`.
 - **When:** every CI run.
 
 ### 6.20 Build configurations (BUILD)
@@ -6678,7 +6688,8 @@ error-code check of LFS3-ERR-01.
 - **Verified by:** `.github/workflows/test.yml`.
 - **Status:** Untested at fd3157e3, where only `make test-rdonly` had a
   job. On `v3-integration` (345c40f7, 1c768762) every target has a job and
-  passes in the `lfs3-ci` image; not yet run on GitHub.
+  passes in the `lfs3-ci` image; not yet run on GitHub. `make
+  test-threadsafe` has a job on `v3-r8` (`ecf44d33`).
 - **When:** every CI run.
 
 #### LFS3-CI-13
@@ -7072,7 +7083,9 @@ code the function can return.
 - **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
   (14f90293, 9c9e8145): over the B-DEF, B-YGB and B-BIG suites the runner
   records 135 (function, code) pairs and every one is listed. Before the
-  lists, the check found 85 undocumented pairs in the default suite.
+  lists, the check found 85 undocumented pairs in the default suite. On
+  `v3-r8` (`ecf44d33`) every paragraph names `lock` and `unlock`, and the
+  B-TS recordings, 215 pairs, are listed too.
 - **When:** every CI run.
 
 #### LFS3-ERR-02
@@ -7966,8 +7979,8 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-RES-06 | 4-api R8 | none |
 | LFS3-PERF-07 | measured | none |
 | LFS3-PERF-09 | measured, M-3, `bench_wlog_fresh` | v3-integration `ec0733b8`, `554e89f9`, `32eb36e7` (`bench_wlog_fresh`) |
-| LFS3-THR-01 | 4-api R19 | none |
-| LFS3-THR-02 | 4-api R19 | none |
+| LFS3-THR-01 | 4-api R19 | v3-r8 `ecf44d33` (`threadsafe::locks`, `make test-threadsafe`) |
+| LFS3-THR-02 | 4-api R19 | v3-r8 `ecf44d33` (`threadsafe::lock_fails`, `threadsafe::unlock_fails`) |
 | LFS3-BUILD-02 | F-2 | v3-fixes `e4c046b` |
 | LFS3-BUILD-03 | F-2 | v3-fixes `e4c046b` |
 | LFS3-BUILD-04 | 4-api R6 | none |
@@ -8397,8 +8410,8 @@ new environment (9.2).
 | LFS3-PERF-11 | Partly | every CI run | data-block erases per small synced append |
 | LFS3-PERF-12 | Untested | nightly | CI bench-diff job |
 | LFS3-PERF-13 | Untested | nightly | reads of the first allocation after mount, with the gbmap |
-| LFS3-THR-01 | Defect | every CI run | `threadsafe::locks` (NEW-89), and the runner's counting `lock`/`unlock` over every suite in B-TS (`make test-threadsafe`) |
-| LFS3-THR-02 | Defect | every CI run | failing `lock`/`unlock` in `threadsafe::*` (NEW-89); `scripts/ckerrs.py` over the B-TS recordings |
+| LFS3-THR-01 | Tested | every CI run | `threadsafe::locks` (NEW-89), and the runner's counting `lock`/`unlock` over every suite in B-TS (`make test-threadsafe`), on `v3-r8` (ecf44d33) |
+| LFS3-THR-02 | Tested | every CI run | failing `lock`/`unlock` in `threadsafe::*` (NEW-89); `scripts/ckerrs.py` over the B-TS recordings, on `v3-r8` (ecf44d33) |
 | LFS3-THR-03 | Untested | nightly | two filesystems on two threads under ThreadSanitizer |
 | LFS3-BUILD-01 | Partly | every CI run | `-Werror` builds with GCC, clang and the cross compilers |
 | LFS3-BUILD-02 | Defect | every CI run | B-BIG build |
@@ -8570,7 +8583,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | 4-api R8 | `lfs3_init` frees pointers it never set when an early allocation fails | `lfs3.c:15175-15222, 15400-15418` | probe | RES-06 | none |
 | 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | none |
 | 4-api R17 | `lfs3_fromleb128` shifts signed values (undefined behaviour for large fifth bytes) | `lfs3_util.c:37-56` | code | GEN-03 | none |
-| 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | none |
+| 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | v3-r8 `ecf44d33` (`threadsafe::*`) |
 | 4-api R20 | `lfs3_util.h` honours `LFS3_CFG`, `lfs3_util.c` checks `LFS3_CONFIG` | `lfs3_util.h:21`, `lfs3_util.c:11` | code | BUILD-08 | none |
 | 4-api R21 | The `lfs3_strspn` fallback is wrong for sets of two or more characters | `lfs3_util.h:719-734` | code | BUILD-09 | none |
 | 4-api R22 | `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the header hides it | `lfs3.h:1511` | code | BUILD-10 | none |
