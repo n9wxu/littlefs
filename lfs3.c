@@ -3272,6 +3272,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
     bool erased = false;
     if (lfs3_ecksum_isecksum(&ecksum)) {
         // check the erased-state checksum
+        uint8_t rderr = lfs3->mfetch & LFS3_MFETCH_RDERR;
         lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         int err = lfs3_rbyd_ckecksum(lfs3, rbyd, &ecksum);
         if (err && err != LFS3_ERR_CORRUPT) {
@@ -3290,6 +3291,7 @@ static int lfs3_rbyd_fetch_(lfs3_t *lfs3,
                     <= lfs3->cfg->block_size - lfs3_rbyd_eoff(rbyd)
                 && lfs3_ecksum_iswide(lfs3, &ecksum, lfs3_rbyd_eoff(rbyd))
                 && !(lfs3->mfetch & LFS3_MFETCH_RDERR);
+        lfs3->mfetch |= rderr;
     }
 
     // used eoff=-1 to indicate when there is no erased-state, and
@@ -9144,23 +9146,32 @@ static int lfs3_rbyd_settle_(lfs3_t *lfs3,
 // after settling
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_settle_(lfs3_t *lfs3,
-        lfs3_block_t src, lfs3_block_t dst) {
+        lfs3_block_t src, lfs3_block_t dst,
+        bool strict, bool *copied) {
     // find our commits, reading them several times, a last commit that
     // comes and goes was being written at the power loss, the shortest
     // log we see is the one we can trust
+    //
+    // a read that fails says nothing about what was written, so it
+    // doesn't count, and leaves LFS3_MFETCH_RDERR set if we give up
     lfs3_rbyd_t rbyd;
     lfs3_finfo_t info;
-    int err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
-    if (err) {
-        return err;
-    }
     bool consistent = true;
-    uint8_t lineage = info.lineage;
-    for (int i = 1; i < LFS3_SETTLE_CKS; i++) {
+    uint8_t lineage = 0;
+    int err;
+    for (int i = 0, j = 0; i < LFS3_SETTLE_CKS; j++) {
+        if (j == 2*LFS3_SETTLE_CKS) {
+            return LFS3_ERR_CORRUPT;
+        }
+
         lfs3_finfo_t info_;
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info_);
         if (err && err != LFS3_ERR_CORRUPT) {
             return err;
+        }
+        if (lfs3->mfetch & LFS3_MFETCH_RDERR) {
+            continue;
         }
         // no commit at all? our only commit comes and goes
         if (err) {
@@ -9173,12 +9184,20 @@ static int lfs3_mdir_settle_(lfs3_t *lfs3,
             lineage = info_.lineage;
         }
 
-        if (info_.eoff != info.eoff) {
+        if (i == 0) {
+            info = info_;
+        } else if (info_.eoff != info.eoff) {
             consistent = false;
             if (info_.eoff < info.eoff) {
                 info = info_;
             }
         }
+        i += 1;
+    }
+
+    // only copying what reads the same every time?
+    if (strict && !consistent) {
+        return LFS3_ERR_CORRUPT;
     }
 
     // try to copy everything, but if our last commit keeps failing
@@ -9186,17 +9205,22 @@ static int lfs3_mdir_settle_(lfs3_t *lfs3,
     // only commit, then we've already erased the older state in our
     // other block and can only keep trying
     lfs3_size_t last = info.t0;
-    for (int i = 0; i < 4*LFS3_SETTLE_TRIES; i++) {
+    for (int i = 0, j = 0; j < 4*LFS3_SETTLE_TRIES; j++) {
         if (i == LFS3_SETTLE_TRIES && consistent && info.t1) {
             last = info.t1;
         } else if (i == 2*LFS3_SETTLE_TRIES && info.t1) {
             break;
         }
 
+        *copied = true;
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
         err = lfs3_rbyd_settle_(lfs3, src, dst, last,
                 lfs3_settled_next(lineage));
         if (err != LFS3_ERR_CORRUPT) {
             return err;
+        }
+        if (!(lfs3->mfetch & LFS3_MFETCH_RDERR)) {
+            i += 1;
         }
     }
 
@@ -9204,6 +9228,7 @@ static int lfs3_mdir_settle_(lfs3_t *lfs3,
 }
 #endif
 
+// expects the mdir as just fetched, with lfs3->mfetch from that fetch
 #ifndef LFS3_RDONLY
 static int lfs3_mdir_settle(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
     lfs3_block_t src = mdir->r.blocks[0];
@@ -9223,23 +9248,89 @@ static int lfs3_mdir_settle(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
     }
     #endif
 
+    // our other block newer? our fetch took this one because the newer
+    // one failed to read or check, failing a check means an interrupted
+    // compaction, see lfs3_mdir_fetch, but a failed read doesn't, if the
+    // newer block reads the same every time now, settle it instead of
+    // copying the older one over it, and never copy over a block we
+    // can't read
+    bool torn = lfs3->mfetch & LFS3_MFETCH_TORN;
+    int err;
+    int err_;
+    bool unreadable = false;
+    for (int i = 0; !torn && i < LFS3_SETTLE_TRIES; i++) {
+        uint32_t revs[2];
+        err = lfs3_bd_read(lfs3, src, 0, 0, &revs[0], sizeof(uint32_t));
+        if (err) {
+            if (err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+            break;
+        }
+
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
+        err_ = lfs3_bd_read(lfs3, dst, 0, 0, &revs[1], sizeof(uint32_t));
+        if (err_ && err_ != LFS3_ERR_CORRUPT) {
+            return err_;
+        }
+        if (!err_) {
+            if (lfs3_scmp(lfs3_fromle32(&revs[1]),
+                    lfs3_fromle32(&revs[0])) <= 0) {
+                break;
+            }
+
+            #ifdef LFS3_GBMAP
+            lfs3_sbool_t bad = lfs3_alloc_isknownbad(lfs3, src);
+            if (bad < 0) {
+                return bad;
+            }
+            if (bad || lfs3_alloc_isbadqfull(lfs3)) {
+                break;
+            }
+            #endif
+
+            bool copied = false;
+            err = lfs3_mdir_settle_(lfs3, dst, src, true, &copied);
+            if (err != LFS3_ERR_CORRUPT || copied) {
+                LFS3_SWAP(lfs3_block_t, &src, &dst);
+                goto settled;
+            }
+        }
+
+        // a read that failed may work next time, a newer block that reads
+        // but doesn't check is an interrupted compaction
+        unreadable = lfs3->mfetch & LFS3_MFETCH_RDERR;
+        if (!unreadable) {
+            break;
+        }
+    }
+    if (unreadable) {
+        LFS3_WARN("Can't settle mdir 0x{%"PRIx32",%"PRIx32"}, "
+                    "newer block doesn't read",
+                src, dst);
+        return 0;
+    }
+
     lfs3_rbyd_t rbyd;
     lfs3_finfo_t info = {.count=0};
-    int err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
+    lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
+    err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
     if (err && err != LFS3_ERR_CORRUPT) {
         return err;
     }
 
     if (!err) {
-        err = lfs3_mdir_settle_(lfs3, src, dst);
+        bool copied = false;
+        err = lfs3_mdir_settle_(lfs3, src, dst, false, &copied);
     }
 
     // our only commit doesn't read the same twice? it's an interrupted
     // compaction, settle the older block instead, unless we already
-    // tried copying, which erased it
-    if (err == LFS3_ERR_CORRUPT && info.count <= 1) {
+    // tried copying, which erased it, or only reads failed
+    if (err == LFS3_ERR_CORRUPT && info.count <= 1
+            && !(lfs3->mfetch & LFS3_MFETCH_RDERR)) {
         lfs3_finfo_t info_;
-        int err_ = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, dst, 0, &info_);
+        err_ = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, dst, 0, &info_);
         if (err_ && err_ != LFS3_ERR_CORRUPT) {
             return err_;
         }
@@ -9255,10 +9346,12 @@ static int lfs3_mdir_settle(lfs3_t *lfs3, const lfs3_mdir_t *mdir) {
         }
         #endif
         if (!err_) {
-            err = lfs3_mdir_settle_(lfs3, dst, src);
+            bool copied = false;
+            err = lfs3_mdir_settle_(lfs3, dst, src, false, &copied);
         }
     }
 
+settled:;
     if (err) {
         // can't write the other block, or no copy checks? leave this
         // mdir be
@@ -11557,6 +11650,8 @@ static int lfs3_alloc_adoptgbmap(lfs3_t *lfs3,
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_mtree_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         lfs3_tag_t tag, const lfs3_bptr_t *bptr);
+static int lfs3_mdir_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
+        lfs3_mdir_t *mdir);
 #endif
 
 // high-level mutating traversal, handle extra features that require
@@ -11760,6 +11855,16 @@ again:;
 
         // reset dirty flag
         mgc->t.h.flags &= ~LFS3_t_DIRTY | dirty;
+    }
+
+    // settling an mdir off of a suspect block?
+    if (lfs3_t_isrepair(mgc->t.h.flags)
+            && tag == LFS3_TAG_MDIR) {
+        int err = lfs3_mdir_rescue(lfs3, mgc,
+                (lfs3_mdir_t*)bptr_->d.u.buffer);
+        if (err) {
+            return err;
+        }
     }
     #endif
     #endif
@@ -19482,6 +19587,144 @@ failed:;
         return 0;
     }
     return err;
+}
+#endif
+
+// settle an mdir off of a suspect block
+//
+// an mdir has no checksum in a parent to check a copy against, but we
+// know what its log should read, so copy it into the other block, see
+// lfs3_rbyd_settle_, only if it reads back exactly as we have it, never
+// dropping a commit, the old block stays the pair's other block, and the
+// next compaction writes it again, or relocates the pair if it's bad
+//
+// a fetch falls back to the older block when the newer one fails to
+// read, so only copy over an other block that reads as strictly older
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_mdir_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
+        lfs3_mdir_t *mdir) {
+    struct lfs3_suspects *suspects = &lfs3->gbmap.suspects;
+    lfs3_block_t src = mdir->r.blocks[0];
+    lfs3_block_t dst = mdir->r.blocks[1];
+    lfs3_ssize_t i = lfs3_alloc_findsuspect(lfs3, src);
+    if (i < 0 || (suspects->stuck & ((uint32_t)1 << i))) {
+        return 0;
+    }
+
+    // open handles hold copies of this mdir, leave it until they close
+    for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
+        if (h != &mgc->t.h && lfs3_mdir_cmp(&h->mdir, mdir) == 0) {
+            return 0;
+        }
+    }
+
+    // moved data off of this block before? it's decaying
+    if (suspects->moved & ((uint32_t)1 << i)) {
+        lfs3_alloc_pushbad(lfs3, src);
+    }
+
+    // our other block went bad, or no room to remember it if it does?
+    lfs3_sbool_t bad = lfs3_alloc_isknownbad(lfs3, dst);
+    if (bad < 0) {
+        return bad;
+    }
+    int err = (bad || lfs3_alloc_isbadqfull(lfs3))
+            ? LFS3_ERR_NOSPC
+            : LFS3_ERR_CORRUPT;
+    for (int j = 0; err == LFS3_ERR_CORRUPT && j < LFS3_SETTLE_TRIES; j++) {
+        uint32_t revs[2];
+        err = lfs3_bd_read(lfs3, src, 0, 0, &revs[0], sizeof(uint32_t));
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+        if (!err) {
+            err = lfs3_bd_read(lfs3, dst, 0, 0, &revs[1], sizeof(uint32_t));
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+        }
+        if (!err
+                && lfs3_scmp(lfs3_fromle32(&revs[1]),
+                    lfs3_fromle32(&revs[0])) >= 0) {
+            err = LFS3_ERR_RANGE;
+            break;
+        }
+
+        lfs3_rbyd_t rbyd;
+        lfs3_finfo_t info;
+        lfs3->mfetch &= ~LFS3_MFETCH_RDERR;
+        if (!err) {
+            err = lfs3_rbyd_fetch_(lfs3, &rbyd, NULL, src, 0, &info);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+        }
+        if (!err
+                && ((lfs3->mfetch & LFS3_MFETCH_RDERR)
+                    || lfs3_rbyd_trunk(&rbyd) != lfs3_rbyd_trunk(&mdir->r)
+                    || rbyd.cksum != mdir->r.cksum)) {
+            err = LFS3_ERR_CORRUPT;
+        }
+
+        if (!err) {
+            err = lfs3_rbyd_settle_(lfs3, src, dst, info.t0,
+                    lfs3_settled_next(info.lineage));
+        }
+    }
+
+    // make sure our copy is on disk, and reads back as the mdir we have
+    lfs3_mdir_t mdir_;
+    if (!err) {
+        err = lfs3_bd_sync(lfs3);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+    }
+    if (!err) {
+        err = lfs3_mdir_fetch(lfs3, &mdir_, mdir->mid, mdir->r.blocks);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+    }
+    if (!err
+            && (mdir_.r.blocks[0] != dst
+                || lfs3_rbyd_trunk(&mdir_.r) != lfs3_rbyd_trunk(&mdir->r)
+                || mdir_.r.cksum != mdir->r.cksum)) {
+        err = LFS3_ERR_CORRUPT;
+    }
+
+    i = lfs3_alloc_findsuspect(lfs3, src);
+    if (err) {
+        // can't write the other block, or no copy checks? leave it for
+        // the next check, the mdir still reads
+        if (err == LFS3_ERR_NOSPC
+                || err == LFS3_ERR_NOTSUP
+                || err == LFS3_ERR_CORRUPT
+                || err == LFS3_ERR_RANGE) {
+            LFS3_WARN("Can't settle mdir 0x{%"PRIx32",%"PRIx32"} (%d)",
+                    src, dst, err);
+            if (i >= 0) {
+                suspects->stuck |= (uint32_t)1 << i;
+            }
+            return 0;
+        }
+        return err;
+    }
+
+    LFS3_INFO("Settled mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"} "
+                "off suspect 0x%"PRIx32,
+            lfs3_dbgmbid(lfs3, mdir->mid),
+            dst, src, src);
+    if (lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0) {
+        lfs3_mdir_sync(&lfs3->mroot, &mdir_);
+    }
+    *mdir = mdir_;
+    // a settled copy on disk, see LFS3_WCOMPAT_SETTLED
+    lfs3->msettle |= LFS3_MSETTLE_SEEN;
+    if (i >= 0) {
+        suspects->moved |= (uint32_t)1 << i;
+    }
+    return 0;
 }
 #endif
 

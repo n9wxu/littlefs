@@ -205,6 +205,18 @@ static bool test_repair_inuse(lfs3_t *lfs3, lfs3_block_t block) {
     return inuse;
 }
 
+// find the blocks of the mdir holding a file
+static void test_repair_mdirblocks(lfs3_t *lfs3, const char *name,
+        lfs3_block_t blocks[static 2]) {
+    lfs3_file_t file;
+    int err = lfs3_file_open(lfs3, &file, name, LFS3_O_RDONLY);
+    assert(!err);
+    blocks[0] = file.b.h.mdir.r.blocks[0];
+    blocks[1] = file.b.h.mdir.r.blocks[1];
+    err = lfs3_file_close(lfs3, &file);
+    assert(!err);
+}
+
 // is a block suspect?
 static bool test_repair_issuspect(lfs3_t *lfs3, lfs3_block_t block) {
     return lfs3_fs_nextsuspect(lfs3, block) == (lfs3_sblock_t)block;
@@ -643,6 +655,161 @@ code = '''
     for (lfs3_size_t j = 0; j < N; j++) {
         sprintf(name, "spider%03d", j);
         test_repair_read_(&lfs3, name, seeds[j], SIZE);
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test settling an mdir off of a suspect block into its other block
+[cases.test_repair_mdir]
+# METHOD=0 => lfs3_fs_ck
+# METHOD=2 => lfs3_fs_gc
+defines.METHOD = [0, 2]
+# MTREE=false => the file is in the mroot
+# MTREE=true  => the file is in an mdir of the mtree
+defines.MTREE = [false, true]
+# OPEN=true => an open file holds a copy of the mdir through a first check
+defines.OPEN = [false, true]
+defines.CK_RETRIES = 3
+defines.GC_FLAGS = 'LFS3_GC_CKMETA'
+defines.GC_STEPS = 1
+defines.SIZE = 'BLOCK_SIZE/16'
+if = 'METHOD != 2 || LFS3_IFDEF_GC(true, false)'
+code = '''
+    struct lfs3_cfg cfg;
+    test_repair_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_size_t n = 0;
+    char name[256];
+    while (MTREE && lfs3.mtree.r.weight == 0) {
+        assert(n < BLOCK_COUNT);
+        sprintf(name, "spider%03d", n);
+        test_repair_write(&lfs3, name, n, SIZE);
+        n += 1;
+    }
+    test_repair_write(&lfs3, "jellyfish", 42, SIZE);
+    lfs3_block_t blocks[2];
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks);
+    assert(MTREE == (lfs3_mptr_cmp(blocks, lfs3.mroot.r.blocks) != 0));
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // as if a read of the mdir's block had failed
+    lfs3_alloc_pushsuspect(&lfs3, blocks[0]);
+
+    // an open file holds a copy, so the mdir stays where it is
+    lfs3_block_t blocks_[2];
+    if (OPEN) {
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "jellyfish", LFS3_O_RDONLY) => 0;
+        test_repair_ck(&lfs3, &cfg, METHOD, LFS3_M_RDWR,
+                LFS3_CK_CKMETA) => 0;
+        assert(file.b.h.mdir.r.blocks[0] == blocks[0]);
+        lfs3_file_close(&lfs3, &file) => 0;
+        test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+        assert(blocks_[0] == blocks[0]);
+    }
+
+    // the mdir moves to its other block, the suspect block stays the
+    // pair's other block
+    memset(test_repair_erases, 0, sizeof(test_repair_erases));
+    test_repair_ck(&lfs3, &cfg, METHOD, LFS3_M_RDWR, LFS3_CK_CKMETA) => 0;
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+    assert(blocks_[0] == blocks[1]);
+    assert(blocks_[1] == blocks[0]);
+    assert(test_repair_erases[blocks[0]] == 0);
+    assert(test_repair_issuspect(&lfs3, blocks[0]));
+    assert(!test_repair_isbad(&lfs3, blocks[0]));
+    if (!MTREE) {
+        assert(lfs3.mroot.r.blocks[0] == blocks[1]);
+    }
+
+    // build on it, then every file reads back, also after a remount
+    test_repair_read_(&lfs3, "jellyfish", 42, SIZE);
+    test_repair_write(&lfs3, "jellyfish", 43, SIZE);
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        test_repair_read_(&lfs3, "jellyfish", 43, SIZE);
+        for (lfs3_size_t i = 0; i < n; i++) {
+            sprintf(name, "spider%03d", i);
+            test_repair_read_(&lfs3, name, i, SIZE);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that an mdir block we need to settle off of twice in one mount is
+# marked bad, and the pair relocates
+[cases.test_repair_mdir_twice]
+defines.CK_RETRIES = 3
+defines.SIZE = 'BLOCK_SIZE/16'
+code = '''
+    struct lfs3_cfg cfg;
+    test_repair_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_size_t n = 0;
+    char name[256];
+    while (lfs3.mtree.r.weight == 0) {
+        assert(n < BLOCK_COUNT);
+        sprintf(name, "spider%03d", n);
+        test_repair_write(&lfs3, name, n, SIZE);
+        n += 1;
+    }
+    test_repair_write(&lfs3, "jellyfish", 42, SIZE);
+    lfs3_block_t blocks[2];
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks);
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // settle off of it once
+    lfs3_alloc_pushsuspect(&lfs3, blocks[0]);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
+    lfs3_block_t blocks_[2];
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+    assert(blocks_[0] == blocks[1]);
+
+    // the next commit compacts into it again
+    test_repair_write(&lfs3, "jellyfish", 43, SIZE);
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+    assert(blocks_[0] == blocks[0]);
+    assert(!test_repair_isbad(&lfs3, blocks[0]));
+
+    // and it needs settling again
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
+    assert(test_repair_isbad(&lfs3, blocks[0]));
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+    assert(blocks_[0] == blocks[1]);
+
+    // the next commit relocates the pair, and it is never written again
+    memset(test_repair_erases, 0, sizeof(test_repair_erases));
+    memset(test_repair_progs, 0, sizeof(test_repair_progs));
+    test_repair_write(&lfs3, "jellyfish", 44, SIZE);
+    test_repair_mdirblocks(&lfs3, "jellyfish", blocks_);
+    assert(blocks_[0] != blocks[0] && blocks_[1] != blocks[0]);
+    for (lfs3_size_t j = 0; j < 2*BLOCK_COUNT; j++) {
+        test_repair_write(&lfs3, "jellyfish", 45+j, SIZE);
+    }
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    assert(test_repair_erases[blocks[0]] == 0);
+    assert(test_repair_progs[blocks[0]] == 0);
+    assert(test_repair_isbad(&lfs3, blocks[0]));
+    assert(!test_repair_inuse(&lfs3, blocks[0]));
+    test_repair_read_(&lfs3, "jellyfish", 45+2*BLOCK_COUNT-1, SIZE);
+    for (lfs3_size_t i = 0; i < n; i++) {
+        sprintf(name, "spider%03d", i);
+        test_repair_read_(&lfs3, name, i, SIZE);
     }
     lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     lfs3_unmount(&lfs3) => 0;

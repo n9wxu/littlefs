@@ -1464,6 +1464,13 @@ erase. littlefs has two answers:
    during the settle itself is left, at the cost of an erase per pair
    written since the last mount, clean shutdown or not.
 
+A read the block device fails is not a power loss: the supply may have
+sagged, and the next read may pass. So a failed read never counts among the
+settle's reads, never makes the active block look like an interrupted
+compaction, and a newer block that fails to read is read again rather than
+overwritten with the older one; if it keeps failing, the pair is left as it
+is for the next mount.
+
 Data blocks have their own version of the problem: the first append after a
 remount copies the file's partly-filled last block into a new one. littlefs
 checks that block's checksum on the bytes it copies, in every build, so a
@@ -1850,11 +1857,21 @@ littlefs tests it: erase, program a pattern, read it back. If that works the
 block was probably a weak write, and it's free again; if not, or if it needs
 moving twice in one mount, it's marked bad.
 
-Some things aren't moved. mdirs and mtree nodes have no checksum in a
-parent, their commits are only covered globally by the gcksum, so there's
-nothing to check a copy against. Blocks of open files are left until the
-files close. A block that can't be moved now, because the disk is full or
-the copy never checked out, is left for the next check.
+An mdir has no checksum in a parent, but its commits carry their own, and
+littlefs knows what the log should read: the trunk and checksum of the mdir
+in RAM. So an mdir whose active block is suspect is settled instead: copied
+into its other block, commit by commit, as at mount, but only when the log
+reads back exactly as littlefs has it, and only over an other block that
+reads as older, since a fetch that can't read the newer block falls back to
+the older one without an error. The suspect block stays the pair's other
+block, the next compaction erases and writes it, which tests it, and one
+that needs settling off again is marked bad, so that compaction relocates
+the pair. An mdir an open handle holds is left until the handle closes.
+
+Some things aren't moved. mtree nodes would need a commit through the mtree
+and the mroot, which isn't written yet. Blocks of open files are left until
+the files close. A block that can't be moved now, because the disk is full
+or the copy never checked out, is left for the next check.
 
 `ck_passes` makes `lfs3_fs_ck` and mount-time checks read everything more
 than once, which catches more bits that read differently each time.

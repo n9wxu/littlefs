@@ -262,7 +262,10 @@ Their meaning, and the action, is the block device's.
   stays allocated. A mount without mount-time work writes nothing. Mount-time
   work (`LFS3_M_MKCONSISTENT`, `LFS3_M_LOOKAHEAD`, `LFS3_M_COMPACT`, and the
   repairs of `LFS3_M_CKMETA` and `LFS3_M_CKDATA` with `ck_retries`) leaves
-  what it wrote as the janitorial calls do.
+  what it wrote as the janitorial calls do. So does settling, the mount-time
+  work of a read-write mount after a power loss, and of every read-write
+  mount after a write with `LFS3_M_SETTLE`: a pair it couldn't settle stays
+  as it was, and the next mount tries again.
 - `lfs3_unmount` never fails.
 - After an error from `lfs3_format`, the device may no longer hold the
   previous filesystem. Format again.
@@ -288,8 +291,11 @@ Their meaning, and the action, is the block device's.
 
 A power loss isn't an error a call returns. After one, the next mount finds
 every metadata operation either complete or not started, and every file as
-it was at its last completed sync, with the caveat in `lfs3.h`'s note on the
-prog callback about bits a power loss leaves metastable.
+it was at its last completed sync, with the caveats in `lfs3.h`'s note on the
+prog callback about bits a power loss leaves metastable, and in its note on
+power loss at `lfs3_mount`. A file a power loss left open for writing stays
+marked dirty on disk, which costs nothing once the mount has settled its
+pair, until `lfs3_fs_mkconsistent` clears the mark.
 
 ## Contingencies
 

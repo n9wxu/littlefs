@@ -3364,3 +3364,111 @@ code = '''
     assert(memcmp(rbuf, wbuf, SIZE) == 0);
     lfs3_unmount(&lfs3) => 0;
 '''
+
+# A newer block that fails reads when mount settles its pair
+#
+# The fetch takes the older block, but a failed read doesn't prove the
+# newer block is gone, so settling must read the newer block again and
+# copy it over the older one when it reads the same every time, and never
+# copy the older block over a newer one it can't read
+#
+# MODE=0 => default mode, a dirty file in the pair
+# MODE=1 => LFS3_M_SETTLE
+# FAILS  => reads of the newer block that fail, 64 keeps failing past the
+#           mount
+[cases.test_powerloss_settle_newer]
+defines.MODE = [0, 1]
+defines.FAILS = [1, 3, 64]
+in = 'lfs3.c'
+code = '''
+    const uint32_t mflags = LFS3_M_RDWR | ((MODE) ? LFS3_M_SETTLE : 0);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, mflags, CFG) => 0;
+
+    // sync a first version, compact so the older block keeps it, then
+    // sync a second version into the newer block
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "a", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "first", 5) => 5;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_mdir_compact(&lfs3, &lfs3.mroot) => 0;
+    lfs3_block_t newer = lfs3.mroot.r.blocks[0];
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, "second", 6) => 6;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    assert(lfs3.mroot.r.blocks[0] == newer);
+    if (MODE == 0) {
+        // a power loss ends our session, leaving our file dirty
+        lfs3_file_desync(&lfs3, &file) => 0;
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // the newer block fails some reads as we mount
+    lfs3_emubd_mktransient(CFG, newer, FAILS) => 0;
+    lfs3_mount(&lfs3, mflags, CFG) => 0;
+    uint8_t buf[8];
+    if (lfs3_emubd_transient(CFG, newer) == 0) {
+        lfs3_get(&lfs3, "a", buf, sizeof(buf)) => 6;
+        assert(memcmp(buf, "second", 6) == 0);
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // once it reads again, the newer block is still there
+    lfs3_emubd_mktransient(CFG, newer, 0) => 0;
+    lfs3_mount(&lfs3, mflags, CFG) => 0;
+    lfs3_get(&lfs3, "a", buf, sizeof(buf)) => 6;
+    assert(memcmp(buf, "second", 6) == 0);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# A block that fails reads while we settle its pair
+#
+# A failed read says nothing about what was written, so it never makes a
+# commit look like it comes and goes, and never makes the active block look
+# like an interrupted compaction. FAILS 16 keeps failing through the settle.
+[cases.test_powerloss_settle_rderr]
+defines.FAILS = [1, 2, 3, 4, 8, 16]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // sync a first version, compact so the other block keeps it, then
+    // sync a second version, and leave our file dirty, as a power loss
+    // would
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "a", LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+    lfs3_file_write(&lfs3, &file, "first", 5) => 5;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_mdir_compact(&lfs3, &lfs3.mroot) => 0;
+    lfs3_block_t active = lfs3.mroot.r.blocks[0];
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, "second", 6) => 6;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, "!", 1) => 1;
+    lfs3_file_sync(&lfs3, &file) => 0;
+    assert(lfs3.mroot.r.blocks[0] == active);
+    lfs3_file_desync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // the active block fails reads as we settle
+    lfs3_emubd_mktransient(CFG, active, FAILS) => 0;
+    lfs3_mdir_settle(&lfs3, &lfs3.mroot) => 0;
+    lfs3_emubd_mktransient(CFG, active, 0) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // whatever got settled, nothing is lost
+    for (int i = 0; i < 2; i++) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        uint8_t buf[8];
+        lfs3_get(&lfs3, "a", buf, sizeof(buf)) => 7;
+        assert(memcmp(buf, "second!", 7) == 0);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''

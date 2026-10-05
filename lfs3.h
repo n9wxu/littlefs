@@ -867,7 +867,10 @@ struct lfs3_cfg {
     // block. The old block is used again if it then erases and progs
     // cleanly, and marked bad if it doesn't, or if it needs moving again
     // in the same mount. LFS3_ERR_CORRUPT is returned only if every read
-    // fails. mdirs and mtree nodes aren't moved.
+    // fails. An mdir is settled into its other block instead, see
+    // lfs3_mount, when no open handle holds it, its log reads back as
+    // written, and its other block holds an older revision. mtree nodes
+    // aren't moved.
     //
     // 0 doesn't read again or move anything. Where the supply can sag or
     // power can be lost mid-write, we suggest 3: a block that fails 4
@@ -1662,7 +1665,9 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // it copies, and the next write to a settled pair compacts it, unless
 // it's too full to compact in place. Once a pair is settled, the next
 // compaction of the mroot sets the SETTLED wcompat flag, which keeps
-// drivers without these rules from writing the filesystem.
+// drivers without these rules from writing the filesystem. A read the
+// block device fails isn't taken for an interrupted write: settling
+// reads again, and leaves a pair whose newer block doesn't read.
 //
 // By default a write session marks its file dirty on disk, in a commit
 // the session makes anyway, until lfs3_file_close. A mount settles the
