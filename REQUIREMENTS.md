@@ -479,11 +479,12 @@ suite.
 - **Measure:** UndefinedBehaviorSanitizer and AddressSanitizer reports in
   `lfs3.c`, `lfs3_util.c` and `lfs3_util.h`.
 - **Pass:** a runner built with `-fsanitize=undefined,address` runs every
-  suite with `-Pnone` in B-DEF and B-BIG with zero reports.
+  suite with `-Pnone` in B-DEF and B-BIG with zero reports, with
+  `UBSAN_OPTIONS=halt_on_error=1` so that a report fails its case.
 - **Fail:** any report.
 - **Verified by:** NEW: sanitizer build of `runners/test_runner`.
-- **Status:** Known defect (4-api R17, 1-meta 0.7c). Fixed on v3-fixes:
-  F-1, F-3.
+- **Status:** Known defect (4-api R17, 1-meta 0.7c, D-7). Fixed on
+  v3-fixes: F-1, F-3.
 - **When:** every CI run.
 
 #### LFS3-GEN-04
@@ -2821,18 +2822,34 @@ cache cannot be allocated, and leave no handle registered.
 
 #### LFS3-FILE-17
 
-littlefs shall write, remount, read and fruncate a sparse file that ends at
-byte 2^31 - 2 (size `LFS3_FILE_MAX`).
+littlefs shall write, remount, read, truncate and fruncate a sparse file
+that ends at byte 2^31 - 2 (size `LFS3_FILE_MAX`), with correct results and
+without undefined behaviour: no rid, bid or weight sum in the file's tree
+overflows a signed 32-bit integer.
 
 - **Source:** Stated: `lfs3.h:69-74`; #1114 (2025-06-23): "The driver is
   currently limited to 2^31-1 for both file size and block count (though
-  untested)".
-- **Measure:** size and content of the last bytes.
-- **Pass:** a NEW case writes 16 bytes ending at 2^31 - 2, remounts, reads
-  them back, and fruncates to 16 bytes, in B-DEF.
-- **Fail:** any error or wrong content.
-- **Verified by:** NEW (a probe passed at `b10efaa`, 2-files 1.3).
-- **Status:** Untested.
+  untested)". Derived: a file's bids reach 2^31 - 2 and its weight
+  2^31 - 1, while rids are `int32_t` (`lfs3.h:43-44`), so the sum of a rid
+  and a weight can pass 2^31 - 1 even when the value it stands for does
+  not; signed overflow is undefined behaviour (LFS3-GEN-03, issue #22).
+- **Measure:** size and content of the last bytes; the bids and weights a
+  traversal of the file's tree reports; UndefinedBehaviorSanitizer reports.
+- **Pass:** `fwrite::filemax` writes 16 bytes ending at 2^31 - 2, remounts,
+  reads them back, and fruncates to 16 bytes; `fwrite::filemax_fuzz`
+  reads, writes, truncates and fruncates in the last bytes of a file
+  between 2^31 - 1 - `SIZE` and 2^31 - 1 bytes long, which splits, merges
+  and compacts its B-tree there, then checks size and content, that the
+  tree's entries tile the file and each inner node starts where its first
+  entry starts, and `lfs3_fs_ck`. Both pass in B-DEF, and with no report
+  from a runner built with `-fsanitize=address,undefined` and run with
+  `UBSAN_OPTIONS=halt_on_error=1`, in B-DEF and B-BIG.
+- **Fail:** any error, wrong content, a traversal whose entries do not tile
+  the file, or a sanitizer report.
+- **Verified by:** `fwrite::filemax` and `fwrite::filemax_fuzz` (NEW-73).
+- **Status:** Known defect (D-7, issue #22): under UBSan, 16 of 24
+  permutations of `fwrite::filemax` overflow `a_rid + weight_ - 1` in
+  `lfs3_rbyd_estimate` when the fruncate compacts the shrub; B-DEF passes.
 - **When:** every CI run.
 
 #### LFS3-FILE-18
@@ -7622,7 +7639,7 @@ new environment (9.2).
 | LFS3-FILE-10 | Defect | every CI run | fruncate, bad block, append (`badblocks::fruncate_append` on v3-fix-files) |
 | LFS3-FILE-11 | Untested | every CI run | data block goes bad after data was written; append |
 | LFS3-FILE-16 | Untested | every CI run | failing allocator at file open |
-| LFS3-FILE-17 | Untested | every CI run | sparse file ending at 2^31 - 2 |
+| LFS3-FILE-17 | Defect | every CI run | `fwrite::filemax`, `fwrite::filemax_fuzz`, with UBSan in B-DEF and B-BIG (issue #22) |
 | LFS3-FILE-18 | Untested | every CI run | holes allocate at most 2 blocks |
 | LFS3-FILE-19 | Partly | every CI run | handle size against `lfs3_stat` size around a sync |
 | LFS3-FILE-21 | Partly | every CI run | close with a failing sync releases the handle |
@@ -7839,6 +7856,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | D-4 | An mdir split that finds blocks for its first sibling but not for the second, or not for the mtree node, fails with `LFS3_ERR_NOSPC` instead of compacting in place, so `lfs3_remove` fails on a nearly full disk | `lfs3_mdir_commit_` | run (`badblocks::error_then_sync` with `PROG_SIZE=16`) | ALLOC-04, SYNC-09 | `ce2a68d6` |
 | D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09; the re-fetch fallback is issue #6 |
 | D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
+| D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | none (issue #22) |
 
 ### A.3 From the analyses
 

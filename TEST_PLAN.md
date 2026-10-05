@@ -1671,7 +1671,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-70 | `mtree::rev_wrap` | META-12 | internal; set an mdir pair's revision counts to 0xfffffffe and 0xffffffff; compact across the wrap repeatedly | the newest commit is always fetched | – |
 | NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs, adding orphans until a scan finds at least two such mdirs in a row (packing differs between builds); `lfs3_fs_mkconsistent` | no orphan left, every other entry present, in B-DEF, B-YGB and B-BIG | – |
 | NEW-72 | `files::open_nomem` | FILE-16 | fail the file-cache allocation | `LFS3_ERR_NOMEM`, the handle not registered, unmount succeeds, no leak | E-7 |
-| NEW-73 | `fwrite::filemax` | FILE-17 | sparse write of 16 bytes ending at 2^31 - 2; remount; read; fruncate to 16 | each step succeeds with the expected data | – |
+| NEW-73 | `fwrite::filemax`, `fwrite::filemax_fuzz` | FILE-17, GEN-03 | sparse write of 16 bytes ending at 2^31 - 2; remount; read; fruncate to 16. And a fuzz of reads, writes, truncates and fruncates in the last `SIZE` bytes of a file 2^31 - 1 - `SIZE` to 2^31 - 1 bytes long, which splits, merges and compacts its B-tree there; then a traversal of the tree. Run in B-DEF and, under ASan and UBSan with `UBSAN_OPTIONS=halt_on_error=1`, in B-DEF and B-BIG | each step succeeds with the expected data; the traversal's entries tile the file and each inner node starts where its first entry starts; no sanitizer report (D-7, issue #22) | – |
 | NEW-74 | `files::close_error` | FILE-21 | make the sync inside close fail with NOSPC and with a bad block | the handle is released; unmount succeeds; no leak | – |
 | NEW-75 | `fsync::append_alternate` | FILE-24 | two handles of one file append 16 bytes and sync in turn; `PROG_SIZE` 1 and 16; `CKPROGONCE` true | content matches the model after each sync and after remount | E-1 |
 | NEW-76 | `fwrite::file_limit` | FILE-26 | `fwrite::fbig`, `truncate_fbig`, `fruncate_fbig` with `file_limit` 1, 1000, 65536; also writes ending exactly at the limit | FBIG beyond the limit, success at it | – |
@@ -1878,6 +1878,11 @@ python3 -W ignore ./scripts/test.py -R .local/b/runners/test_runner -j14 -k \
 
 # a geometry (J-GEO): override the inputs, not BLOCK_SIZE
 ... -DREAD_SIZE=16 -DPROG_SIZE=16 -DERASE_SIZE=512 -DERASE_VALUE=0xff
+
+# sanitizers: UBSan only prints a report unless told to halt, and a
+# report must fail its case
+UBSAN_OPTIONS=halt_on_error=1 python3 -W ignore ./scripts/test.py \
+    -R .local/asan-big/runners/test_runner -j14 -k -Pnone
 
 # valgrind (no power loss)
 python3 -W ignore ./scripts/test.py -R .local/b/runners/test_runner -j14 -k \
