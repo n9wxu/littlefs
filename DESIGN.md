@@ -969,6 +969,15 @@ The old, synced version of the file still points at the shorter slice, whose
 checksum only covers the part it knows about, so appending to the block
 doesn't disturb it.
 
+Only a sync, a flush or a close has to write the tail out. When an append
+fills the file cache in between, littlefs writes the cache up to the block's
+last prog boundary and keeps the tail cached: more appends before the sync
+would only replace a fragment written now, and each fragment costs a commit
+to the file's tree padded to `prog_size`. Likewise, when an append merges
+with the file's last fragment, removing that fragment and adding the longer
+one is a single commit, so an error part way can't leave the handle's tree
+half updated.
+
 There is one catch. Whether a data block still has erased space is only known
 in RAM, while the file is open; it isn't stored on disk. After a file is
 closed and reopened, or the filesystem remounted, the next append starts as
@@ -1220,7 +1229,7 @@ interrupted program changes nothing outside the bytes it was given.
 This costs reads: every fetch and every commit reads up to `pcache_size`
 bytes of erased flash instead of `prog_size`. On the flight log of the
 worked example, with `prog_size` 1 and a 1 KiB program cache, that's about
-150 KiB more a minute and 3 KiB more at mount, a few milliseconds a minute
+100 KiB more a minute and 3 KiB more at mount, a few milliseconds a minute
 on a fast SPI bus. An ecksum narrower than the mount's, from an image
 written with a smaller program cache, isn't trusted, so the first commit to
 each such log compacts it.
@@ -1931,10 +1940,10 @@ At 1 row per second:
 | v2.11.3, `prog_size=256`               | 62.7       | 96.6 ms      |
 | v2.11.3, `prog_size=16`                | 58.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 58.7       | 96.6 ms      |
-| v3, `prog_size=256`                    | 14.7       | 185.0 ms     |
-| v3, `prog_size=16`                     | 7.6        | 185.9 ms     |
-| v3, `prog_size=1`                      | 4.1        | 185.1 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 3.5        | 50.6 ms      |
+| v3, `prog_size=256`                    | 10.6       | 184.6 ms     |
+| v3, `prog_size=16`                     | 5.7        | 93.9 ms      |
+| v3, `prog_size=1`                      | 3.5        | 184.6 ms     |
+| v3, `prog_size=1`, gbmap, pre-erased   | 2.9        | 50.2 ms      |
 
 At 50 rows per second:
 
@@ -1943,10 +1952,10 @@ At 50 rows per second:
 | v2.11.3, `prog_size=256`               | 80.7       | 96.6 ms      |
 | v2.11.3, `prog_size=16`                | 76.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 76.7       | 96.6 ms      |
-| v3, `prog_size=256`                    | 86.7       | 185.9 ms     |
-| v3, `prog_size=16`                     | 40.1       | 186.4 ms     |
-| v3, `prog_size=1`                      | 24.6       | 185.0 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 4.5        | 51.8 ms      |
+| v3, `prog_size=256`                    | 48.5       | 185.9 ms     |
+| v3, `prog_size=16`                     | 27.8       | 145.3 ms     |
+| v3, `prog_size=1`                      | 23.1       | 184.6 ms     |
+| v3, `prog_size=1`, gbmap, pre-erased   | 3.4        | 52.0 ms      |
 
 Every run read back every row intact.
 
@@ -1965,14 +1974,14 @@ the kind of block it went to:
 
 | per minute                 | mdir erases | mdir bytes | B-tree erases | B-tree bytes | data erases | data bytes |
 |----------------------------|------------:|-----------:|--------------:|-------------:|------------:|-----------:|
-| 1 row/s, `prog_size=256`   | 8.7         | 34842      | 5.6           | 20762        | 0.4         | 1306       |
-| 1 row/s, `prog_size=16`    | 6.8         | 26578      | 0.4           | 936          | 0.4         | 1320       |
-| 1 row/s, `prog_size=1`     | 3.6         | 13285      | 0.1           | 7            | 0.4         | 1320       |
-| 1 row/s, pre-erased        | 3.5         | 13922      | 0             | 6            | 0           | 1320       |
-| 50 rows/s, `prog_size=256` | 28.5        | 116019     | 42.0          | 158899       | 16.2        | 65997      |
-| 50 rows/s, `prog_size=16`  | 10.4        | 40731      | 13.5          | 50954        | 16.2        | 66000      |
-| 50 rows/s, `prog_size=1`   | 4.2         | 16004      | 4.2           | 14487        | 16.2        | 66000      |
-| 50 rows/s, pre-erased      | 4.5         | 18128      | 0             | 14454        | 0           | 66000      |
+| 1 row/s, `prog_size=256`   | 6.5         | 25805      | 3.7           | 14131        | 0.4         | 1306       |
+| 1 row/s, `prog_size=16`    | 5.2         | 19958      | 0.1           | 8            | 0.4         | 1320       |
+| 1 row/s, `prog_size=1`     | 3.0         | 11022      | 0.1           | 7            | 0.4         | 1320       |
+| 1 row/s, pre-erased        | 2.9         | 11742      | 0             | 6            | 0           | 1320       |
+| 50 rows/s, `prog_size=256` | 14.4        | 58470      | 17.9          | 66381        | 16.2        | 65997      |
+| 50 rows/s, `prog_size=16`  | 5.3         | 20117      | 6.3           | 22696        | 16.2        | 66000      |
+| 50 rows/s, `prog_size=1`   | 3.2         | 11799      | 3.7           | 12727        | 16.2        | 66000      |
+| 50 rows/s, pre-erased      | 3.4         | 13751      | 0             | 12622        | 0           | 66000      |
 
 Bytes programmed to blocks that were replaced within the same call, about
 2% of the total at `prog_size=256` and less otherwise, are left out. The
@@ -1983,42 +1992,45 @@ With `prog_size=1`, at 1 row per second, each sync appends the new row to the
 end of the log's current data block, without an erase, and makes two small
 mdir commits: the shrub commit that grafts the longer block pointer into the
 file's tree, and the commit that updates the file's struct tag. Together they
-come to about 220 bytes. The log's tree stays a B-shrub holding a handful of
+come to about 180 bytes. The log's tree stays a B-shrub holding a handful of
 block pointers, so no B-tree node is touched. The mdir fills up and is
-compacted, one erase, about every 17 syncs.
+compacted, one erase, about every 20 syncs.
 
 With `prog_size=256`, two things go wrong at once:
 
-1. Every commit is rounded up to a prog boundary, and its ecksum covers the
-   next 256 bytes. The mdir took about 580 bytes per sync instead of 220,
-   and was compacted about every 7 syncs instead of every 17.
+1. Every commit is rounded up to a prog boundary. The mdir took about 430
+   bytes per sync instead of 180, and was compacted about every 9 syncs
+   instead of every 20.
 
 2. Data can only be appended to the data block in 256-byte units, so each
    second's 22 bytes go into a fragment in the tree instead, rewritten at
    every sync until 256 bytes have accumulated. With fragments in it, the
    tree outgrew its shrub and moved its root into a block of its own (we
-   checked: it became a B-tree after about four minutes, and stays a B-shrub
-   with `prog_size=1`). Each sync then also appends padded commits to that
-   node, about 350 bytes, and every time the node fills it is relocated, an
-   erase.
+   checked: it became a B-tree after three and a half minutes, and stays a
+   B-shrub with `prog_size=1`). Each sync then also appends a padded commit
+   to that node, about 360 bytes, and every time the node fills it is
+   relocated, an erase.
 
 At 50 rows per second the same effects compound. Within a few minutes the
 log needs B-tree leaves at any `prog_size`, under a root kept in the mdir.
 With `prog_size=256`, each second's 1100 bytes reach the data block in
-256-byte units, and what's left over becomes a fragment. Each flush of the
-file cache, and each sync, grafts the longer block pointer and the new
-fragment into the tree, which takes about seven commits a second to the
-leaf, each padded to 256 bytes, and as many to the root in the mdir. The
-leaf is relocated 42 times a minute, the mdir compacted 28.5 times, and v3
-ends up erasing more than v2. With `prog_size=1`, the data block takes every
-byte, the pointer is grafted once a second, and metadata costs 8.4 erases per
-minute on top of the 16.2 the data needs.
+256-byte units. A write that fills the file cache flushes only up to the
+block's last prog boundary and keeps the rest cached, since more appends
+will follow before the sync. The sync writes what's left as a fragment and
+grafts it, with the longer block pointer, into the tree, replacing the
+previous fragment and appending past it in one commit. That's about three
+commits a second to the leaf, each padded to 256 bytes, and as many to the
+root in the mdir: the leaf is relocated 17.9 times a minute and the mdir
+compacted 14.4 times, 48.5 erases a minute against v2's 80.7. With
+`prog_size=1`, the data block takes every byte, the pointer is grafted once
+a second, and metadata costs 6.9 erases per minute on top of the 16.2 the
+data needs.
 
 Pre-erasing removes the data and B-tree erases from the log's path entirely:
 gc on the pad erased all 2023 free blocks, which took 93 simulated seconds.
-What remains, 3.5 and 4.5 erases per minute, is mdir compaction, the one erase
+What remains, 2.9 and 3.4 erases per minute, is mdir compaction, the one erase
 pre-erasing can't remove. The longest call drops from 185 ms, four erases in
-one sync, to 51 ms, one erase and some programs. Pre-erasing moves erases
+one sync, to 50 ms, one erase and some programs. Pre-erasing moves erases
 rather than adding them, as long as erased blocks are used while the gbmap
 still trusts them.
 
@@ -2028,8 +2040,8 @@ So `prog_size` matters a lot more to v3 than it did to v2. v2's sync cost was
 dominated by a block copy that didn't depend on the program size. v3 gets rid
 of the block copy, and what's left are small commits whose size is rounded up
 to `prog_size`. Going from `prog_size=1` to 16 to 256, the log's erases go
-from 4.1 to 7.6 to 14.7 a minute at 1 row per second, and from 24.6 to 40.1
-to 86.7 at 50, while v2's stay between 59 and 81.
+from 3.5 to 5.7 to 10.6 a minute at 1 row per second, and from 23.1 to 27.8
+to 48.5 at 50, while v2's stay between 59 and 81.
 
 On NOR flash, the page size is usually not the program size. A page is the
 most a single program command can write; most SPI NOR flash, the W25Q128JV
@@ -2043,9 +2055,9 @@ to the same conclusion:
 
 Devices that really do need large programs, NAND with per-page ECC or NOR with
 on-die ECC, have to use their real program size. For them the
-`prog_size=256` rows above are what to expect: a big improvement over v2 for
-slow logs, but not for fast ones. REQUIREMENTS.md, Appendix B.5, measures
-changes to how littlefs appends that would close the gap.
+`prog_size=256` rows above are what to expect: a sixth of v2's erases for
+slow logs, and three fifths for fast ones. REQUIREMENTS.md, Appendix B.5,
+describes the changes to how littlefs appends that got fast logs there.
 
 ## Compatibility
 

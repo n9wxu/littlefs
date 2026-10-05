@@ -2833,7 +2833,7 @@ file cache when a write flushes a full cache.
 - **Measure:** content and size through the handle after each write; on
   disk after sync, close, desync, truncate and fruncate, after
   `LFS3_ERR_NOSPC`, and after a power loss.
-- **Pass:** NEW `fwrite::append_tail`, `fwrite::append_tail_nospc` and
+- **Pass:** `fwrite::append_tail`, `fwrite::append_tail_nospc` and
   `powerloss::append_unsynced_pl` pass with `PROG_SIZE` 1, 16 and 256 and
   `FCACHE_SIZE` below and above `PROG_SIZE`, in B-DEF and B-BIG: every
   read through the handle matches the bytes written, a closed or synced
@@ -2841,8 +2841,10 @@ file cache when a write flushes a full cache.
   its last successful sync wrote, and a file left by `LFS3_ERR_NOSPC`
   holds what its last successful sync wrote.
 - **Fail:** any byte or size differs.
-- **Verified by:** NEW: as listed.
-- **Status:** Untested.
+- **Verified by:** `fwrite::append_tail`, `fwrite::append_tail_nospc`,
+  `powerloss::append_unsynced_pl`.
+- **Status:** Untested at `b10efaa`. Tested on `v3-integration`
+  (`effb33ca`, `32eb36e7`).
 - **When:** every CI run.
 
 ### 6.8 Sync model and stickynotes (SYNC)
@@ -3153,16 +3155,16 @@ the file with the appends that succeeded, and does not return
   handle.
 - **Measure:** `lfs3_file_sync` result after up to 64 appends with each
   block in turn bad, and the content after remount.
-- **Pass:** NEW `badblocks::append_torn` (fragments of up to 64 bytes,
+- **Pass:** `badblocks::append_torn` (fragments of up to 64 bytes,
   16-byte appends, `BADBLOCK_BEHAVIOR` PROGERROR, ERASEERROR and
   READERROR, `PROG_SIZE` 1 and 16) gets 0 from every sync, and reads back
   the old content followed by whole appends, in B-DEF.
 - **Fail:** sync returns `LFS3_ERR_INVAL`, or the content differs.
-- **Verified by:** NEW `badblocks::append_torn`; for power loss,
-  `powerloss::append_pl` and NEW `powerloss::append_unsynced_pl`.
-- **Status:** Known defect: on `v3-integration` (`fd3157e3`)
+- **Verified by:** `badblocks::append_torn`; for power loss,
+  `powerloss::append_pl` and `powerloss::append_unsynced_pl`.
+- **Status:** Known defect at `b10efaa` and `fd3157e3`, where
   `badblocks::append_torn` gets `LFS3_ERR_INVAL` with READERROR at
-  `PROG_SIZE` 16.
+  `PROG_SIZE` 16. Tested on `v3-integration` (`554e89f9`).
 - **When:** every CI run.
 
 ### 6.9 Directories and paths (DIR)
@@ -5508,7 +5510,7 @@ and without the gbmap and pre-erase.
 - **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
   Appendix B.1.
 - **Status:** Partly tested at `b10efaa` (measured outside the suite).
-  Met on `v3-integration` (`fd3157e3`): at most 14.7 erases per minute
+  Tested on `v3-integration` (`32eb36e7`): at most 10.6 erases per minute
   (`prog_size` 256), against v2's 62.7 (Appendix B.1).
 - **When:** nightly.
 
@@ -5529,12 +5531,12 @@ and without the gbmap and pre-erase.
 - **Fail:** any permutation is above it.
 - **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
   Appendix B.1.
-- **Status:** Known defect (measured, M-3: with `prog_size` 256 v3 does
-  89.5 erases per minute against v2's 80.7). On `v3-integration`
-  (`fd3157e3`), `prog_size` 256 without pre-erase does 86.7 erases per
-  minute (86.4 with the gbmap) against v2's 80.7; every other permutation
-  passes, the worst being 40.1 at `prog_size` 16 against 76.7. Appendix
-  B.5 measures changes to the write path that would meet it.
+- **Status:** Known defect at `b10efaa` (measured, M-3: with `prog_size`
+  256 v3 does 89.5 erases per minute against v2's 80.7), and at
+  `fd3157e3` (86.7). Tested on `v3-integration` (`ec0733b8`, `554e89f9`,
+  `32eb36e7`, Appendix B.5 B, C and D): the worst permutation does 48.5
+  erases per minute (`prog_size` 256) against v2's 80.7, and
+  `bench_wlog_fresh` fails if any exceeds v2.
 - **When:** nightly.
 
 #### LFS3-PERF-10
@@ -5557,9 +5559,10 @@ logging starts.
 - **Verified by:** `bench_wlog_fresh`. Measured (M-2): longest call 51 ms,
   one erase.
 - **Status:** Partly tested at `b10efaa` (measured outside the suite).
-  Met on `v3-integration` (`fd3157e3`): every pre-erase permutation, at
-  both rates and every `prog_size`, has at most one erase in a call, and
-  its longest call is 50.1 to 56.9 ms (Appendix B.1).
+  Tested on `v3-integration` (`32eb36e7`): every pre-erase permutation, at
+  both rates and every `prog_size`, has at most one erase in a call, which
+  `bench_wlog_fresh` asserts, and its longest call is 49.6 to 53.8 ms
+  (Appendix B.1).
 - **When:** nightly.
 
 #### LFS3-PERF-11
@@ -6531,6 +6534,8 @@ returned it.
 - **Status:** Known defect on `v3-integration`: `lfs3_file_sync` returns
   `LFS3_ERR_INVAL` for a handle torn by a failed multi-commit write (until
   `lfs3_file_resync`), while `LFS3_ERR_INVAL` otherwise means a caller bug.
+  Appends that replace only the file's last entry no longer tear
+  (LFS3-SYNC-20).
 - **When:** before v3-beta.
 
 #### LFS3-ERR-04
@@ -6854,7 +6859,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-FILE-04 | 2-files B14 | v3-fix-files `25cfa66` (`files::read_big`) |
 | LFS3-FILE-10 | 2-files B1 | v3-fix-files `b07be9e` (`badblocks::fruncate_append`) |
 | LFS3-SYNC-05 | 2-files B8 | v3-fix-files `8c5241d` (`badblocks::truncate_desync`) |
-| LFS3-SYNC-20 | measured, `badblocks::append_torn` | none |
+| LFS3-SYNC-20 | `badblocks::append_torn` | v3-integration `554e89f9` |
 | LFS3-DIR-02 | 1-meta 0.2 | none |
 | LFS3-DIR-05 | 4-api R1 | v3-fix-api `067ebe7` (`dirs::mv_subtree`) |
 | LFS3-DIR-11 | 1-meta 0.1 | v3-fix-api `cc4acb9` (`dread::seek_tell`) |
@@ -6874,7 +6879,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-CFG-05 | 1-meta 7.14 | none |
 | LFS3-RES-06 | 4-api R8 | none |
 | LFS3-PERF-07 | measured | none |
-| LFS3-PERF-09 | measured, M-3, `bench_wlog_fresh` | none; Appendix B.5 measures options |
+| LFS3-PERF-09 | measured, M-3, `bench_wlog_fresh` | v3-integration `ec0733b8`, `554e89f9`, `32eb36e7` (`bench_wlog_fresh`) |
 | LFS3-THR-01 | 4-api R19 | none |
 | LFS3-THR-02 | 4-api R19 | none |
 | LFS3-BUILD-02 | F-2 | v3-fixes `e4c046b` |
@@ -7161,12 +7166,12 @@ new environment (9.2).
 | LFS3-FILE-21 | Partly | every CI run | close with a failing sync releases the handle |
 | LFS3-FILE-24 | Untested | every CI run | two handles appending to one file in turn |
 | LFS3-FILE-26 | Untested | every CI run | `fwrite::*fbig` with `file_limit` 1, 1000, 65536 |
-| LFS3-FILE-27 | Untested | every CI run | appends with a tail kept cached: reads, sync, close, desync, truncate, fruncate, NOSPC, power loss |
+| LFS3-FILE-27 | Untested | every CI run | appends with a tail kept cached: reads, sync, close, desync, truncate, fruncate, NOSPC, power loss (`fwrite::append_tail`, `fwrite::append_tail_nospc`, `powerloss::append_unsynced_pl` on v3-integration) |
 | LFS3-SYNC-05 | Defect | every CI run | each write-side call fails; close leaves the disk unchanged (`badblocks::truncate_desync` on v3-fix-files) |
 | LFS3-SYNC-09 | Untested | every CI run | errors injected into multi-entry overwrites, then sync and check |
 | LFS3-SYNC-10 | Partly | every CI run | `lfs3_stat` after flush |
 | LFS3-SYNC-16 | Partly | every CI run | close three or more uncreated handles; flag and cleanup |
-| LFS3-SYNC-20 | Defect | every CI run | appends that coalesce with the last fragment, each block in turn bad; sync never `LFS3_ERR_INVAL` |
+| LFS3-SYNC-20 | Defect | every CI run | appends that coalesce with the last fragment, each block in turn bad; sync never `LFS3_ERR_INVAL` (`badblocks::append_torn` on v3-integration) |
 | LFS3-DIR-02 | Defect | every CI run | `lfs3_mkdir` with names of 1 to 255 bytes at 512 and 1024-byte blocks |
 | LFS3-DIR-05 | Defect | every CI run | rename a directory into its own subtree (`dirs::mv_subtree` on v3-fix-api) |
 | LFS3-DIR-11 | Defect | every CI run | tell/seek round trip at every position (`dread::seek_tell` on v3-fix-api) |
@@ -7476,45 +7481,52 @@ ones LFS3-PERF-08 to PERF-10 are judged by.
 | M-3 | 50 | v3, `prog_size` 256 | 89.5 | |
 | M-3 | 50 | v3, `prog_size` 1, pre-erase | 4.5 | |
 
-`bench_wlog_fresh` on `v3-integration` (`fd3157e3`), B-BIG, per minute:
+`bench_wlog_fresh` on `v3-integration` (`32eb36e7`), B-BIG, per minute:
 
 | Rows/s | `prog_size` | Configuration | Erases | Page programs | Bytes programmed | Longest call | Most erases in a call | v2.11.3 erases (pages) |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 1 | | 4.1 | 289.7 | 14612 | 185.1 ms | 4 | 58.7 (558.1) |
-| 1 | 1 | gbmap | 4.0 | 290.2 | 14755 | 185.9 ms | 4 | |
-| 1 | 1 | gbmap, pre-erase | 3.5 | 292.5 | 15249 | 50.6 ms | 1 | |
-| 1 | 16 | | 7.6 | 466.8 | 28859 | 185.9 ms | 4 | 58.7 (551.0) |
-| 1 | 16 | gbmap | 7.7 | 463.8 | 29310 | 185.5 ms | 4 | |
-| 1 | 16 | gbmap, pre-erase | 7.0 | 464.4 | 29280 | 50.6 ms | 1 | |
-| 1 | 256 | | 14.7 | 227.4 | 58214 | 185.0 ms | 4 | 62.7 (562.1) |
-| 1 | 256 | gbmap | 14.7 | 227.5 | 58240 | 185.0 ms | 4 | |
-| 1 | 256 | gbmap, pre-erase | 8.5 | 227.6 | 58266 | 50.1 ms | 1 | |
-| 50 | 1 | | 24.6 | 784.1 | 96563 | 185.0 ms | 4 | 76.7 (838.9) |
-| 50 | 1 | gbmap | 24.9 | 789.1 | 97876 | 185.5 ms | 4 | |
-| 50 | 1 | gbmap, pre-erase | 4.5 | 807.2 | 98707 | 51.8 ms | 1 | |
-| 50 | 16 | | 40.1 | 1468.6 | 158690 | 186.4 ms | 4 | 76.7 (831.6) |
-| 50 | 16 | gbmap | 40.4 | 1463.5 | 159546 | 187.6 ms | 4 | |
-| 50 | 16 | gbmap, pre-erase | 10.8 | 1488.1 | 160862 | 56.9 ms | 1 | |
-| 50 | 256 | | **86.7** | 1357.2 | 347443 | 185.9 ms | 4 | 80.7 (843.6) |
-| 50 | 256 | gbmap | **86.4** | 1352.3 | 346189 | 191.0 ms | 4 | |
-| 50 | 256 | gbmap, pre-erase | 29.6 | 1378.1 | 352794 | 56.0 ms | 1 | |
+| 1 | 1 | | 3.5 | 221.8 | 12349 | 184.6 ms | 4 | 58.7 (558.1) |
+| 1 | 1 | gbmap | 3.6 | 223.6 | 12978 | 185.1 ms | 4 | |
+| 1 | 1 | gbmap, pre-erase | 2.9 | 224.5 | 13069 | 50.2 ms | 1 | |
+| 1 | 16 | | 5.7 | 336.1 | 21286 | 93.9 ms | 2 | 58.7 (551.0) |
+| 1 | 16 | gbmap | 5.7 | 335.6 | 21232 | 185.1 ms | 4 | |
+| 1 | 16 | gbmap, pre-erase | 5.0 | 339.3 | 21198 | 50.6 ms | 1 | |
+| 1 | 256 | | 10.6 | 161.7 | 41395 | 184.6 ms | 4 | 62.7 (562.1) |
+| 1 | 256 | gbmap | 10.5 | 160.5 | 41088 | 184.5 ms | 4 | |
+| 1 | 256 | gbmap, pre-erase | 6.2 | 160.3 | 41037 | 49.6 ms | 1 | |
+| 50 | 1 | | 23.1 | 654.3 | 90526 | 184.6 ms | 4 | 76.7 (838.9) |
+| 50 | 1 | gbmap | 23.3 | 657.4 | 91670 | 185.1 ms | 4 | |
+| 50 | 1 | gbmap, pre-erase | 3.4 | 677.4 | 92385 | 52.0 ms | 1 | |
+| 50 | 16 | | 27.8 | 844.7 | 109077 | 145.3 ms | 3 | 76.7 (831.6) |
+| 50 | 16 | gbmap | 27.9 | 843.0 | 109952 | 186.3 ms | 4 | |
+| 50 | 16 | gbmap, pre-erase | 5.6 | 859.6 | 110960 | 53.8 ms | 1 | |
+| 50 | 256 | | 48.5 | 759.1 | 194330 | 185.9 ms | 4 | 80.7 (843.6) |
+| 50 | 256 | gbmap | 48.3 | 753.5 | 192896 | 185.9 ms | 4 | |
+| 50 | 256 | gbmap, pre-erase | 15.4 | 777.4 | 199014 | 53.8 ms | 1 | |
+
+At `fd3157e3`, before the changes of B.5, the erases were the first row of
+B.5's table, with 86.7 (86.4 with the gbmap) at 50 rows per second and
+`prog_size` 256. `bench_wlog_fresh` asserts the bounds of LFS3-PERF-08 to
+PERF-10, so `make bench` fails if any permutation exceeds them.
 
 The pre-erase runs first erase all 2023 or 2024 free blocks on the pad.
 Every run reads back every row intact. v2.11.3's longest call is 96.6 ms
-in every configuration. The bench reproduces M-1 to M-3 within 3%: the
-one difference, 86.7 against M-3's 89.5, comes from `57493587`, after which
-a fetch again trusts an erased-state checksum that ends exactly at the end
-of the block, so a near-full rbyd is appended to rather than compacted.
+in every configuration. At `fd3157e3` the bench reproduced M-1 to M-3
+within 3%: the one difference, 86.7 against M-3's 89.5, comes from
+`57493587`, after which a fetch again trusts an erased-state checksum that
+ends exactly at the end of the block, so a near-full rbyd is appended to
+rather than compacted.
 
 Observations:
 
 - v3 avoids the sync-padding problem for small `prog_size`: at
   `prog_size` 1 it erases 15 times less than v2 at 1 row per second.
-- Erases grow with `prog_size`: 4.1, 7.6 and 14.7 per minute at 1 row per
-  second, 24.6, 40.1 and 86.7 at 50, for `prog_size` 1, 16 and 256. v2's
+- Erases grow with `prog_size`: 3.5, 5.7 and 10.6 per minute at 1 row per
+  second, 23.1, 27.8 and 48.5 at 50, for `prog_size` 1, 16 and 256. v2's
   hardly depend on it.
 - With `prog_size` 256, every metadata commit is padded to a 256-byte
-  page. At 50 rows per second this costs more erases than v2 (LFS3-PERF-09).
+  page. At 50 rows per second this cost more erases than v2 until the
+  changes of B.5 (LFS3-PERF-09).
 - With pre-erase, the slowest call still contained one erase. This is
   expected if it was an mdir compaction, which erases the other block of the
   pair rather than an allocated block (LFS3-PERF-10).
@@ -7622,7 +7634,14 @@ so logging runs at the rate without pre-erase until those blocks, about
 2000 here, are used up. A mount with a smaller `pcache_size` than the image
 was written with costs nothing.
 
-### B.5 Large `prog_size` on fast logs: measured options
+These figures are for `fd3157e3`. After the changes of B.5 (`32eb36e7`),
+at `prog_size` 1 and 1 row per second, the mount reads 8987 bytes and
+logging 125065 a minute, against 6307 and 21480 with checksums of
+`prog_size` bytes, and with pre-erase at 50 rows per second an image with
+narrow checksums costs 25 erases in its first minute against 4. `lfs3.h`
+quotes these.
+
+### B.5 Large `prog_size` on fast logs: options and the changes made
 
 At 50 rows per second with `prog_size` 256, W-LOG erases more than v2.11.3
 (LFS3-PERF-09). Traced on `fd3157e3`, the log is a B-tree whose root is
@@ -7637,10 +7656,11 @@ and each followed by a commit to the root in the mdir, also padded: the
 leaf is relocated every 1.4 seconds and the mdir compacted every 2.1
 seconds.
 
-Changing how littlefs writes an append-only file is a design decision left
-to the fork's maintainer (Q23). Four changes were prototyped in a copy of
-`lfs3.c`, none committed. `bench_wlog_fresh`, erases per minute, without
-the gbmap unless marked:
+Changing how littlefs writes an append-only file was a design decision
+left to the fork's maintainer (Q23). Four changes were prototyped in a copy
+of `lfs3.c`, and B, C and D adopted: `ec0733b8`, `554e89f9` and `32eb36e7`
+on `v3-integration`, which reproduce the prototypes' figures.
+`bench_wlog_fresh`, erases per minute, without the gbmap unless marked:
 
 | Change | 1 row/s, `prog_size` 1 / 16 / 256 | 1 row/s, 256, pre-erase | 50 rows/s, `prog_size` 1 / 16 / 256 | 50 rows/s, 256, pre-erase |
 |---|---|---|---|---|
@@ -7673,13 +7693,14 @@ the gbmap unless marked:
 
 With B, C and D together, every permutation of LFS3-PERF-09 passes, the
 worst being 48.5 erases per minute against 80.7, and LFS3-PERF-10 still
-holds: at most one erase in any call with pre-erase. They pass the full
-default suite (660,860 permutations) and all but one of B-BIG's 1,123,797:
-in `repair::reuse` with `ERASEFAIL` false, the block the test frees is
-reused as the unwritten half of a new metadata pair, in use but not yet
-erased when the disk fills, and the test counts its erases. With C there
-are fewer commits before the disk fills; the test, not the change, would
-need adjusting. On the other
+holds: at most one erase in any call with pre-erase. As prototypes they
+passed the full default suite and all but one of B-BIG's permutations: in
+`repair::reuse` with `ERASEFAIL` false, C means fewer commits before the
+disk fills, and the block the test frees is reused as the second block of
+a new metadata pair, in use but not yet erased, while the test counted its
+erases. LFS3-BAD-17 asks for the block to be allocated again, not erased,
+so `effb33ca` makes the test accept a block in use. C also makes
+LFS3-SYNC-20 hold, and D needs LFS3-FILE-27. On the other
 benches, at their default configuration and with `PROG_SIZE` 16 and 256 for
 60 simulated seconds, per byte written: `bench_wt_logging` erases 13 to 16%
 less and `bench_wt_seq` 5 to 21% less; `bench_wt_random`, `bench_file` and
@@ -7687,6 +7708,11 @@ less and `bench_wt_seq` 5 to 21% less; `bench_wt_random`, `bench_file` and
 probe of `bench_rt_logging`, a second handle's fruncate and sync, erases
 11.5% more per byte at `prog_size` 256, but its writer, outside the probes,
 erases less, and the bench as a whole 11.6% less per byte.
+
+On `32eb36e7` the log at 50 rows per second and `prog_size` 256 makes about
+three commits a second to its B-tree leaf instead of seven: the leaf is
+relocated 17.9 times a minute instead of 42.0, and the mdir compacted 14.4
+times instead of 28.5.
 
 ## Appendix C. Coverage index
 
