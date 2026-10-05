@@ -1792,7 +1792,7 @@ failed an `LFS3_M_CKPROGS` read-back.
   0 and 1, and for 2 to 5 with `CKPROGS=true`.
 - **Fail:** any later erase or prog of the block.
 - **Verified by:** NEW.
-- **Status:** Not implemented (planned).
+- **Status:** Tested on `v3-rc` (`edc41794`).
 - **When:** before v3-beta.
 
 #### LFS3-BAD-02
@@ -1836,7 +1836,7 @@ when power is lost while recording.
   `lfs3_fs_mkbad`), a referenced bad block's data can't be read, or the
   check fails.
 - **Verified by:** NEW.
-- **Status:** Not implemented (planned).
+- **Status:** Tested on `v3-rc` (`edc41794`).
 - **When:** before v3-beta.
 
 #### LFS3-BAD-04
@@ -1937,7 +1937,7 @@ records its failed data blocks as it goes.
 - **Fail:** a bad block erased or programmed twice, a bad block never marked,
   or a write that fails while good blocks remain.
 - **Verified by:** NEW.
-- **Status:** Not implemented (planned).
+- **Status:** Tested on `v3-rc` (`edc41794`).
 - **When:** before v3-beta.
 
 #### LFS3-BAD-09
@@ -1958,7 +1958,7 @@ device's life.
 - **Fail:** a dead block is erased again, or the lifetime ratio drops below
   1.82.
 - **Verified by:** NEW.
-- **Status:** Not implemented (planned).
+- **Status:** Tested on `v3-rc` (`edc41794`).
 - **When:** before v3-beta.
 
 #### LFS3-BAD-10
@@ -6964,15 +6964,15 @@ new environment (9.2).
 | LFS3-FAIL-17 | Untested | every CI run | READERROR on the source of a compaction, relocation and rewrite |
 | LFS3-FAIL-18 | Untested | every CI run | emubd fails the n-th sync (emubd `mkbadsync` exists on v3-fix-alloc) |
 | LFS3-FAIL-19 | Untested | every CI run | emubd returns `LFS3_ERR_IO` from the n-th operation |
-| LFS3-BAD-01 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen after the first failure |
+| LFS3-BAD-01 | Tested | before v3-beta | `badblocks_gbmap`: counters frozen after the first failure |
 | LFS3-BAD-02 | Planned | before v3-beta | `badblocks_gbmap`: counters frozen across 10 remounts |
-| LFS3-BAD-03 | Planned | before v3-beta | `badblocks_gbmap`: reentrant marking; only failed blocks marked, referenced ones included |
+| LFS3-BAD-03 | Tested | before v3-beta | `badblocks_gbmap`: reentrant marking; only failed blocks marked, referenced ones included |
 | LFS3-BAD-04 | Planned | before v3-beta | `badblocks_gbmap`: read-only mounts over bad blocks do not write |
 | LFS3-BAD-05 | Planned | before v3-beta | `compat`: an older gbmap driver on an image with BMBAD ranges |
 | LFS3-BAD-06 | Planned | before v3-beta | `badblocks_gbmap`: marks survive repopulation, grow, setbptr |
 | LFS3-BAD-07 | Planned | before v3-beta | `badblocks_gbmap` in a B-NM build with static buffers |
-| LFS3-BAD-08 | Planned | before v3-beta | `badblocks_gbmap`: more runs of bad blocks than the queue holds, none forgotten (NEW-134 to NEW-136) |
-| LFS3-BAD-09 | Planned | before v3-beta | `badblocks_gbmap::exhaustion`, 256 seeds: no erase of a dead block |
+| LFS3-BAD-08 | Tested | before v3-beta | `badblocks_gbmap`: more runs of bad blocks than the queue holds, none forgotten (NEW-134 to NEW-136) |
+| LFS3-BAD-09 | Tested | before v3-beta | `badblocks_gbmap::exhaustion`, 256 seeds: no erase of a dead block |
 | LFS3-BAD-10 | Planned | before v3-beta | pre-erase over an ERASEERROR block records it and returns 0 |
 | LFS3-BAD-11 | Planned | before v3-beta | mark-bad API: range and anchor checks |
 | LFS3-BAD-12 | Planned | before v3-beta | clear-mark API |
