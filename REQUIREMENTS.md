@@ -7587,7 +7587,8 @@ the salvage mount (LFS3-DEG-16).
   (`73001c31`). A damaged metadata pair, a
   directory's entries, had no repair in place at `v3-r21` (`195ed2ef`):
   the degraded read-only mount (LFS3-DEG-03) copied out what read before
-  a reformat; Q27 is decided, the repair is LFS3-DEG-16.
+  a reformat; Q27 is decided, the repair is LFS3-DEG-16, tested on
+  `v3-r21` (`3aa6ae9f`).
 - **When:** every CI run.
 
 #### LFS3-DEG-11
@@ -7818,7 +7819,8 @@ shall return 0 unless data blocks are damaged too.
   mount read-write or check after the salvage, or one that mounts without
   the flag before a salvage completes.
 - **Verified by:** NEW-149, NEW-150, NEW-151.
-- **Status:** Not implemented at `v3-r21` (`195ed2ef`).
+- **Status:** Not implemented at `v3-r21` (`195ed2ef`); tested on
+  `v3-r21` (`3aa6ae9f`).
 - **When:** every CI run.
 
 ## 7. Summary

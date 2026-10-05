@@ -1562,7 +1562,7 @@ defines; procedure; pass and fail; extension needed.
 - **Covers:** DEG-16.
 - **Defines:** `DAMAGE` 0 (newer block failing reads, which stop with
   the power loss, as if the supply recovered) and 2 (both blocks
-  erased); `WHICH` 0 and 1; `PL_BEHAVIOR` ATOMIC, SOMEBITS, MOSTBITS and
+  erased); `WHICH` 0 and 1; `POWERLOSS_BEHAVIOR` ATOMIC, SOMEBITS, MOSTBITS and
   OOO.
 - **Procedure:** On its own emubd, build and damage the image of
   NEW-149, then for each n lose power at the n-th prog or erase of the
