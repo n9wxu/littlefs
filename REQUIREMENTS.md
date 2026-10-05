@@ -2386,11 +2386,18 @@ metadata block.
   `name_limit` and attribute sizes 0 to `block_size` gets 0 or an error code
   from `lfs3.h` for every `lfs3_mkdir`, `lfs3_file_opencfg` with
   `LFS3_O_CREAT`, `lfs3_rename` and `lfs3_setattr`, with no assert, and
-  `lfs3_fs_ck` returns 0 afterwards, in B-DEF.
+  `lfs3_fs_ck` returns 0 afterwards, in B-DEF. An operation whose metadata
+  fits a block but whose mtree B-tree split leaves the commit no room in
+  the half it goes to also gets 0 or `LFS3_ERR_NOSPC`: `mtree::commit_too_big`
+  passes with seed 637 at `ERASE_SIZE` 512 (issue #25) in B-DEF, B-YGB
+  and B-BIG, and with `LFS3_NO_ASSERT`.
 - **Fail:** an assert, or a check failure.
-- **Verified by:** NEW. See LFS3-DIR-02 and LFS3-ATTR-05 for the cases
+- **Verified by:** `mtree::commit_too_big` (NEW-41), with seed 637 at
+  `ERASE_SIZE` 512 for D-9. See LFS3-DIR-02 and LFS3-ATTR-05 for the cases
   reproduced.
-- **Status:** Known defect (1-meta 0.2).
+- **Status:** Known defect (1-meta 0.2; D-9, issue #25: seed 637 at
+  `ERASE_SIZE` 512 trips `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in an mtree
+  B-tree split during `lfs3_mkdir`, in B-DEF and B-BIG).
 - **When:** every CI run.
 
 #### LFS3-META-04
@@ -7075,7 +7082,13 @@ internal code from a public function.
 - **Verified by:** the hook and check of LFS3-ERR-01.
 - **Status:** Known defect at `b10efaa` (RANGE reached the API from
   oversized commits; fixed on `v3-integration`, d428d7b8, 42e26e7e).
-  Tested as a general property on `v3-integration` (9c9e8145).
+  Tested as a general property on `v3-integration` (9c9e8145). Known
+  defect D-9 (issue #25): an mtree B-tree split that leaves its commit no
+  room returns `LFS3_ERR_RANGE` from `lfs3_btree_commit_`, where an assert
+  stands in for the error; with `LFS3_NO_ASSERT`, `lfs3_btree_commit` takes
+  it for a full root, fails to commit a new root on block after block
+  through the whole disk, and `lfs3_mkdir` returns `LFS3_ERR_NOSPC`
+  (`mtree::commit_too_big`, seed 637 at `ERASE_SIZE` 512).
 - **When:** every CI run.
 
 #### LFS3-ERR-07
@@ -7558,7 +7571,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-PL-27 | 4-api R27 | none |
 | LFS3-INT-20 | F-2 | v3-fixes `e4c046b` |
 | LFS3-INT-23 | D-2 | v3-fix-parity `f90e132` (`ck::ckparity_btree_append`) |
-| LFS3-META-03 | 1-meta 0.2 | none |
+| LFS3-META-03 | 1-meta 0.2, D-9 | 1-meta 0.2: v3-integration `d428d7b8`; D-9: none (issue #25) |
 | LFS3-META-04 | 1-meta 0.3 | none |
 | LFS3-META-10 | 3-alloc B3 | v3-fix-alloc `bd5bb8c` (`badblocks::mrootanchor_stuck`, `badblocks::badsync`; adds emubd `mkbadsync`) |
 | LFS3-META-11 | 1-meta 0.5 | none |
@@ -8121,7 +8134,7 @@ upstream yet. Requirement status always describes `b10efaa`.
 | D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
 | D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | `82ab4f07`, `b5888089` (issue #22) |
 | D-8 | A commit that only removes still splits an mdir whose compaction estimate is over half a block. Splitting an inlined mroot whose root attrs fill its block moves its entries to a new mdir and needs an mtree the mroot has no room for, so `lfs3_removeattr("/")` fails with `LFS3_ERR_NOSPC` every time; splitting any other mdir needs new blocks and an mtree update that a full disk or a full mroot may not take, and can overflow the mtree's B-tree split | `lfs3_mdir_commit__`, `lfs3_mdir_commit_` | run (`mtree::commit_too_big` with `-DSEED='range(4096)'`: 44 of 12,288 in B-DEF) | DEG-05 | `819e1a10` (issue #23) |
-| D-9 | An mtree B-tree split can leave the rattrs of an mdir split, two mdir pointers and the new mdir's first name, no room in the sibling they go to: on 512-byte blocks, with names within `name_limit` (132 bytes), a sibling held 378 bytes after compaction, and `lfs3_mkdir` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in `lfs3_btree_commit_`. The `name_limit` bound assumes each half of a split fits in half a block, which a few large names in one node make untrue | `lfs3_btree_commit_` | run (`mtree::commit_too_big` with `ERASE_SIZE=512`, `SEED=637`, in B-DEF and B-BIG) | META-03, DIR-02 | none |
+| D-9 | An mtree B-tree split can leave the rattrs of an mdir split, two mdir pointers and the new mdir's first name, no room in the sibling they go to: on 512-byte blocks, with names within `name_limit` (132 bytes), a sibling held 378 bytes after compaction, and `lfs3_mkdir` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in `lfs3_btree_commit_`. The `name_limit` bound assumes each half of a split fits in half a block, which a few large names in one node make untrue: the split balances what the node holds, not what the commit adds. With `LFS3_NO_ASSERT` the RANGE is taken for a full root, and a new root is tried on block after block through the whole disk before `lfs3_mkdir` returns `LFS3_ERR_NOSPC` | `lfs3_btree_commit_` | run (`mtree::commit_too_big` with `ERASE_SIZE=512`, `SEED=637`, in B-DEF and B-BIG; with `LFS3_NO_ASSERT`, about 3,900 root allocations) | META-03, DIR-02, ERR-06 | none (issue #25) |
 
 ### A.3 From the analyses
 
