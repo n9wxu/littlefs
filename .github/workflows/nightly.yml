@@ -267,6 +267,33 @@ jobs:
         run: |
           make test-balance
 
+  # run under AddressSanitizer and UndefinedBehaviorSanitizer with all
+  # opt-in features, see make test-sanitize, test.yml runs the default
+  # build
+  #
+  # split by schedule, est. 1-1.5 hours each on 4 vCPUs from local runs
+  test-sanitize-biggest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        pls: [none, linear]
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-sanitize-biggest
+        run: |
+          CFLAGS="$CFLAGS -DLFS3_BIGGEST" \
+            make test-sanitize SANITIZE_PLS=${{matrix.pls}}
+
   # run with each LFS3_YES_* option, which force the relevant feature on
   #
   # LFS3_YES_GBMAP runs on every push, and LFS3_YES_RDONLY can't run the
