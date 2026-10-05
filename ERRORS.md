@@ -132,7 +132,8 @@ filesystem changed.
 **Rebuild:** free the target, then retry: rewind the traversal with
 `lfs3_trv_rewind`, or move the data off the block (rewriting or removing
 the file that holds it moves it). If the target can't be freed, as the root
-never can, **Fail**.
+never can, **Fail**. The root returns BUSY rather than INVAL because it is
+always in use, as on Linux.
 
 ### `LFS3_ERR_NOTSUP`
 

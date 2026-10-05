@@ -6457,8 +6457,7 @@ code: Retry, Rebuild or Fail.
   which call returned it.
 - **Verified by:** review of [ERRORS.md](ERRORS.md).
 - **Status:** Not implemented at `b10efaa`; documented on `v3-integration`
-  (40b9e33e). Open question Q25 asks whether the root should keep
-  `LFS3_ERR_BUSY`.
+  (40b9e33e). The root keeps `LFS3_ERR_BUSY` (Q25, decided).
 - **When:** before v3-beta.
 
 #### LFS3-ERR-03
@@ -6561,7 +6560,7 @@ the device reported bad.
   a remount, in B-DEF, B-BIG and B-YGB. The one documented exception:
   `lfs3_remove` and `lfs3_rename` return 0 when only the cleanup after
   their commit fails; the cleanup stays pending (`LFS3_I_MKCONSISTENT`) and
-  the next write retries it (open question Q26). An injected CORRUPT
+  the next write retries it (Q26, decided). An injected CORRUPT
   surfaces as CORRUPT or is handled by relocation (issue #6).
 - **Fail:** IO turned into CORRUPT, an IO swallowed, or a read of another
   copy, a relocation or a bad or suspect mark after an IO.
@@ -7094,20 +7093,32 @@ format change during the alpha.
 the root return `LFS3_ERR_BUSY`, as Linux does; v2 returned
 `LFS3_ERR_INVAL`. BUSY also means a block in use (`lfs3_fs_mkbad`) and a
 filesystem changed under an `LFS3_T_EXCL` traversal, which can clear, while
-the root never can. ERRORS.md gives BUSY one action, Rebuild by freeing the
-target, else Fail, which covers all three (LFS3-ERR-02). Options: (a) keep
-that; (b) return `LFS3_ERR_INVAL` for the root, as v2 did, so that BUSY
-always means "free the target and retry"; it changes about 30 assertions
-in `dirs`, `files` and `paths`.
+the root never can. Options: (a) keep BUSY, with the one action Rebuild by
+freeing the target, else Fail, which covers all three (LFS3-ERR-02);
+(b) return `LFS3_ERR_INVAL` for the root, as v2 did, so that BUSY always
+means "free the target and retry"; it changes about 30 assertions in
+`dirs`, `files` and `paths`.
+
+Decided in this fork: (a). BUSY keeps one meaning, "the target is in use",
+the root is permanently in use, and the code matches Linux, which the v3
+API and its tests already follow. Open to the maintainer's review.
 
 **Q26. Cleanup errors after remove and rename.** `lfs3_remove` of a
 directory and `lfs3_rename` commit, then clean up a grm; if the cleanup
 fails, they log the error and return 0, leaving `LFS3_I_MKCONSISTENT` set
 for the next write to retry (a TODO in `lfs3.c` asks whether to propagate
-it). LFS3-ERR-05 records this as its one exception. Options: (a) keep it:
-the operation is complete and nothing is lost; (b) return the error once,
-as for a failed sync after a commit, so the device's fault is reported
-where it happened, and a retry then returns `LFS3_ERR_NOENT`.
+it). Options: (a) keep it: the operation is complete and nothing is lost;
+(b) return the error once, as for a failed sync after a commit, so the
+device's fault is reported where it happened, and a retry then returns
+`LFS3_ERR_NOENT`.
+
+Decided in this fork: (a). The operation is complete and consistent on
+disk, the pending cleanup is reported by `LFS3_I_MKCONSISTENT`, and the
+next write or `lfs3_fs_mkconsistent` retries it and returns its error if
+it fails again, so no fault goes unreported for long and the application
+never has to undo a success. It stays the one documented exception to
+LFS3-ERR-05, with its state in ERRORS.md, and `errs::ioerror` checks it.
+Open to the maintainer's review.
 
 
 ## 9. Requirements that need new tests
