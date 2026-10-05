@@ -2814,6 +2814,37 @@ and `lfs3_file_fruncate`.
 - **Status:** Untested.
 - **When:** every CI run.
 
+#### LFS3-FILE-27
+
+littlefs shall have written every byte that `lfs3_file_write` accepted when
+`lfs3_file_flush`, `lfs3_file_sync` or `lfs3_file_close` returns 0, and
+shall show those bytes to reads and `lfs3_file_size` through the same
+handle before then, including the bytes of an append that it keeps in the
+file cache when a write flushes a full cache.
+
+- **Source:** Derived: so that later appends in the same sync don't replace
+  padded commits (LFS3-PERF-09, Appendix B.5 D), a write that flushes a
+  full file cache in the middle of an append into a data block it can
+  resume flushes only up to that block's last `prog_size` boundary, and
+  keeps the rest, fewer than `prog_size` bytes, cached until the next
+  flush, sync or close. Durability doesn't change: after a power loss
+  nothing beyond the last successful sync is promised, cached or not
+  (LFS3-PL-04, PL-06).
+- **Measure:** content and size through the handle after each write; on
+  disk after sync, close, desync, truncate and fruncate, after
+  `LFS3_ERR_NOSPC`, and after a power loss.
+- **Pass:** NEW `fwrite::append_tail`, `fwrite::append_tail_nospc` and
+  `powerloss::append_unsynced_pl` pass with `PROG_SIZE` 1, 16 and 256 and
+  `FCACHE_SIZE` below and above `PROG_SIZE`, in B-DEF and B-BIG: every
+  read through the handle matches the bytes written, a closed or synced
+  file holds every byte written, a desynced or power-lost one holds what
+  its last successful sync wrote, and a file left by `LFS3_ERR_NOSPC`
+  holds what its last successful sync wrote.
+- **Fail:** any byte or size differs.
+- **Verified by:** NEW: as listed.
+- **Status:** Untested.
+- **When:** every CI run.
+
 ### 6.8 Sync model and stickynotes (SYNC)
 
 PR #1111 ("A well-defined sync model") states five rules. LFS3-SYNC-01 to
@@ -3103,6 +3134,35 @@ earlier error, and leave the disk as of the last successful sync.
 - **Fail:** close returns an error or commits.
 - **Verified by:** as listed.
 - **Status:** Tested.
+- **When:** every CI run.
+
+#### LFS3-SYNC-20
+
+littlefs shall leave a handle syncable after an error in an append whose
+graft replaces only the file's last entry: `lfs3_file_sync` then commits
+the file with the appends that succeeded, and does not return
+`LFS3_ERR_INVAL`.
+
+- **Source:** Derived: a graft that replaces several entries commits once
+  per entry, because the entries can be in different leaves, and an error
+  between those commits tears the handle (`LFS3_o_TORN`): sync returns
+  `LFS3_ERR_INVAL` until `lfs3_file_resync` (LFS3-ERR-03). An append that
+  coalesces with the file's last fragment replaces only that entry, and
+  what it appends lands in the same leaf, so it needs one commit
+  (Appendix B.5 C). A logger appending with errors then never sees a torn
+  handle.
+- **Measure:** `lfs3_file_sync` result after up to 64 appends with each
+  block in turn bad, and the content after remount.
+- **Pass:** NEW `badblocks::append_torn` (fragments of up to 64 bytes,
+  16-byte appends, `BADBLOCK_BEHAVIOR` PROGERROR, ERASEERROR and
+  READERROR, `PROG_SIZE` 1 and 16) gets 0 from every sync, and reads back
+  the old content followed by whole appends, in B-DEF.
+- **Fail:** sync returns `LFS3_ERR_INVAL`, or the content differs.
+- **Verified by:** NEW `badblocks::append_torn`; for power loss,
+  `powerloss::append_pl` and NEW `powerloss::append_unsynced_pl`.
+- **Status:** Known defect: on `v3-integration` (`fd3157e3`)
+  `badblocks::append_torn` gets `LFS3_ERR_INVAL` with READERROR at
+  `PROG_SIZE` 16.
 - **When:** every CI run.
 
 ### 6.9 Directories and paths (DIR)
@@ -5458,8 +5518,8 @@ littlefs shall perform no more erases than littlefs v2.11.3 on the logging
 workload W-LOG at 50 rows per second, for `prog_size` 1, 16 and 256, with
 and without the gbmap and pre-erase.
 
-- **Source:** Proposal, as LFS3-PERF-08. Whether the bound is wanted at
-  `prog_size` 256 is open question Q23.
+- **Source:** Proposal, as LFS3-PERF-08. The bound applies at every
+  `prog_size`, 256 included (Q23).
 - **Measure:** erases per minute: the `bench_erases` of the `log` probe of
   NEW `bench_wlog_fresh` with `RATE=50`, times 60 and divided by `SECONDS`
   (600), for every permutation of `PROG_SIZE`, `GBMAP` and `PREERASE`, in
@@ -6750,8 +6810,8 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Flash failure handling | FAIL | 20 | 4 | 8 | 8 | 0 | 0 |
 | Bad-block tracking | BAD | 17 | 0 | 0 | 0 | 17 | 0 |
 | Metadata | META | 17 | 7 | 3 | 3 | 0 | 4 |
-| Files and data | FILE | 26 | 14 | 2 | 7 | 0 | 3 |
-| Sync model and stickynotes | SYNC | 19 | 15 | 2 | 1 | 0 | 1 |
+| Files and data | FILE | 27 | 14 | 2 | 8 | 0 | 3 |
+| Sync model and stickynotes | SYNC | 20 | 15 | 2 | 1 | 0 | 2 |
 | Directories and paths | DIR | 20 | 16 | 0 | 1 | 0 | 3 |
 | Custom attributes | ATTR | 13 | 8 | 1 | 2 | 0 | 2 |
 | Key-value API | KV | 9 | 5 | 1 | 2 | 0 | 1 |
@@ -6766,14 +6826,14 @@ Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
 | Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
 | Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
 | Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **362** | **107** | **63** | **99** | **30** | **63** |
+| **All** | | **364** | **107** | **63** | **100** | **30** | **64** |
 
-By level: 223 stated, 119 derived, 20 proposals. By When: 291 every CI run,
+By level: 223 stated, 121 derived, 20 proposals. By When: 293 every CI run,
 44 nightly, 27 before v3-beta.
 
-107 requirements (30%) are fully checked by a case that runs in the default
+107 requirements (29%) are fully checked by a case that runs in the default
 build. 63 are partly checked, most often because the checking case is
-compiled out of the default build. 63 are known defects; Appendix A says
+compiled out of the default build. 64 are known defects; Appendix A says
 which of them have fixes on our branches.
 
 The known defects, with the fixes that exist on our branches (Appendix A):
@@ -6794,6 +6854,7 @@ The known defects, with the fixes that exist on our branches (Appendix A):
 | LFS3-FILE-04 | 2-files B14 | v3-fix-files `25cfa66` (`files::read_big`) |
 | LFS3-FILE-10 | 2-files B1 | v3-fix-files `b07be9e` (`badblocks::fruncate_append`) |
 | LFS3-SYNC-05 | 2-files B8 | v3-fix-files `8c5241d` (`badblocks::truncate_desync`) |
+| LFS3-SYNC-20 | measured, `badblocks::append_torn` | none |
 | LFS3-DIR-02 | 1-meta 0.2 | none |
 | LFS3-DIR-05 | 4-api R1 | v3-fix-api `067ebe7` (`dirs::mv_subtree`) |
 | LFS3-DIR-11 | 1-meta 0.1 | v3-fix-api `cc4acb9` (`dread::seek_tell`) |
@@ -6998,6 +7059,9 @@ and bounds does the project want to gate on? In particular, is
 "no more erases than v2 on a sync-heavy log" a goal at large `prog_size`
 (LFS3-PERF-09)? Meeting it at `prog_size` 256 needs a change to how
 littlefs writes an append-only file; Appendix B.5 measures the options.
+Answered for W-LOG: yes, at every `prog_size`. `v3-integration` adopts
+changes B, C and D of Appendix B.5; C and D bring LFS3-SYNC-20 and
+LFS3-FILE-27.
 
 **Q24. Telling alpha formats apart.** Every alpha image claims version 0.0,
 so images from incompatible alpha commits cannot be told apart (4-api R24).
@@ -7014,7 +7078,7 @@ branches already add a case, it is named. 9.2 lists the requirements that
 existing cases would check if they ran in another build, schedule or
 geometry. Documentation requirements checked by review are not listed.
 
-185 requirements need a new test (9.1) and 51 need an existing test run in a
+187 requirements need a new test (9.1) and 51 need an existing test run in a
 new environment (9.2).
 
 ### 9.1 New tests
@@ -7097,10 +7161,12 @@ new environment (9.2).
 | LFS3-FILE-21 | Partly | every CI run | close with a failing sync releases the handle |
 | LFS3-FILE-24 | Untested | every CI run | two handles appending to one file in turn |
 | LFS3-FILE-26 | Untested | every CI run | `fwrite::*fbig` with `file_limit` 1, 1000, 65536 |
+| LFS3-FILE-27 | Untested | every CI run | appends with a tail kept cached: reads, sync, close, desync, truncate, fruncate, NOSPC, power loss |
 | LFS3-SYNC-05 | Defect | every CI run | each write-side call fails; close leaves the disk unchanged (`badblocks::truncate_desync` on v3-fix-files) |
 | LFS3-SYNC-09 | Untested | every CI run | errors injected into multi-entry overwrites, then sync and check |
 | LFS3-SYNC-10 | Partly | every CI run | `lfs3_stat` after flush |
 | LFS3-SYNC-16 | Partly | every CI run | close three or more uncreated handles; flag and cleanup |
+| LFS3-SYNC-20 | Defect | every CI run | appends that coalesce with the last fragment, each block in turn bad; sync never `LFS3_ERR_INVAL` |
 | LFS3-DIR-02 | Defect | every CI run | `lfs3_mkdir` with names of 1 to 255 bytes at 512 and 1024-byte blocks |
 | LFS3-DIR-05 | Defect | every CI run | rename a directory into its own subtree (`dirs::mv_subtree` on v3-fix-api) |
 | LFS3-DIR-11 | Defect | every CI run | tell/seek round trip at every position (`dread::seek_tell` on v3-fix-api) |
@@ -7647,13 +7713,13 @@ are mapped at the end of 6.4.
 | `lfs3_removeattr` | GEN-06, PL-11, ATTR-03, ATTR-08 |
 | `lfs3_file_open` | FILE-16, CFG-07, RES-08, BUILD-10, FILE-14, FILE-15 |
 | `lfs3_file_opencfg` | GEN-06, INT-13, META-03, FILE-15, DIR-14 |
-| `lfs3_file_close` | PL-04, PL-06, FILE-21, SYNC-19 |
-| `lfs3_file_sync` | PL-04, PL-06, SYNC-05, SYNC-06, SYNC-08, SYNC-09, SYNC-17, MOUNT-17, PERF-06, PERF-07, PERF-10 |
-| `lfs3_file_flush` | PL-06, SYNC-05, SYNC-10 |
+| `lfs3_file_close` | PL-04, PL-06, FILE-21, FILE-27, SYNC-19 |
+| `lfs3_file_sync` | PL-04, PL-06, SYNC-05, SYNC-06, SYNC-08, SYNC-09, SYNC-17, SYNC-20, FILE-27, MOUNT-17, PERF-06, PERF-07, PERF-10 |
+| `lfs3_file_flush` | PL-06, FILE-27, SYNC-05, SYNC-10 |
 | `lfs3_file_desync` | SYNC-04 |
 | `lfs3_file_resync` | SYNC-07, SYNC-08 |
 | `lfs3_file_read` | INT-20, FILE-01, FILE-04 |
-| `lfs3_file_write` | PL-06, PL-17, FILE-02, FILE-03, FILE-07, FILE-26, SYNC-05, PERF-10 |
+| `lfs3_file_write` | PL-06, PL-17, FILE-02, FILE-03, FILE-07, FILE-26, FILE-27, SYNC-05, SYNC-20, PERF-10 |
 | `lfs3_file_seek` | FILE-06, FILE-07, FILE-20, FILE-26, KV-04 |
 | `lfs3_file_truncate` | PL-13, FILE-08, FILE-18, FILE-26, SYNC-05 |
 | `lfs3_file_fruncate` | PL-13, FILE-09, FILE-10, FILE-26, SYNC-05, DOC-18 |
@@ -7709,7 +7775,7 @@ are mapped at the end of 6.4.
 | `block_recycles` | PL-21, FAIL-14, CFG-01, CFG-04 |
 | `rcache_size` | CFG-01, CFG-02 |
 | `pcache_size` | PRE-09, CFG-01, CFG-02, PERF-14 |
-| `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08 |
+| `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08, FILE-27 |
 | `lookahead_size` | ALLOC-06, CFG-01 |
 | `gc_flags` | INT-15, GC-03, CFG-06 |
 | `gc_steps` | GC-01, GC-02 |
