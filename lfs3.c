@@ -6847,7 +6847,7 @@ static lfs3_stag_t lfs3_btree_traverse(lfs3_t *lfs3,
             // seen them
             if (btrv->rid == 0) {
                 if (bid_) {
-                    *bid_ = btrv->bid + (rid__ - btrv->rid);
+                    *bid_ = btrv->bid + (weight__-1);
                 }
                 if (weight_) {
                     *weight_ = weight__;

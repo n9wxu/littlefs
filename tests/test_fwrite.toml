@@ -5450,6 +5450,7 @@ defines.REMOUNT = [false, true]
 defines.SEED = 'range(10)'
 fuzz = 'SEED'
 if = 'CHUNK <= SIZE'
+in = 'lfs3.c'
 code = '''
     lfs3_t lfs3;
     lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
@@ -5606,6 +5607,40 @@ code = '''
         memset(rbuf, 0xaa, 2*SIZE);
         lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => size - lo;
         assert(memcmp(rbuf, sim, size - lo) == 0);
+
+        // the tree's entries should tile the file, and each inner node
+        // should start where its first entry starts
+        lfs3_btrv_t btrv;
+        lfs3_btrv_init(&btrv);
+        lfs3_off_t branch = -1;
+        lfs3_off_t next = 0;
+        for (lfs3_block_t i = 0;; i++) {
+            // a bit hacky, but this catches infinite loops
+            assert(i < 2*BLOCK_COUNT);
+
+            lfs3_sbid_t bid;
+            lfs3_bid_t weight;
+            lfs3_data_t data;
+            lfs3_stag_t tag = lfs3_bshrub_traverse(&lfs3, &file.b, &btrv,
+                    &bid, &weight, &data);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+
+            lfs3_off_t start = (lfs3_off_t)bid - (weight-1);
+            if (branch != (lfs3_off_t)-1) {
+                assert(start == branch);
+            }
+            if (tag == LFS3_TAG_BRANCH) {
+                branch = start;
+            } else {
+                assert(start == next);
+                next = (lfs3_off_t)bid + 1;
+                branch = -1;
+            }
+        }
+        assert(next == size);
         lfs3_file_close(&lfs3, &file) => 0;
 
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
