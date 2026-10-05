@@ -1152,7 +1152,7 @@ erased-state checksum (ecksum).
 - **Fail:** the commit is appended to the disturbed block.
 - **Verified by:** `mtree::ecksum_disturb`.
 - **Status:** Tested on v3-integration (f6e23134); with the settling mount
-  not met at `e78b4263`, where the test still expects no settle.
+  tested on `v3-rc` (`1a17402f`).
 - **When:** every CI run.
 
 #### LFS3-INT-05
@@ -7315,12 +7315,12 @@ smallest repair that applies.
   `repair::gbmap`, `repair::mdir`, `repair::mdir_twice`;
   `gbmap::rmmkgbmap`.
 - **Status:** Partly met. Not implemented at `b10efaa`; the repairing
-  check is tested on `v3-integration` (f09acb9d); settling mdirs instead
-  of moving them is not implemented at `6248c34d`; it applies only when
-  the other block reads as older, since a fetch that can't read the newer
-  block falls back to the older one without an error (issue #6). mtree
-  inner nodes are not moved yet, that needs a commit through the mtree and
-  the mroot, as gbmap nodes have; one that needed a retry stays listed as
+  check is tested on `v3-integration` (f09acb9d); mdirs are settled
+  instead of moved, tested on `v3-rc` (`e78b4263`), only when the other
+  block reads as older, since a fetch that can't read the newer block
+  falls back to the older one without an error (issue #6). mtree inner
+  nodes are not moved yet, that needs a commit through the mtree and the
+  mroot, as gbmap nodes have; one that needed a retry stays listed as
   suspect. Rebuilding a damaged
   directory needs the degraded mount of LFS3-DEG-03.
 - **When:** every CI run.
@@ -7417,7 +7417,7 @@ append to a block whose state may not read the same twice; and shall not
 take a read the block device fails for a power loss: a failed read shall
 not count as a commit that reads differently, and a repair shall never
 copy over a newer block it can't read, nor copy the older block over a
-newer one that reads whole when read again.
+newer one that failed only a read and reads whole when read again.
 
 - **Source:** Proposal (issue #1). A copy that checksums bytes it read
   differently launders a flipped bit under a fresh checksum. A read can
@@ -7454,7 +7454,7 @@ newer one that reads whole when read again.
 - **Verified by:** NEW-08, NEW-130, NEW-131, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`, `mtree::commit_too_big`, NEW-137, NEW-138.
 - **Status:** Tested on `v3-rc` (`a12705da`); the failed-read clauses
-  are not implemented at `6248c34d`.
+  tested on `v3-rc` (`e78b4263`).
 - **When:** every CI run.
 
 #### LFS3-DEG-15
