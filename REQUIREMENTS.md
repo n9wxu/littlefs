@@ -1362,8 +1362,8 @@ flipped bits" of `lfs3.h`.
   each lookup, and a fetch that reads a flipped bit falls back to the older
   commit without an error. That is not a parity question; it belongs with
   issue #6, and class 2 of the case counts it.
-- **Status:** Tested on v3-integration (59b39cf6). D-5 is resolved by the
-  restatement.
+- **Status:** Tested on v3-integration (59b39cf6, 6a0d2e1c). D-5 is resolved
+  by the restatement.
 - **When:** every CI run.
 
 #### LFS3-INT-20
@@ -1495,7 +1495,8 @@ fetched is issue #6.
   the device.
 - **Verified by:** `ck_readflip::spam` with `CK=1` and `FLIP=1`. The case
   tells a fetch by its read of the revision count, which lookups never read.
-- **Status:** Untested as restated (D-6 is resolved by the restatement).
+- **Status:** Tested on v3-integration (6a0d2e1c). D-6 is resolved by the
+  restatement.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
