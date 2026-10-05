@@ -51,6 +51,12 @@ DBG_DIR ?= $(BUILDDIR)/dbg
 
 RELEASE_DIR ?= $(BUILDDIR)/release
 
+ENDIAN_DIR ?= $(BUILDDIR)/endian
+# a compiler and emulator for a host of the other byte order
+CROSS_CC ?= mips-linux-gnu-gcc --static
+CROSS_EXEC ?= qemu-mips
+BALANCE_DIR ?= $(BUILDDIR)/balance
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -666,6 +672,55 @@ test-errs: test-runner
 	TEST_ERRS=$(abspath $(TEST_ERRLOG)) \
 		./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
 	./scripts/ckerrs.py $(TEST_ERRLOG)
+
+## Check that images move between hosts of either byte order
+#
+# A native build and a CROSS_CC build run under CROSS_EXEC each write an
+# image with test_compat_endian_exchange, the images must be identical,
+# and every build must read every image and find the same lfs3_fs_cksum.
+# Everything goes in ENDIAN_DIR.
+.PHONY: test-compat-endian
+test-compat-endian:
+	$(MAKE) BUILDDIR=$(ENDIAN_DIR)/native test-runner
+	$(MAKE) BUILDDIR=$(ENDIAN_DIR)/cross CC="$(CROSS_CC)" test-runner
+	rm -f $(ENDIAN_DIR)/*.disk $(ENDIAN_DIR)/*.cksum
+	for b in native cross ; do \
+		x= ; [ $$b = cross ] && x="$(CROSS_EXEC)" ; \
+		TEST_COMPAT_ENDIAN_CKSUM=$(ENDIAN_DIR)/$$b.disk.cksum \
+			./scripts/test.py -R$(ENDIAN_DIR)/$$b/runners/test_runner \
+				$${x:+--exec="$$x"} \
+				-Pnone -d $(ENDIAN_DIR)/$$b.disk \
+				test_compat_endian_exchange -DROLE=1 \
+			|| exit 1 ; \
+	done
+	cmp $(ENDIAN_DIR)/native.disk $(ENDIAN_DIR)/cross.disk
+	for b in native cross ; do \
+		x= ; [ $$b = cross ] && x="$(CROSS_EXEC)" ; \
+		for d in native cross ; do \
+			TEST_COMPAT_ENDIAN_IMAGE=$(ENDIAN_DIR)/$$d.disk \
+			TEST_COMPAT_ENDIAN_CKSUM=$(ENDIAN_DIR)/$$d.disk.cksum \
+				./scripts/test.py \
+					-R$(ENDIAN_DIR)/$$b/runners/test_runner \
+					$${x:+--exec="$$x"} \
+					-Pnone test_compat_endian_exchange -DROLE=2 \
+				|| exit 1 ; \
+		done ; \
+	done
+	for d in native cross ; do \
+		[ $$(sort -u $(ENDIAN_DIR)/$$d.disk.cksum | wc -l) -eq 1 ] \
+			|| { cat $(ENDIAN_DIR)/$$d.disk.cksum ; exit 1 ; } ; \
+	done
+	cmp $(ENDIAN_DIR)/native.disk.cksum $(ENDIAN_DIR)/cross.disk.cksum
+
+## Run the rbyd, btree and mtree tests with the rbyd balance check
+#
+# LFS3_DBGRBYDBALANCE asserts every fetched rbyd is balanced. Everything
+# goes in BALANCE_DIR.
+.PHONY: test-balance
+test-balance:
+	$(MAKE) BUILDDIR=$(BALANCE_DIR) LFS3_DBGRBYDBALANCE=1 test-runner
+	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner $(TESTFLAGS) \
+		test_rbyd test_btree test_mtree
 
 ## List the tests
 .PHONY: test-list list-tests

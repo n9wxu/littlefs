@@ -6248,3 +6248,335 @@ code = '''
 
     lfs3_unmount(&lfs3) => 0;
 '''
+
+
+## P1 tests ##
+
+# attributes on the root directory, across remounts and an mroot chain
+# extension
+#
+# root attributes live in the mroot, so they must follow the mroot when
+# the mroot anchor extends the mroot chain and the mroot relocates
+[cases.test_attrs_root]
+# relocate on every other compaction, the anchor can't relocate so it
+# extends the mroot chain instead
+defines.BLOCK_RECYCLES = 0
+defines.BLOCK_SIZE = 512
+# four attrs of BLOCK_SIZE/8 don't fit in the mroot
+defines.SIZE = [1, 8, 'BLOCK_SIZE/16']
+# a file in the mroot that must not change
+defines.ROOTFILE = [false, true]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    if (ROOTFILE) {
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "cat",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", 4) => 4;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // a fixed set of attrs, 'n' is rewritten below
+    #define TEST_ATTRS_ROOT_VALUE(type, i, buffer) \
+        memset(buffer, 'a' + (((type) + (i)) % 26), SIZE)
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    const uint8_t types[3] = {'a', 'b', 'c'};
+    for (lfs3_size_t t = 0; t < 3; t++) {
+        TEST_ATTRS_ROOT_VALUE(types[t], 0, wbuf);
+        lfs3_setattr(&lfs3, "/", types[t], wbuf, SIZE) => 0;
+    }
+
+    // set has, getattr, sizeattr and the removed set agree
+    bool removed[3] = {false, false, false};
+    uint32_t n = 0;
+    bool has_n = false;
+    #define TEST_ATTRS_ROOT_CK() do { \
+        for (lfs3_size_t t = 0; t < 3; t++) { \
+            if (removed[t]) { \
+                assert(lfs3_sizeattr(&lfs3, "/", types[t]) \
+                        == LFS3_ERR_NOATTR); \
+                assert(lfs3_getattr(&lfs3, "/", types[t], rbuf, SIZE+1) \
+                        == LFS3_ERR_NOATTR); \
+                continue; \
+            } \
+            TEST_ATTRS_ROOT_VALUE(types[t], 0, wbuf); \
+            assert(lfs3_sizeattr(&lfs3, "/", types[t]) == SIZE); \
+            assert(lfs3_getattr(&lfs3, "/", types[t], rbuf, SIZE+1) \
+                    == SIZE); \
+            assert(memcmp(rbuf, wbuf, SIZE) == 0); \
+        } \
+        if (has_n) { \
+            TEST_ATTRS_ROOT_VALUE('n', n, wbuf); \
+            assert(lfs3_sizeattr(&lfs3, "/", 'n') == SIZE); \
+            assert(lfs3_getattr(&lfs3, "/", 'n', rbuf, SIZE+1) == SIZE); \
+            assert(memcmp(rbuf, wbuf, SIZE) == 0); \
+        } else { \
+            assert(lfs3_sizeattr(&lfs3, "/", 'n') == LFS3_ERR_NOATTR); \
+        } \
+        if (ROOTFILE) { \
+            lfs3_file_t file_; \
+            uint8_t fbuf_[5]; \
+            assert(lfs3_file_open(&lfs3, &file_, "cat", \
+                    LFS3_O_RDONLY) == 0); \
+            assert(lfs3_file_read(&lfs3, &file_, fbuf_, 5) == 4); \
+            assert(memcmp(fbuf_, "meow", 4) == 0); \
+            assert(lfs3_file_close(&lfs3, &file_) == 0); \
+        } \
+        struct lfs3_info info_; \
+        assert(lfs3_stat(&lfs3, "/", &info_) == 0); \
+        assert(info_.type == LFS3_TYPE_DIR); \
+    } while (0)
+    TEST_ATTRS_ROOT_CK();
+
+    // remount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+
+    // rewrite 'n' until the mroot has moved a few times, the first move
+    // extends the mroot chain if large attrs haven't already
+    lfs3_block_t mroot[2] = {lfs3.mroot.r.blocks[0], lfs3.mroot.r.blocks[1]};
+    lfs3_size_t moves = 0;
+    for (n = 0; moves < 4; n++) {
+        // a bit hacky, but this catches an mroot that never moves
+        assert(n < 100*BLOCK_COUNT);
+
+        TEST_ATTRS_ROOT_VALUE('n', n, wbuf);
+        lfs3_setattr(&lfs3, "/", 'n', wbuf, SIZE) => 0;
+        has_n = true;
+        if (lfs3_mptr_cmp(lfs3.mroot.r.blocks, mroot) != 0) {
+            mroot[0] = lfs3.mroot.r.blocks[0];
+            mroot[1] = lfs3.mroot.r.blocks[1];
+            moves += 1;
+            TEST_ATTRS_ROOT_CK();
+        }
+    }
+    n -= 1;
+    // the anchor can't relocate
+    assert(lfs3_mptr_cmp(lfs3.mroot.r.blocks,
+            LFS3_MPTR_MROOTANCHOR()) != 0);
+    TEST_ATTRS_ROOT_CK();
+
+    // remove one, and 'n'
+    lfs3_removeattr(&lfs3, "/", 'b') => 0;
+    removed[1] = true;
+    lfs3_removeattr(&lfs3, "/", 'n') => 0;
+    has_n = false;
+    TEST_ATTRS_ROOT_CK();
+    // removing again finds nothing
+    lfs3_removeattr(&lfs3, "/", 'b') => LFS3_ERR_NOATTR;
+    TEST_ATTRS_ROOT_CK();
+
+    // remount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // and set them again, after the extension
+    TEST_ATTRS_ROOT_VALUE('b', 0, wbuf);
+    lfs3_setattr(&lfs3, "/", 'b', wbuf, SIZE) => 0;
+    removed[1] = false;
+    n += 1;
+    TEST_ATTRS_ROOT_VALUE('n', n, wbuf);
+    lfs3_setattr(&lfs3, "/", 'n', wbuf, SIZE) => 0;
+    has_n = true;
+    TEST_ATTRS_ROOT_CK();
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    TEST_ATTRS_ROOT_CK();
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_ATTRS_ROOT_CK
+    #undef TEST_ATTRS_ROOT_VALUE
+'''
+
+# lfs3_setattr and lfs3_removeattr on files, dirs and "/" under powerloss
+#
+# After any powerloss every attr is as of the last call that completed,
+# or the call in flight. Each value starts with the op that set it and
+# the rest is a pure function of that op, and the op in flight is kept
+# in a static that survives the powerloss
+[cases.test_attrs_setattr_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+# paths besides "/", alternating dirs and files
+defines.N = [1, 4]
+# attr types per path
+defines.TYPES = 3
+defines.SIZE = [8, 'BLOCK_SIZE/16']
+defines.OPS = 64
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // the op in flight, this survives powerloss
+    static uint32_t inflight;
+    if (TEST_PLS == 0) {
+        inflight = 0;
+    }
+
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // our paths, "/" first
+    #define TEST_SETATTR_PL_PATH(path, p) do { \
+        if ((p) == 0) { \
+            strcpy(path, "/"); \
+        } else if ((p) % 2) { \
+            sprintf(path, "dir%03x", (p)); \
+        } else { \
+            sprintf(path, "file%03x", (p)); \
+        } \
+    } while (0)
+    for (lfs3_size_t p = 1; p <= N; p++) {
+        char path[256];
+        TEST_SETATTR_PL_PATH(path, p);
+        if (p % 2) {
+            err = lfs3_mkdir(&lfs3, path);
+            assert(!err || err == LFS3_ERR_EXIST);
+        } else {
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, path,
+                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+    }
+
+    // op k sets or removes attr t of path p, with a value of size bytes
+    #define TEST_SETATTR_PL_OP(k, p, t, rm, size) do { \
+        uint32_t prng_ = (SEED << 16) ^ (k); \
+        TEST_PRNG(&prng_); \
+        (p) = TEST_PRNG(&prng_) % (N+1); \
+        (t) = TEST_PRNG(&prng_) % TYPES; \
+        (rm) = (TEST_PRNG(&prng_) % 4) == 0; \
+        (size) = 4 + (TEST_PRNG(&prng_) % (SIZE-4+1)); \
+    } while (0)
+    #define TEST_SETATTR_PL_VALUE(k, buffer, size) do { \
+        lfs3_tole32((k), (buffer)); \
+        uint32_t prng_ = (SEED << 8) ^ (k); \
+        for (lfs3_size_t j_ = 4; j_ < (size); j_++) { \
+            (buffer)[j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+    } while (0)
+
+    // the op that last set each attr, before and after the op in
+    // flight, -1 if none or removed
+    int32_t before[N+1][TYPES];
+    for (lfs3_size_t p = 0; p <= N; p++) {
+        for (lfs3_size_t t = 0; t < TYPES; t++) {
+            before[p][t] = -1;
+        }
+    }
+    for (uint32_t k = 0; k < inflight; k++) {
+        lfs3_size_t p, t, size;
+        bool rm;
+        TEST_SETATTR_PL_OP(k, p, t, rm, size);
+        (void)size;
+        before[p][t] = (rm) ? -1 : (int32_t)k;
+    }
+    int32_t after[N+1][TYPES];
+    memcpy(after, before, sizeof(before));
+    if (inflight < OPS) {
+        lfs3_size_t p, t, size;
+        bool rm;
+        TEST_SETATTR_PL_OP(inflight, p, t, rm, size);
+        (void)size;
+        after[p][t] = (rm) ? -1 : (int32_t)inflight;
+    }
+
+    // every attr has a value some completed call set, in full
+    uint8_t vbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    #define TEST_SETATTR_PL_GET(p, t, k) do { \
+        char path_[256]; \
+        TEST_SETATTR_PL_PATH(path_, p); \
+        lfs3_ssize_t d_ = lfs3_getattr(&lfs3, path_, (t), rbuf, SIZE+1); \
+        assert(d_ >= 4 || d_ == LFS3_ERR_NOATTR); \
+        (k) = (d_ == LFS3_ERR_NOATTR) ? -1 : (int32_t)lfs3_fromle32(rbuf); \
+        if ((k) >= 0) { \
+            lfs3_size_t p_, t_, size_; \
+            bool rm_; \
+            TEST_SETATTR_PL_OP((k), p_, t_, rm_, size_); \
+            assert(p_ == (p) && t_ == (t) && !rm_); \
+            assert(d_ == (lfs3_ssize_t)size_); \
+            assert(lfs3_sizeattr(&lfs3, path_, (t)) == (lfs3_ssize_t)size_); \
+            TEST_SETATTR_PL_VALUE((k), vbuf, size_); \
+            assert(memcmp(rbuf, vbuf, size_) == 0); \
+        } \
+    } while (0)
+    bool landed = false;
+    for (lfs3_size_t p = 0; p <= N; p++) {
+        for (lfs3_size_t t = 0; t < TYPES; t++) {
+            int32_t k;
+            TEST_SETATTR_PL_GET(p, t, k);
+            assert(k == before[p][t] || k == after[p][t]);
+            if (k != before[p][t]) {
+                landed = true;
+            }
+        }
+    }
+    if (landed) {
+        memcpy(before, after, sizeof(before));
+        inflight += 1;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // continue setting and removing attrs, a call we can't tell landed
+    // is repeated
+    for (; inflight < OPS; inflight++) {
+        lfs3_size_t p, t, size;
+        bool rm;
+        TEST_SETATTR_PL_OP(inflight, p, t, rm, size);
+        char path[256];
+        TEST_SETATTR_PL_PATH(path, p);
+        if (rm) {
+            err = lfs3_removeattr(&lfs3, path, t);
+            assert(!err || (err == LFS3_ERR_NOATTR && before[p][t] < 0));
+            before[p][t] = -1;
+        } else {
+            TEST_SETATTR_PL_VALUE(inflight, vbuf, size);
+            lfs3_setattr(&lfs3, path, t, vbuf, size) => 0;
+            before[p][t] = inflight;
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t p = 0; p <= N; p++) {
+            for (lfs3_size_t t = 0; t < TYPES; t++) {
+                int32_t k;
+                TEST_SETATTR_PL_GET(p, t, k);
+                assert(k == before[p][t]);
+            }
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_SETATTR_PL_PATH
+    #undef TEST_SETATTR_PL_OP
+    #undef TEST_SETATTR_PL_VALUE
+    #undef TEST_SETATTR_PL_GET
+'''

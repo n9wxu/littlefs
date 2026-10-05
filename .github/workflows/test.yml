@@ -428,7 +428,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -486,7 +486,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -497,6 +497,44 @@ jobs:
       - name: test-dbg
         run: |
           make test-dbg
+
+  # check that images move between hosts of either byte order
+  #
+  # a native build and a big-endian build under qemu each write an image
+  # and read both, see test_compat_endian_exchange
+  test-compat-endian:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [mips, powerpc]
+        include:
+          - arch: mips
+            cc: mips-linux-gnu-gcc --static
+            exec: qemu-mips
+          - arch: powerpc
+            cc: powerpc-linux-gnu-gcc --static
+            exec: qemu-ppc
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3 \
+            gcc-${{matrix.arch}}-linux-gnu \
+            libc6-dev-${{matrix.arch}}-cross \
+            qemu-user
+          gcc --version
+          python3 --version
+          ${{matrix.arch}}-linux-gnu-gcc --version
+          ${{matrix.exec}} -version
+      - name: test-compat-endian
+        run: |
+          make test-compat-endian \
+            CROSS_CC="${{matrix.cc}}" \
+            CROSS_EXEC="${{matrix.exec}}"
 
   # run under Valgrind to check for memory errors
   test-valgrind:

@@ -5583,3 +5583,856 @@ corrupt_mounted:;
     // how many errors did we survive?
     printf("survived %d block errors!\n", (int)(i/PERIOD));
 '''
+
+
+
+## P1 tests ##
+
+# flips in any data block or B-tree node of a file are found by
+# lfs3_file_ck with LFS3_CK_CKDATA, by opening it with LFS3_O_CKDATA, and
+# by lfs3_fs_ck with LFS3_CK_CKDATA
+#
+# Unlike ck::file_ckdata_hard, every flip lands in a range a checksum
+# covers, so every flip must be found
+# flips in any data block or B-tree node of a file are found by
+# lfs3_file_ck with LFS3_CK_CKDATA, by opening it with LFS3_O_CKDATA, and
+# by lfs3_fs_ck with LFS3_CK_CKDATA
+#
+# Unlike ck::file_ckdata_hard, every flip lands in bytes a checksum
+# covers, so every flip must be found: the checksummed prefix of a data
+# block, and the tags of a B-tree node up to the commit with its trunk,
+# leaving out the padding after each commit's checksum
+[cases.test_ck_file_ckdata_blocks]
+# METHOD=0 => lfs3_file_ck
+# METHOD=1 => lfs3_file_open with LFS3_O_CKDATA
+# METHOD=2 => lfs3_fs_ck
+defines.METHOD = [0, 1, 2]
+defines.SIZE = [
+    'BLOCK_SIZE/2',
+    'BLOCK_SIZE',
+    '2*BLOCK_SIZE',
+    '8*BLOCK_SIZE',
+    '8*BLOCK_SIZE + BLOCK_SIZE/2',
+]
+# write in one go, or in syncs that leave partially written blocks
+defines.CHUNK = ['SIZE', 'BLOCK_SIZE/4']
+# random flips per block, in addition to the first and last checksummed
+# bit and the first and last data bit
+defines.FLIPS = 4
+defines.SEED = 42
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write our file
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE+1);
+    assert(wbuf && rbuf);
+    uint32_t prng = SEED;
+    for (lfs3_size_t j = 0; j < SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    for (lfs3_size_t j = 0; j < SIZE; j += CHUNK) {
+        lfs3_size_t d = lfs3_min(CHUNK, SIZE-j);
+        lfs3_file_write(&lfs3, &file, &wbuf[j], d) => d;
+        lfs3_file_sync(&lfs3, &file) => 0;
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // find the file's data blocks and B-tree nodes, and the bytes their
+    // checksums cover
+    struct {
+        lfs3_block_t block;
+        lfs3_size_t trunk;
+        lfs3_size_t cksize;
+        lfs3_size_t off;
+        lfs3_size_t size;
+    } blocks[64];
+    lfs3_size_t block_count = 0;
+    lfs3_mtrv_t mtrv;
+    lfs3_mtrv_init(&mtrv, LFS3_T_RDONLY);
+    while (true) {
+        lfs3_bptr_t bptr;
+        lfs3_stag_t tag = lfs3_mtree_traverse(&lfs3, &mtrv, &bptr);
+        assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+        if (tag == LFS3_ERR_NOENT) {
+            break;
+        }
+
+        if (tag == LFS3_TAG_BLOCK) {
+            assert(block_count < 64);
+            blocks[block_count].block = lfs3_bptr_block(&bptr);
+            blocks[block_count].trunk = 0;
+            blocks[block_count].cksize = lfs3_bptr_cksize(&bptr);
+            blocks[block_count].off = lfs3_bptr_off(&bptr);
+            blocks[block_count].size = lfs3_bptr_size(&bptr);
+            block_count += 1;
+        } else if (tag == LFS3_TAG_BRANCH && mtrv.h.mdir.mid >= 0) {
+            const lfs3_rbyd_t *rbyd = (const lfs3_rbyd_t*)bptr.d.u.buffer;
+            assert(block_count < 64);
+            blocks[block_count].block = rbyd->blocks[0];
+            blocks[block_count].trunk = lfs3_rbyd_trunk(rbyd);
+            blocks[block_count].cksize = 0;
+            blocks[block_count].off = 0;
+            blocks[block_count].size = 0;
+            block_count += 1;
+        }
+    }
+    // a file this big has data blocks
+    assert(block_count > 0);
+
+    uint8_t *covered = malloc(BLOCK_SIZE);
+    assert(covered);
+    for (lfs3_size_t b = 0; b < block_count; b++) {
+        // which bytes do checksums cover?
+        memset(covered, 0, BLOCK_SIZE);
+        lfs3_size_t end;
+        if (!blocks[b].trunk) {
+            end = blocks[b].cksize;
+            memset(covered, 1, end);
+        } else {
+            // the revision count, then each tag up to the end of the
+            // commit with our trunk, except the padding after each
+            // commit's checksum
+            memset(covered, 1, 4);
+            lfs3_size_t off = 4;
+            while (true) {
+                lfs3_tag_t tag;
+                lfs3_rid_t weight;
+                lfs3_size_t size;
+                lfs3_ssize_t d = lfs3_bd_readtag(&lfs3,
+                        blocks[b].block, off, -1,
+                        &tag, &weight, &size, NULL, NULL);
+                assert(d > 0);
+                if (lfs3_tag_isalt(tag)) {
+                    memset(&covered[off], 1, d);
+                    off += d;
+                } else if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM) {
+                    memset(&covered[off], 1, d+4);
+                    off += d + size;
+                    if (off > blocks[b].trunk) {
+                        break;
+                    }
+                } else {
+                    memset(&covered[off], 1, d+size);
+                    off += d + size;
+                }
+            }
+            end = off;
+        }
+        printf("%s 0x%"PRIx32", trunk %"PRId32", end %"PRId32"\n",
+                (blocks[b].trunk) ? "btree" : "data",
+                blocks[b].block, blocks[b].trunk, end);
+        assert(end > 0 && end <= BLOCK_SIZE);
+        assert(blocks[b].off + blocks[b].size <= end);
+
+        for (lfs3_size_t f = 0; f < 4+FLIPS; f++) {
+            lfs3_size_t badbit;
+            if (f == 0) {
+                badbit = 0;
+            } else if (f == 1) {
+                badbit = 8*end - 1;
+                while (!covered[badbit/8]) {
+                    badbit -= 8;
+                }
+            } else if (f == 2 && blocks[b].size) {
+                badbit = 8*blocks[b].off;
+            } else if (f == 3 && blocks[b].size) {
+                badbit = 8*(blocks[b].off + blocks[b].size) - 1;
+            } else {
+                do {
+                    badbit = TEST_PRNG(&prng) % (8*end);
+                } while (!covered[badbit/8]);
+            }
+            printf("flipping 0x%x.%x+%x\n",
+                    blocks[b].block, badbit/8, badbit%8);
+            lfs3_emubd_flipbit(CFG, blocks[b].block, badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+
+            if (METHOD == 0) {
+                lfs3_file_open(&lfs3, &file, "octopus",
+                        LFS3_O_RDONLY) => 0;
+                lfs3_file_ck(&lfs3, &file, LFS3_CK_CKDATA)
+                        => LFS3_ERR_CORRUPT;
+                lfs3_file_close(&lfs3, &file) => 0;
+            } else if (METHOD == 1) {
+                lfs3_file_open(&lfs3, &file, "octopus",
+                        LFS3_O_RDONLY | LFS3_O_CKDATA)
+                        => LFS3_ERR_CORRUPT;
+            } else if (METHOD == 2) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+            }
+
+            lfs3_emubd_flipbit(CFG, blocks[b].block, badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+        }
+    }
+    free(covered);
+
+    // and with every bit restored, everything checks and reads
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_RDONLY | LFS3_O_CKDATA) => 0;
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKDATA) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    free(wbuf);
+    free(rbuf);
+'''
+
+# flips in gbmap nodes are found by metadata checks
+#
+# Every flip lands in bytes a checksum covers, the tags of a node up to
+# the commit with its trunk, leaving out the padding after each commit's
+# checksum
+[cases.test_ck_ckmeta_gbmap]
+# METHOD=0 => lfs3_fs_ck with LFS3_CK_CKMETA
+# METHOD=1 => lfs3_trv_read with LFS3_T_CKMETA
+# METHOD=2 => lfs3_mount with LFS3_M_CKMETA
+defines.METHOD = [0, 1, 2]
+# small blocks for more gbmap nodes
+defines.BLOCK_SIZE = 512
+# a file per block, every other one removed, about 25 gbmap nodes
+defines.N = 64
+# random flips per node, in addition to the first and last covered bit
+defines.FLIPS = 8
+defines.SEED = 42
+ifdef = 'LFS3_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t wbuf[BLOCK_SIZE];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        memset(wbuf, 'a' + (i % 26), BLOCK_SIZE);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE) => BLOCK_SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    for (lfs3_size_t i = 1; i < N; i += 2) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        lfs3_remove(&lfs3, name) => 0;
+    }
+    // rebuild the gbmap from what is in use
+    lfs3_fs_ck(&lfs3, LFS3_CK_LOOKAHEAD) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // find the gbmap's nodes
+    lfs3_block_t nodes[256];
+    lfs3_size_t trunks[256];
+    lfs3_size_t node_count = 0;
+    lfs3_btrv_t btrv;
+    lfs3_btrv_init(&btrv);
+    while (true) {
+        lfs3_data_t data;
+        lfs3_stag_t tag = lfs3_btree_traverse(&lfs3, &lfs3.gbmap.b, &btrv,
+                NULL, NULL, &data);
+        assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+        if (tag == LFS3_ERR_NOENT) {
+            break;
+        }
+        if (tag == LFS3_TAG_BRANCH) {
+            const lfs3_rbyd_t *rbyd = (const lfs3_rbyd_t*)data.u.buffer;
+            assert(node_count < 256);
+            nodes[node_count] = rbyd->blocks[0];
+            trunks[node_count] = lfs3_rbyd_trunk(rbyd);
+            node_count += 1;
+        }
+    }
+    printf("gbmap: %"PRId32" nodes\n", node_count);
+    assert(node_count > 1);
+
+    uint32_t prng = SEED;
+    uint8_t covered[BLOCK_SIZE];
+    for (lfs3_size_t n = 0; n < node_count; n++) {
+        // which bytes do checksums cover? the revision count, then each
+        // tag up to the end of the commit with our trunk, except the
+        // padding after each commit's checksum
+        memset(covered, 0, BLOCK_SIZE);
+        memset(covered, 1, 4);
+        lfs3_size_t off = 4;
+        while (true) {
+            lfs3_tag_t tag;
+            lfs3_rid_t weight;
+            lfs3_size_t size;
+            lfs3_ssize_t d = lfs3_bd_readtag(&lfs3, nodes[n], off, -1,
+                    &tag, &weight, &size, NULL, NULL);
+            assert(d > 0);
+            if (lfs3_tag_isalt(tag)) {
+                memset(&covered[off], 1, d);
+                off += d;
+            } else if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM) {
+                memset(&covered[off], 1, d+4);
+                off += d + size;
+                if (off > trunks[n]) {
+                    break;
+                }
+            } else {
+                memset(&covered[off], 1, d+size);
+                off += d + size;
+            }
+        }
+        lfs3_size_t end = off;
+        printf("gbmap node 0x%"PRIx32", trunk %"PRId32", end %"PRId32"\n",
+                nodes[n], trunks[n], end);
+
+        for (lfs3_size_t f = 0; f < 2+FLIPS; f++) {
+            lfs3_size_t badbit;
+            if (f == 0) {
+                badbit = 0;
+            } else if (f == 1) {
+                badbit = 8*end - 1;
+                while (!covered[badbit/8]) {
+                    badbit -= 8;
+                }
+            } else {
+                do {
+                    badbit = TEST_PRNG(&prng) % (8*end);
+                } while (!covered[badbit/8]);
+            }
+            printf("flipping 0x%x.%x+%x\n", nodes[n], badbit/8, badbit%8);
+            lfs3_emubd_flipbit(CFG, nodes[n], badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+
+            if (METHOD == 0) {
+                lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+            } else if (METHOD == 1) {
+                lfs3_trv_t trv;
+                lfs3_trv_open(&lfs3, &trv,
+                        LFS3_T_RDONLY | LFS3_T_CKMETA) => 0;
+                int err;
+                for (lfs3_block_t i = 0;; i++) {
+                    // a bit hacky, but this catches infinite loops
+                    assert(i < 2*BLOCK_COUNT);
+                    struct lfs3_tinfo tinfo;
+                    err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                    assert(!err
+                            || err == LFS3_ERR_NOENT
+                            || err == LFS3_ERR_CORRUPT);
+                    if (err) {
+                        break;
+                    }
+                }
+                assert(err == LFS3_ERR_CORRUPT);
+                lfs3_trv_close(&lfs3, &trv) => 0;
+            } else if (METHOD == 2) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETA, CFG)
+                        => LFS3_ERR_CORRUPT;
+            }
+
+            lfs3_emubd_flipbit(CFG, nodes[n], badbit) => 0;
+            lfs3_bd_droprcache(&lfs3);
+            if (METHOD == 2) {
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            }
+        }
+    }
+
+    // and with every bit restored, everything checks
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_CKMETA, CFG) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# deterministic rollback of an mdir
+#
+# Commit X to mdir A, then Y to mdir B, then put back an older copy of an
+# mdir's blocks, as a device that reverts writes might. The gcksum lets
+# mount find a rollback of any mdir but the one committed most recently,
+# that one only an externally stored lfs3_fs_cksum can find
+#
+# ROLLBACK=0 => roll back A before mounting, mount fails
+# ROLLBACK=1 => roll back B before mounting, mount succeeds, but
+#               lfs3_fs_cksum differs and the filesystem stays usable
+# ROLLBACK=2 => roll back A while mounted, the next metadata check fails
+[cases.test_ck_rollback]
+defines.ROLLBACK = [0, 1, 2]
+# MDIRS=0 => A is the mroot, B an mdir in the mtree
+# MDIRS=1 => A is an mdir in the mtree, B the mroot
+# MDIRS=2 => A and B are both mdirs in the mtree
+defines.MDIRS = [0, 1, 2]
+# X appends to A, or compacts A
+defines.COMPACT = [false, true]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // add files until the first and last are in different mdirs, and
+    // neither is in the mroot
+    #define TEST_ROLLBACK_LOOKUP(path, mdir) do { \
+        const char *path_ = (path); \
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(&lfs3, &path_, \
+                (mdir), NULL); \
+        assert(tag_ == LFS3_TAG_REG || tag_ == LFS3_TAG_DIR); \
+    } while (0)
+    lfs3_size_t n = 0;
+    char last[256];
+    while (true) {
+        // a bit hacky, but this catches infinite loops
+        assert(n < BLOCK_COUNT);
+
+        sprintf(last, "file%03x", n);
+        uint8_t wbuf[32];
+        memset(wbuf, 'a'+(n % 26), 32);
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, last,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, 32) => 32;
+        lfs3_file_close(&lfs3, &file) => 0;
+        n += 1;
+
+        lfs3_mdir_t first_, last_;
+        TEST_ROLLBACK_LOOKUP("file000", &first_);
+        TEST_ROLLBACK_LOOKUP(last, &last_);
+        if (lfs3_mdir_cmp(&first_, &lfs3.mroot) != 0
+                && lfs3_mdir_cmp(&last_, &lfs3.mroot) != 0
+                && lfs3_mdir_cmp(&first_, &last_) != 0) {
+            break;
+        }
+    }
+    const char *paths[3][2] = {
+        {"/", last},
+        {"file000", "/"},
+        {"file000", last},
+    };
+    const char *path_a = paths[MDIRS][0];
+    const char *path_b = paths[MDIRS][1];
+
+    // save and restore a pair's blocks behind littlefs's back
+    uint8_t *a_old[2], *a_new[2], *b_old[2];
+    for (int j = 0; j < 2; j++) {
+        a_old[j] = malloc(BLOCK_SIZE);
+        a_new[j] = malloc(BLOCK_SIZE);
+        b_old[j] = malloc(BLOCK_SIZE);
+        assert(a_old[j] && a_new[j] && b_old[j]);
+    }
+    #define TEST_ROLLBACK_SAVE(pair, bufs) do { \
+        for (int j_ = 0; j_ < 2; j_++) { \
+            int err_ = CFG->read(CFG, (pair)[j_], 0, \
+                    (bufs)[j_], BLOCK_SIZE); \
+            assert(!err_); \
+        } \
+    } while (0)
+    #define TEST_ROLLBACK_LOAD(pair, bufs) do { \
+        for (int j_ = 0; j_ < 2; j_++) { \
+            int err_ = CFG->erase(CFG, (pair)[j_]); \
+            assert(!err_); \
+            err_ = CFG->prog(CFG, (pair)[j_], 0, \
+                    (bufs)[j_], BLOCK_SIZE); \
+            assert(!err_); \
+        } \
+        lfs3_bd_droprcache(&lfs3); \
+    } while (0)
+
+    // commit an attr, forcing a compaction if asked
+    #define TEST_ROLLBACK_COMMIT(path, type, v, compact) do { \
+        lfs3_mdir_t mdir_; \
+        TEST_ROLLBACK_LOOKUP(path, &mdir_); \
+        if (compact) { \
+            lfs3_mdir_claim(&mdir_); \
+        } \
+        uint32_t v_ = (v); \
+        int err_ = lfs3_mdir_commit(&lfs3, &mdir_, LFS3_RATTRS( \
+                LFS3_RATTR(3, LFS3_TAG_ATTR(type), 0, LFS3_FROM_DATA), \
+                LFS3_RATTR_ARG(sizeof(uint32_t)), \
+                LFS3_RATTR_ARG(&v_), \
+                LFS3_RATTR_NULL)); \
+        assert(!err_); \
+    } while (0)
+
+    lfs3_mdir_t a, b;
+    TEST_ROLLBACK_LOOKUP(path_a, &a);
+    TEST_ROLLBACK_LOOKUP(path_b, &b);
+    assert(lfs3_mdir_cmp(&a, &b) != 0);
+    assert((lfs3_mdir_cmp(&a, &lfs3.mroot) == 0) == (MDIRS == 0));
+    assert((lfs3_mdir_cmp(&b, &lfs3.mroot) == 0) == (MDIRS == 1));
+    lfs3_block_t a_pair[2] = {a.r.blocks[0], a.r.blocks[1]};
+    lfs3_block_t b_pair[2] = {b.r.blocks[0], b.r.blocks[1]};
+
+    // commit X to A, then Y to B
+    uint32_t cksum_0;
+    lfs3_fs_cksum(&lfs3, &cksum_0) => 0;
+    TEST_ROLLBACK_SAVE(a_pair, a_old);
+    TEST_ROLLBACK_COMMIT(path_a, 'x', 0x58, COMPACT);
+    uint32_t cksum_x;
+    lfs3_fs_cksum(&lfs3, &cksum_x) => 0;
+    assert(cksum_x != cksum_0);
+    TEST_ROLLBACK_SAVE(a_pair, a_new);
+    TEST_ROLLBACK_SAVE(b_pair, b_old);
+    TEST_ROLLBACK_COMMIT(path_b, 'y', 0x59, false);
+    uint32_t cksum_y;
+    lfs3_fs_cksum(&lfs3, &cksum_y) => 0;
+    assert(cksum_y != cksum_x);
+    // neither moved
+    TEST_ROLLBACK_LOOKUP(path_a, &a);
+    TEST_ROLLBACK_LOOKUP(path_b, &b);
+    assert(lfs3_mptr_cmp(a.r.blocks, a_pair) == 0);
+    assert(lfs3_mptr_cmp(b.r.blocks, b_pair) == 0);
+
+    uint32_t v;
+    if (ROLLBACK == 0) {
+        // roll back A, which is not the most recent commit
+        lfs3_unmount(&lfs3) => 0;
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+
+        // put X back, and everything is as it was
+        TEST_ROLLBACK_LOAD(a_pair, a_new);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x59);
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        assert(cksum == cksum_y);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    } else if (ROLLBACK == 1) {
+        // roll back B, the most recent commit, mount can't tell
+        lfs3_unmount(&lfs3) => 0;
+        TEST_ROLLBACK_LOAD(b_pair, b_old);
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => LFS3_ERR_NOATTR;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+        // but the checksum we stored can
+        uint32_t cksum;
+        lfs3_fs_cksum(&lfs3, &cksum) => 0;
+        assert(cksum != cksum_y);
+        assert(cksum == cksum_x);
+
+        // and the filesystem is usable as of X
+        lfs3_mkdir(&lfs3, "dir") => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "dir/new",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", 4) => 4;
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_rename(&lfs3, "file000", "dir/moved") => 0;
+        lfs3_remove(&lfs3, last) => 0;
+        lfs3_setattr(&lfs3, "/", 'z', &(uint32_t){0x5a}, sizeof(v)) => 0;
+
+        for (int remount = 0; remount < 2; remount++) {
+            if (remount) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            }
+
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, "dir", &info) => 0;
+            assert(info.type == LFS3_TYPE_DIR);
+            uint8_t rbuf[8];
+            lfs3_file_open(&lfs3, &file, "dir/new", LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, 8) => 4;
+            assert(memcmp(rbuf, "meow", 4) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+            lfs3_stat(&lfs3, "file000", &info) => LFS3_ERR_NOENT;
+            lfs3_stat(&lfs3, "dir/moved", &info) => 0;
+            assert(info.size == 32);
+            lfs3_stat(&lfs3, last, &info) => LFS3_ERR_NOENT;
+            lfs3_getattr(&lfs3, "/", 'z', &v, sizeof(v)) => sizeof(v);
+            assert(v == 0x5a);
+            if (MDIRS != 1) {
+                lfs3_getattr(&lfs3, "/", 'y', &v, sizeof(v))
+                        => LFS3_ERR_NOATTR;
+            }
+            if (MDIRS == 0) {
+                lfs3_getattr(&lfs3, "/", 'x', &v, sizeof(v))
+                        => sizeof(v);
+                assert(v == 0x58);
+            }
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+    } else if (ROLLBACK == 2) {
+        // roll back A while mounted, the next metadata check finds it
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+
+        // put X back, and everything is as it was
+        TEST_ROLLBACK_LOAD(a_pair, a_new);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_getattr(&lfs3, path_a, 'x', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x58);
+        lfs3_getattr(&lfs3, path_b, 'y', &v, sizeof(v)) => sizeof(v);
+        assert(v == 0x59);
+
+        // roll back again, namespace operations on top of the rollback
+        // may fail but must not assert
+        TEST_ROLLBACK_LOAD(a_pair, a_old);
+        int err = lfs3_mkdir(&lfs3, "dir");
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_rename(&lfs3, "file000", "moved");
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_remove(&lfs3, last);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_setattr(&lfs3, "/", 'z', &(uint32_t){0x5a}, sizeof(v));
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        lfs3_unmount(&lfs3) => 0;
+        err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (!err) {
+            err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+        } else {
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+            // keep the unmount below happy
+            lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    for (int j = 0; j < 2; j++) {
+        free(a_old[j]);
+        free(a_new[j]);
+        free(b_old[j]);
+    }
+    #undef TEST_ROLLBACK_LOOKUP
+    #undef TEST_ROLLBACK_SAVE
+    #undef TEST_ROLLBACK_LOAD
+    #undef TEST_ROLLBACK_COMMIT
+'''
+
+# can a flipped bit in the source of a copy end up under a fresh
+# checksum?
+#
+# We flip one bit of committed data, check that lfs3_fs_ck finds it,
+# then make littlefs copy it. With the check option that covers the
+# source the copy must fail with LFS3_ERR_CORRUPT, without it the flip
+# may be copied, and once copied no check can find it. We print which
+# happened
+#
+# SOURCE=0 => mdir compaction, the source is an attr in an mdir
+# SOURCE=1 => B-tree node compaction into a new block, the source is a
+#             fragment in a file's B-tree node
+# SOURCE=2 => crystallization of fragments into a data block, the source
+#             is a fragment in a shrub
+# SOURCE=3 => crystallization of a data block into a new block, the
+#             source is the old data block
+#
+# CK=0 => no checks
+# CK=1 => LFS3_M_CKFETCHES
+# CK=2 => LFS3_M_CKMETAPARITY
+# CK=3 => LFS3_M_CKDATACKSUMS
+[cases.test_ck_launder]
+defines.SOURCE = [0, 1, 2, 3]
+defines.CK = [0, 1, 2, 3]
+# no shrubs for B-tree nodes, and no crystallization to keep fragments
+# there
+defines.SHRUB_SIZE = 'BLOCK_SIZE/4 * (SOURCE != 1)'
+defines.CRYSTAL_THRESH = '(SOURCE == 1) ? BLOCK_SIZE+1 : BLOCK_SIZE/16'
+if = [
+    'LFS3_IFDEF_CKFETCHES(true, CK != 1)',
+    'LFS3_IFDEF_CKMETAPARITY(true, CK != 2)',
+    'LFS3_IFDEF_CKDATACKSUMS(true, CK != 3)',
+]
+in = 'lfs3.c'
+code = '''
+    uint32_t flags = LFS3_M_RDWR
+            | ((CK == 1) ? LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, -1) : 0)
+            | ((CK == 2) ? LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, -1) : 0)
+            | ((CK == 3) ? LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, -1) : 0);
+    // which check options cover which source, metadata parity covers
+    // tags and inline data, fetch checks cover B-tree nodes and data
+    // blocks, data checksums cover data blocks
+    bool covered = (SOURCE == 0) ? (CK == 2)
+            : (SOURCE == 1) ? (CK == 1 || CK == 2)
+            : (SOURCE == 2) ? (CK == 2)
+            : (CK == 1 || CK == 3);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, flags, CFG) => 0;
+
+    // write our source
+    uint8_t wbuf[BLOCK_SIZE];
+    uint32_t prng = 42;
+    for (lfs3_size_t j = 0; j < BLOCK_SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_size_t size;
+    if (SOURCE == 0) {
+        size = 0;
+    } else if (SOURCE == 1 || SOURCE == 2) {
+        // a few fragments
+        size = 3*64;
+        for (lfs3_size_t j = 0; j < size; j += 64) {
+            lfs3_file_write(&lfs3, &file, &wbuf[j], 64) => 64;
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+    } else {
+        // a data block
+        size = BLOCK_SIZE;
+        lfs3_file_write(&lfs3, &file, wbuf, size) => size;
+    }
+    // where we flip, in the second fragment, or in the half of the data
+    // block a rewrite of the first half copies
+    lfs3_size_t pos = (SOURCE == 0) ? 8
+            : (SOURCE == 3) ? 3*BLOCK_SIZE/4
+            : 64+8;
+    lfs3_file_close(&lfs3, &file) => 0;
+    if (SOURCE == 0) {
+        lfs3_setattr(&lfs3, "octopus", 'a', wbuf, 16) => 0;
+    }
+
+    // find the byte we flip, and for B-tree nodes the end of the node's
+    // last commit
+    lfs3_block_t block;
+    lfs3_size_t off;
+    lfs3_size_t eoff = -1;
+    if (SOURCE == 0) {
+        lfs3_mdir_t mdir;
+        lfs3_data_t data;
+        lfs3_lookupattr(&lfs3, "octopus", 'a', &mdir, &data) => 0;
+        assert(lfs3_data_ondisk(&data));
+        assert(lfs3_data_size(&data) == 16);
+        block = data.u.disk.block;
+        off = data.u.disk.off + pos;
+    } else {
+        lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, pos, &bid, &weight, &bptr) => 0;
+        assert(lfs3_data_ondisk(&bptr.d));
+        assert(lfs3_bptr_isbptr(&bptr) == (SOURCE == 3));
+        lfs3_off_t start = bid - (weight-1);
+        block = bptr.d.u.disk.block;
+        off = bptr.d.u.disk.off + (pos - start);
+        if (SOURCE == 1) {
+            // in a B-tree node, not a shrub
+            assert(!lfs3_rbyd_isshrub(&file.b.b.r));
+            assert(block == file.b.b.r.blocks[0]);
+            lfs3_rbyd_t rbyd;
+            lfs3_rbyd_fetch(&lfs3, &rbyd, block, 0) => 0;
+            eoff = lfs3_rbyd_eoff(&rbyd);
+            assert(eoff < BLOCK_SIZE);
+        } else if (SOURCE == 2) {
+            assert(lfs3_rbyd_isshrub(&file.b.b.r));
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    printf("flipping 0x%x.%x+1\n", block, off);
+
+    // flip a bit in our source, and for B-tree nodes disturb the erased
+    // state so the next commit compacts the node into a new block
+    lfs3_emubd_flipbit(CFG, block, 8*off + 1) => 0;
+    if (SOURCE == 1) {
+        lfs3_emubd_flipbit(CFG, block, 8*eoff + 7) => 0;
+    }
+    lfs3_bd_droprcache(&lfs3);
+
+    // a check before the copy finds the flip
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+
+    // now make littlefs copy it
+    int err;
+    if (SOURCE == 0) {
+        lfs3_mdir_t mdir;
+        const char *path = "octopus";
+        lfs3_mtree_pathlookup(&lfs3, &path, &mdir, NULL) => LFS3_TAG_REG;
+        lfs3_mdir_claim(&mdir);
+        err = lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+                LFS3_RATTR(3, LFS3_TAG_ATTR('b'), 0, LFS3_FROM_DATA),
+                LFS3_RATTR_ARG(4),
+                LFS3_RATTR_ARG("meow"),
+                LFS3_RATTR_NULL));
+    } else {
+        err = lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDWR);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        if (!err) {
+            lfs3_ssize_t d;
+            if (SOURCE == 1) {
+                // a commit to the B-tree node
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                d = lfs3_file_write(&lfs3, &file, "meow", 4);
+            } else if (SOURCE == 2) {
+                // enough data to crystallize the fragments
+                lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END) => size;
+                d = lfs3_file_write(&lfs3, &file, &wbuf[size],
+                        BLOCK_SIZE/8);
+            } else {
+                // rewrite the first half of the block, the second half
+                // is copied into the new block
+                for (lfs3_size_t j = 0; j < BLOCK_SIZE/2; j++) {
+                    wbuf[j] = 'A' + (j % 26);
+                }
+                d = lfs3_file_write(&lfs3, &file, wbuf, BLOCK_SIZE/2);
+            }
+            assert(d >= 0 || d == LFS3_ERR_CORRUPT);
+            err = (d < 0) ? (int)d : 0;
+            int err_ = lfs3_file_close(&lfs3, &file);
+            assert(!err_ || err_ == LFS3_ERR_CORRUPT);
+            if (!err) {
+                err = err_;
+            }
+        }
+    }
+    assert(!err || err == LFS3_ERR_CORRUPT);
+
+    // with the check option that covers the source, the copy is refused
+    if (covered) {
+        assert(err == LFS3_ERR_CORRUPT);
+    }
+
+    // was the flip copied into a fresh checksum? a check after the copy
+    // still finds the flip if the source is still in use
+    int ck = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+    assert(!ck || ck == LFS3_ERR_CORRUPT);
+    if (err) {
+        // a refused copy leaves the flip where a check finds it
+        assert(ck == LFS3_ERR_CORRUPT);
+        printf("SOURCE=%d CK=%d: copy refused\n", (int)SOURCE, (int)CK);
+    } else {
+        // the copy reads without an error, flipped or not
+        uint8_t rbuf[BLOCK_SIZE+1];
+        uint8_t c;
+        if (SOURCE == 0) {
+            lfs3_getattr(&lfs3, "octopus", 'a', rbuf, 16) => 16;
+            c = rbuf[pos];
+        } else {
+            lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+            lfs3_file_seek(&lfs3, &file, pos, LFS3_SEEK_SET) => pos;
+            lfs3_file_read(&lfs3, &file, &c, 1) => 1;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        printf("SOURCE=%d CK=%d: copy done, %s, check after the copy %s\n",
+                (int)SOURCE, (int)CK,
+                (c != wbuf[pos]) ? "laundered" : "copied clean",
+                (ck) ? "finds the flip" : "passes");
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
