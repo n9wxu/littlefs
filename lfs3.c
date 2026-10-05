@@ -6449,6 +6449,32 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
 
         goto recurse;
 
+    split_nofit:;
+        // our split balances what the rbyd holds, not what our commit
+        // adds, so a few large entries, names near name_limit on small
+        // blocks, can leave the commit no room in its half
+        //
+        // try once more, splitting just after the entry our commit starts
+        // at, which leaves what the commit inserts after that entry to
+        // the right half, if that doesn't fit either we're out of space
+        {
+            lfs3_srid_t rid_;
+            lfs3_stag_t tag = lfs3_rbyd_lookupnext(lfs3, &child, rid, 0,
+                    &rid_, NULL, NULL);
+            if (tag < 0 && tag != LFS3_ERR_NOENT) {
+                return tag;
+            }
+            lfs3_srid_t split_rid_ = (tag == LFS3_ERR_NOENT)
+                    ? (lfs3_srid_t)child.weight
+                    : rid_+1;
+
+            if (split_rid_ == split_rid) {
+                return LFS3_ERR_NOSPC;
+            }
+            split_rid = split_rid_;
+            goto split_relocate_l;
+        }
+
     split:;
         // we should have something to split here
         LFS3_ASSERT(split_rid > 0
@@ -6464,7 +6490,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         // copy over tags < split_rid
         err = lfs3_rbyd_compact(lfs3, child_, &child, -1, split_rid);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_l;
@@ -6473,13 +6502,13 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         }
 
         // append pending rattrs < split_rid
-        //
-        // upper layers should make sure this can't fail by limiting the
-        // maximum commit size
         err = lfs3_rbyd_appendrattrs(lfs3, child_, rid, -1, split_rid,
                 bcommit->rattrs);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_l;
@@ -6490,7 +6519,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         // finalize commit
         err = lfs3_rbyd_appendcksum(lfs3, child_);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_l;
@@ -6508,7 +6540,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         // copy over tags >= split_rid
         err = lfs3_rbyd_compact(lfs3, &sibling, &child, split_rid, -1);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_r;
@@ -6517,13 +6552,13 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         }
 
         // append pending rattrs >= split_rid
-        //
-        // upper layers should make sure this can't fail by limiting the
-        // maximum commit size
         err = lfs3_rbyd_appendrattrs(lfs3, &sibling, rid, split_rid, -1,
                 bcommit->rattrs);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_r;
@@ -6534,7 +6569,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         // finalize commit
         err = lfs3_rbyd_appendcksum(lfs3, &sibling);
         if (err) {
-            LFS3_ASSERT(err != LFS3_ERR_RANGE);
+            // doesn't fit? try another split
+            if (err == LFS3_ERR_RANGE) {
+                goto split_nofit;
+            }
             // bad prog? try another block
             if (err == LFS3_ERR_CORRUPT) {
                 goto split_relocate_r;

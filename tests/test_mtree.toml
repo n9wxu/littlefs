@@ -6361,7 +6361,9 @@ defines.COUNT = 32
 defines.STEPS = 200
 # after seeds 0 to 7, seeds that leave mdirs, the mroot in particular,
 # too full for a removal to split them, found at 512, 1024 and 4096-byte
-# blocks in that order (issue #23)
+# blocks in that order (issue #23), then a seed that fills an mtree node
+# with three names near name_limit at 512-byte blocks, so a balanced split
+# leaves no room for the mdir split it carries (issue #25)
 defines.SEED = [
     'range(8)',
     169, 511, 519, 593, 649, 995, 1089, 1276, 1317, 1409, 1577, 1636,
@@ -6369,6 +6371,7 @@ defines.SEED = [
     3162, 3176, 3257, 3355, 3437, 3506, 3682, 3686, 3712, 3803, 3979,
     94, 1211, 1287, 2069, 2358, 3144, 3343, 4069,
     2022, 2204,
+    637,
 ]
 defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_ATOMIC',
