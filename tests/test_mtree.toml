@@ -7023,6 +7023,8 @@ code = '''
     assert(eoff % PROG_SIZE == 0);
     lfs3_size_t cksize = lfs3_ecksum_cksize(&lfs3, eoff);
     assert(cksize >= PROG_SIZE);
+    uint32_t rev;
+    lfs3_bd_read(&lfs3, block, 0, 0, &rev, sizeof(uint32_t)) => 0;
     lfs3_unmount(&lfs3) => 0;
 
     // disturb the erased region
@@ -7034,11 +7036,16 @@ code = '''
         lfs3_emubd_flipbit(CFG, block, 8*(eoff + cksize-1) + 3) => 0;
     }
 
-    // remount and commit again
+    // remount and commit again, a disturbed erased region reads as a torn
+    // tail, so the mount may settle the mdir into its other block
     lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
     TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
-    assert(mdir.r.blocks[0] == block);
-    if (DISTURB) {
+    bool settled = mdir.r.blocks[0] != block;
+    if (settled) {
+        assert(DISTURB);
+        assert(mdir.r.blocks[1] == block);
+        assert(lfs3_rbyd_issettled(&mdir.r));
+    } else if (DISTURB) {
         // fetch must not trust the disturbed erased state
         assert(lfs3_rbyd_eoff(&mdir.r) >= BLOCK_SIZE);
     } else {
@@ -7047,10 +7054,16 @@ code = '''
     v = 2;
     lfs3_setattr(&lfs3, "target", 'a', &v, sizeof(v)) => 0;
 
-    // a disturbed mdir is compacted into its other block, an undisturbed
-    // one appended to
+    // a disturbed mdir is compacted into its other block, or its settled
+    // copy compacted back into the disturbed block after erasing it, an
+    // undisturbed one appended to
     TEST_ECKSUM_DISTURB_LOOKUP(&mdir);
-    if (DISTURB) {
+    if (settled) {
+        assert(mdir.r.blocks[0] == block);
+        uint32_t rev_;
+        lfs3_bd_read(&lfs3, block, 0, 0, &rev_, sizeof(uint32_t)) => 0;
+        assert(rev_ != rev);
+    } else if (DISTURB) {
         assert(mdir.r.blocks[0] != block);
         assert(mdir.r.blocks[1] == block);
     } else {
