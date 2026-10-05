@@ -950,6 +950,24 @@ struct lfs3_fsinfo {
     lfs3_off_t file_limit;
 };
 
+// Filesystem health structure, see lfs3_fs_health
+struct lfs3_health {
+    // Blocks in use, bad blocks still in use included
+    lfs3_block_t inuse;
+
+    // Blocks marked bad, on disk or waiting to be, these are never
+    // written again. Always 0 without the gbmap.
+    lfs3_block_t bad;
+
+    // Blocks a read or check failed on since mount, see
+    // lfs3_fs_nextsuspect, these count as in use or free as well. Always
+    // 0 without LFS3_GBMAP.
+    lfs3_block_t suspect;
+
+    // Good blocks not in use, what's left to write
+    lfs3_block_t free;
+};
+
 // Traversal info structure
 struct lfs3_tinfo {
     // Type of the block
@@ -2205,6 +2223,19 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
 // Returns the number of allocated blocks, or LFS3_ERR_IO or
 // LFS3_ERR_CORRUPT if a read fails.
 lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
+
+// Report the filesystem's health
+//
+// Counts the blocks in use, the bad blocks, the suspect blocks, and the
+// good blocks left to write, in one traversal of the filesystem, so the
+// application can act before it runs out, for example logging less or
+// rotating sooner as bad blocks take space. Blocks that copy-on-write
+// structures share, and bad blocks still in use, may count twice, so
+// free never overstates what can be written.
+//
+// Returns 0 on success, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read
+// fails.
+int lfs3_fs_health(lfs3_t *lfs3, struct lfs3_health *health);
 
 // Get the current filesystem checksum
 //

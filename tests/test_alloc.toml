@@ -1429,3 +1429,75 @@ code = '''
     free(wbuf);
     free(rbuf);
 '''
+
+# test that lfs3_fs_health counts what a traversal finds
+#
+# the blocks in use, no bad or suspect blocks, and the rest free, as
+# files come and go, and with the gbmap, a block marked bad
+[cases.test_alloc_health]
+defines.N = 16
+defines.SIZE = '2*BLOCK_SIZE'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    uint8_t wbuf[SIZE];
+    memset(wbuf, 'a', SIZE);
+    lfs3_block_t bads = 0;
+    for (int step = 0; step < 4; step++) {
+        // write or remove some files
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            if (step == 2 && i % 2 == 0) {
+                lfs3_remove(&lfs3, name) => 0;
+            } else if (step < 2) {
+                lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+            }
+        }
+
+        // with the gbmap, mark a free block bad
+        #ifdef LFS3_GBMAP
+        if (GBMAP && step == 3) {
+            for (lfs3_block_t b = BLOCK_COUNT-1;; b--) {
+                int err = lfs3_fs_mkbad(&lfs3, b);
+                assert(!err || err == LFS3_ERR_BUSY);
+                if (!err) {
+                    bads += 1;
+                    break;
+                }
+            }
+        }
+        #endif
+
+        // count what a traversal finds in use
+        lfs3_block_t inuse = 0;
+        lfs3_trv_t trv;
+        lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+        while (true) {
+            struct lfs3_tinfo tinfo;
+            int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            inuse += 1;
+        }
+        lfs3_trv_close(&lfs3, &trv) => 0;
+
+        struct lfs3_health health;
+        lfs3_fs_health(&lfs3, &health) => 0;
+        assert(health.inuse == inuse);
+        assert(health.bad == bads);
+        assert(health.suspect == 0);
+        assert(health.free == BLOCK_COUNT - inuse - bads);
+        assert((lfs3_sblock_t)(health.inuse + health.bad)
+                == lfs3_fs_usage(&lfs3));
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''

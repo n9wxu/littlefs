@@ -19280,7 +19280,8 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
     return 0;
 }
 
-lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
+// count the blocks a traversal finds, this may count shared blocks twice
+static lfs3_sblock_t lfs3_fs_inuse(lfs3_t *lfs3) {
     lfs3_block_t count = 0;
     lfs3_mtrv_t mtrv;
     lfs3_mtrv_init(&mtrv, LFS3_T_RDONLY);
@@ -19310,6 +19311,15 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
         }
     }
 
+    return count;
+}
+
+lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
+    lfs3_sblock_t count = lfs3_fs_inuse(lfs3);
+    if (count < 0) {
+        return count;
+    }
+
     // count bad blocks, these can't be used either
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
     if (lfs3_f_isgbmap(lfs3->flags) && !lfs3_m_isdegraded(lfs3->flags)) {
@@ -19329,6 +19339,40 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
     #endif
 
     return count;
+}
+
+int lfs3_fs_health(lfs3_t *lfs3, struct lfs3_health *health) {
+    lfs3_sblock_t inuse = lfs3_fs_inuse(lfs3);
+    if (inuse < 0) {
+        return inuse;
+    }
+
+    // bad blocks, marked or waiting to be, and suspect blocks
+    lfs3_block_t bad = 0;
+    lfs3_block_t suspect = 0;
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    for (lfs3_block_t block = 0;; block++) {
+        lfs3_sblock_t block_ = lfs3_fs_nextbad(lfs3, block);
+        if (block_ < 0) {
+            if (block_ == LFS3_ERR_NOENT) {
+                break;
+            }
+            return block_;
+        }
+
+        bad += 1;
+        block = block_;
+    }
+    suspect = lfs3->gbmap.suspects.count;
+    #endif
+
+    health->inuse = inuse;
+    health->bad = bad;
+    health->suspect = suspect;
+    health->free = ((lfs3_block_t)inuse + bad < lfs3->block_count)
+            ? lfs3->block_count - (lfs3_block_t)inuse - bad
+            : 0;
+    return 0;
 }
 
 // get the filesystem checksum

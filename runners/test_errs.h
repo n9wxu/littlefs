@@ -69,6 +69,7 @@ int test_err(const char *func, int err);
 #define lfs3_trv_rewind(...)     TEST_ERR(lfs3_trv_rewind, __VA_ARGS__)
 #define lfs3_fs_stat(...)        TEST_ERR(lfs3_fs_stat, __VA_ARGS__)
 #define lfs3_fs_usage(...)       TEST_ERR(lfs3_fs_usage, __VA_ARGS__)
+#define lfs3_fs_health(...)      TEST_ERR(lfs3_fs_health, __VA_ARGS__)
 #define lfs3_fs_cksum(...)       TEST_ERR(lfs3_fs_cksum, __VA_ARGS__)
 #define lfs3_fs_mkconsistent(...) \
         TEST_ERR(lfs3_fs_mkconsistent, __VA_ARGS__)

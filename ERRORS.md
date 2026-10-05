@@ -324,10 +324,11 @@ pair, until `lfs3_fs_mkconsistent` clears the mark.
 When the action is **Fail**, the application decides how to keep going. In
 order of how much they cost:
 
-1. **Report.** Log the code and the call. For health, `lfs3_fs_nextbad` and
-   `lfs3_fs_nextsuspect` list the blocks marked bad and the blocks whose
-   reads failed, `lfs3_fs_usage` the blocks in use, and `lfs3_fs_stat`'s
-   flags the pending work.
+1. **Report.** Log the code and the call. For health, `lfs3_fs_health`
+   counts the blocks in use, bad, suspect and left to write,
+   `lfs3_fs_nextbad` and `lfs3_fs_nextsuspect` list the blocks marked bad
+   and the blocks whose reads failed, and `lfs3_fs_stat`'s flags the
+   pending work and a degraded mount.
 2. **Give up on the file, not the filesystem.** Remove a damaged file, or
    leave it and write to a new one; the other files stay usable.
 3. **Remount read-only** (`LFS3_M_RDONLY`) and keep serving what can be

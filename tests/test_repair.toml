@@ -940,6 +940,14 @@ code = '''
     assert(usage >= 0);
     assert((lfs3_block_t)(BLOCK_COUNT - usage) == nfree);
 
+    // and all of it in one call
+    struct lfs3_health health;
+    lfs3_fs_health(&lfs3, &health) => 0;
+    assert(health.bad == BADS);
+    assert(health.suspect == SUSPECTS);
+    assert(health.free == nfree);
+    assert(health.inuse + health.bad == (lfs3_block_t)usage);
+
     lfs3_unmount(&lfs3) => 0;
     free(bad);
     free(suspect);
