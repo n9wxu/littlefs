@@ -1474,16 +1474,19 @@ defines; procedure; pass and fail; extension needed.
 
 - **File and case:** `tests/test_mount.toml`, `test_mount_readerror`.
   B-DEF, B-YGB and B-BIG.
-- **Covers:** ERR-05, INT-26.
-- **Defines:** `RDONLY` false and true; `N` 1 and 8 (the mroot only);
-  `ERR` `LFS3_ERR_IO` and `LFS3_ERR_CORRUPT`; `CK_RETRIES` 0 and 3.
+- **Covers:** ERR-05, INT-26, DEG-03.
+- **Defines:** `RDONLY` false and true; `N` 1 and 8 (the mroot only) and
+  64 (an mtree); `ERR` `LFS3_ERR_IO` and `LFS3_ERR_CORRUPT`;
+  `CK_RETRIES` 0 and 3.
 - **Procedure:** Make `N` directories and files, then mount once for
   each read the mount makes, failing that read with `ERR`
   (`lfs3_emubd_mkioerror`). After each mount that succeeds, read every
   directory and file, run `lfs3_fs_ck`, and unmount.
 - **Pass:** each mount returns 0, or the injected error when the failing
-  read was reached; IO never mounts once reached; every mount that
-  succeeds finds everything as written and checks.
+  read was reached; IO never mounts once reached; only a read-only mount
+  after a failed `LFS3_ERR_CORRUPT` read reports `LFS3_I_DEGRADED`; every
+  mount that succeeds finds everything as written, and checks unless
+  degraded.
 - **Fail:** a mount that swallows IO, or that succeeds with a directory
   or file missing or older: a metadata pair fell back on a failed read.
 - **Extension:** none.
@@ -1504,6 +1507,31 @@ defines; procedure; pass and fail; extension needed.
   than `CK_RETRIES`, else `LFS3_ERR_CORRUPT`; everything reads once the
   block does, before and after the remount, and checks.
 - **Fail:** the first version: the fetch fell back to the older block.
+- **Extension:** none.
+
+#### NEW-142 `mount::degraded`
+
+- **File and case:** `tests/test_mount.toml`, `test_mount_degraded`,
+  internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-03.
+- **Defines:** `DAMAGE` 0 (both blocks of the pair fail every read), 1
+  (both erased) and 2 (both rolled back to an older copy, after a commit
+  to another mdir, so the gcksum doesn't check); `WHICH` 0 (the first
+  mdir of the mtree, with the root's bookmark) and 1 (the last).
+- **Procedure:** Write files until the mtree has three mdirs, note which
+  files the chosen mdir holds, damage it, then mount read-write, read-only
+  with `LFS3_M_CKMETA`, and read-only. Read every file, list the root,
+  call `lfs3_fs_cksum`, `lfs3_fs_ck` and `lfs3_fs_nextbad`. For `DAMAGE`
+  0, let the pair read again and mount read-write.
+- **Pass:** the first two mounts return `LFS3_ERR_CORRUPT`; the read-only
+  mount returns 0 with `LFS3_I_DEGRADED` and without `LFS3_I_GBMAP`;
+  files outside the pair read as written, inside it they return
+  `LFS3_ERR_CORRUPT` (`DAMAGE` 2: read as rolled back); the listing
+  stops at the pair with `LFS3_ERR_CORRUPT`, or fails to open with
+  `WHICH` 0; the cksum and the checks return `LFS3_ERR_CORRUPT`, nextbad
+  lists nothing; once the pair reads, everything reads and checks.
+- **Fail:** a failed read-only mount, a wrong or missing file outside the
+  pair, data inside it without an error, or a read-write mount.
 - **Extension:** none.
 
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`

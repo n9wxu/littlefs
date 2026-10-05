@@ -1687,7 +1687,8 @@ while it cannot read every block that might reference it.
   B-DEF and B-YGB.
 - **Fail:** any other error, a write to a referenced block, or a crash.
 - **Verified by:** NEW.
-- **Status:** Untested. See open question Q6 on a degraded mount.
+- **Status:** Untested. The read-only half: LFS3-DEG-03 (Q6 settled),
+  allocation: LFS3-DEG-04.
 - **When:** every CI run.
 
 #### LFS3-FAIL-05
@@ -6798,8 +6799,9 @@ littlefs shall document the limits of its error detection.
 - **Measure:** DESIGN.md or `lfs3.h`.
 - **Pass:** the documentation states that a rollback of the most recent
   commit, or of the whole image, is detectable only with a checksum kept
-  outside the device (`lfs3_fs_cksum`); that a gcksum mismatch makes the
-  mount fail with no degraded mode; that a change after mount is found only
+  outside the device (`lfs3_fs_cksum`); that a gcksum mismatch makes a
+  read-write mount fail, and a read-only one degraded (LFS3-DEG-03); that
+  a change after mount is found only
   by the next check; and that data blocks are verified only with
   `LFS3_M_CKFETCHES`, `LFS3_M_CKDATACKSUMS` or a ckdata check; and that a
   flipped bit read from the source of a copy (mdir compaction, B-tree node
@@ -7216,20 +7218,64 @@ readable and writable, and the damaged file can be removed.
 
 #### LFS3-DEG-03
 
-littlefs shall mount a filesystem with a damaged metadata pair in a degraded
-mode that gives read access to everything stored in undamaged pairs.
+littlefs shall mount read-only, in a degraded mode, a filesystem with a
+damaged metadata pair in the mtree, or whose global checksum or global
+state doesn't check: `lfs3_mount` with `LFS3_M_RDONLY` and no check flags
+shall succeed and report `LFS3_I_DEGRADED`, every file in an undamaged
+pair shall read as stored, and operations that need a damaged pair shall
+return `LFS3_ERR_CORRUPT`. A read-write mount, or a mount with
+`LFS3_M_CKMETA` or `LFS3_M_CKDATA`, of such a filesystem shall return
+`LFS3_ERR_CORRUPT`.
 
-- **Source:** Proposal. At `b10efaa` one unreadable mdir or a global checksum
-  mismatch makes the whole volume unmountable (4-integrity R11; the mount code
-  has TODOs for a degraded mode). For an unreachable unit that is total loss.
-- **Measure:** mount result and reads after corrupting one non-root mdir.
-- **Pass:** a degraded mount (a mount flag, or automatic with an
-  `LFS3_I_*` flag reporting it) succeeds read-only; every file outside the
-  damaged pair reads correctly; operations on the damaged pair return
-  `LFS3_ERR_CORRUPT`.
-- **Fail:** mount fails, or a file outside the damaged pair is unreadable.
-- **Verified by:** NEW (`mount::degraded`).
-- **Status:** Not implemented.
+- **Source:** Proposal (issue #21; principle 2). At `b10efaa` one
+  unreadable mdir or a global checksum mismatch makes the whole volume
+  unmountable (4-integrity R11; the mount code has TODOs for a degraded
+  mode). For an unreachable unit that is total loss. Decided from the
+  principles, Q6 (b): automatic for read-only mounts, reported by a flag,
+  not an opt-in mount flag. A read-only mount writes nothing, so serving
+  what reads risks nothing, and firmware that doesn't know the flag still
+  keeps its undamaged files, where an opt-in flag would leave it with
+  none. A read-write mount can't degrade: a damaged pair takes its share
+  of the gcksum and of the global state (grm, gbmap) with it, so every
+  commit would build on wrong deltas, and the next mount would find a
+  mismatch even once the pair reads again; turning a read-write mount
+  read-only would make the next write assert (Q2). Check flags ask for a
+  verdict on the whole filesystem, and the damage is it.
+- **Measure:** mount results, `lfs3_fs_stat` flags and reads after making
+  one mdir of the mtree unreadable (read errors), unchecked (erased) or
+  rolled back (an older copy, so the gcksum doesn't check), first the mdir
+  with the root's bookmark, then the last.
+- **Pass:** `mount::degraded`: `lfs3_mount` read-write, and read-only
+  with `LFS3_M_CKMETA`, return `LFS3_ERR_CORRUPT`; read-only returns 0
+  with `LFS3_I_RDONLY` and `LFS3_I_DEGRADED`, and without `LFS3_I_GBMAP`;
+  `lfs3_get` and `lfs3_stat` read every file outside the damaged pair as
+  written, and return `LFS3_ERR_CORRUPT` inside it (a rolled-back pair
+  reads as it was); `lfs3_dir_read` lists entries up to the damaged pair,
+  then returns `LFS3_ERR_CORRUPT` again and again, and `lfs3_dir_open` of
+  a directory whose bookmark is in it returns `LFS3_ERR_CORRUPT`;
+  `lfs3_fs_cksum` and `lfs3_fs_ck` return `LFS3_ERR_CORRUPT`;
+  `lfs3_fs_nextbad` lists nothing; once the pair reads again a read-write
+  mount finds everything and checks. `mount::fail_nowrite` (a gcksum
+  mismatch) and `ck::rollback` mount read-only degraded, read-write not;
+  `mount::readerror` with `N` 64 (an mtree) mounts read-only degraded
+  around an mdir whose read failed, and every file reads. In B-DEF, B-YGB
+  and B-BIG.
+- **Fail:** a read-only mount that fails over a damaged pair of the mtree,
+  a file outside it unreadable or wrong, wrong data inside it without an
+  error, or a read-write mount that succeeds.
+- **Verified by:** `mount::degraded` (NEW-142), `mount::fail_nowrite`,
+  `ck::rollback`, `mount::readerror` (NEW-140).
+- **Status:** Not implemented at `6f80e646`.
+- **Limits:** an mroot one of whose blocks doesn't read is taken from
+  the block that does, and the mount degraded, nothing past it could be
+  served otherwise; an mroot with no block that checks, or a damaged
+  B-tree node of the mtree, still fails the mount, a lookup through a
+  damaged node can't be confined to its subtree without checking every
+  fetch; a degraded mount
+  has no pending removes, so a file a power loss left half removed or
+  renamed shows under its old name too, and no gbmap; a directory lists
+  only up to its first damaged pair, the rest of its entries open by
+  name.
 - **When:** before v3-beta.
 
 #### LFS3-DEG-04
@@ -7698,7 +7744,9 @@ an unreadable metadata block fails the mount or blocks all allocation, with
 no fallback ("TODO switch to read-only?", `lfs3.c:15921, 15948`; 4-api R11;
 3-alloc R7). Options: (a) keep the hard failure and document it
 (LFS3-DOC-13); (b) let `LFS3_M_RDONLY` mounts proceed and report the problem
-through an info flag; (c) add an explicit "salvage" mount flag.
+through an info flag; (c) add an explicit "salvage" mount flag. Settled by
+principle 2 (graceful degradation): (b), `LFS3_I_DEGRADED`, see
+LFS3-DEG-03 for why not (c).
 
 **Q7. Is an open, never-synced file a child of its directory?** At
 `b10efaa` `lfs3_remove` of the directory returns `LFS3_ERR_NOTEMPTY`
