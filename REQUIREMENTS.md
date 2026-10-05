@@ -7459,12 +7459,14 @@ and the good blocks left to write; `lfs3_fs_nextbad` and
 #### LFS3-DEG-10
 
 littlefs shall offer repairs smaller than a reformat: moving the contents of
-a block that reads unreliably to a new block, removing a damaged file, and
-rebuilding the gbmap; `lfs3_fs_ck`, and a mount with `LFS3_M_CKMETA` or
-`LFS3_M_CKDATA`, shall make the first of these on a writable filesystem when
-`ck_retries` allows, and shall return `LFS3_ERR_CORRUPT` only for damage
-they could not read or repair; and the documentation shall recommend the
-smallest repair that applies.
+a block that reads unreliably to a new block, removing a damaged file
+(LFS3-DEG-02), and rebuilding the gbmap (LFS3-DEG-08); `lfs3_fs_ck`, and a
+mount with `LFS3_M_CKMETA` or `LFS3_M_CKDATA`, shall make the first of these
+on a writable filesystem when `ck_retries` allows, and shall return
+`LFS3_ERR_CORRUPT` only for damage they could not read or repair; and
+ERRORS.md shall list the repairs as the Rebuild steps of
+`LFS3_ERR_CORRUPT`, smallest first, ending, for a damaged metadata pair,
+with the degraded read-only mount (LFS3-DEG-03) to copy out what reads.
 
 - **Source:** Proposal (issues #19, #20). A reformat loses every file, which
   on an unreachable unit is the same as replacing it. A move copies exactly
@@ -7495,7 +7497,11 @@ smallest repair that applies.
   `lfs3_fs_nextsuspect`, and the damaged file can still be removed
   (LFS3-DEG-02). On a read-only mount nothing is moved and nothing is
   written. `gbmap::rmmkgbmap`: `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`
-  rebuild the gbmap.
+  rebuild the gbmap; `badblocks::gbmap_root`: a gbmap that doesn't read
+  is rebuilt at the next write. ERRORS.md's Rebuild steps for
+  `LFS3_ERR_CORRUPT`, reviewed: read again with `ck_retries`, remove the
+  damaged file, let the gbmap rebuild, mount read-only to copy out what a
+  damaged metadata pair leaves, then reformat.
 - **Fail:** a repair that loses undamaged data, writes bytes that did not
   pass their checksum, reports an error for damage it repaired, or a
   repairable block left unrepaired on a writable mount.
@@ -7509,8 +7515,10 @@ smallest repair that applies.
   newer block fell back to the older one without an error (issue #6,
   LFS3-INT-26). mtree nodes were not moved at `6f80e646`, that needed a
   commit through the mtree and the mroot, as gbmap nodes have; one that
-  needed a retry stayed listed as suspect. Rebuilding a damaged
-  directory needs the degraded mount of LFS3-DEG-03.
+  needed a retry stayed listed as suspect. A damaged metadata pair, a
+  directory's entries, has no repair in place: the degraded read-only
+  mount (LFS3-DEG-03) copies out what reads before a reformat; a repair
+  that drops the pair needs the decision of Q27.
 - **When:** every CI run.
 
 #### LFS3-DEG-11
@@ -7974,6 +7982,21 @@ never has to undo a success. It stays the one documented exception to
 LFS3-ERR-05, with its state in ERRORS.md, and `errs::ioerror` checks it.
 Open to the maintainer's review.
 
+
+**Q27. Repairing a damaged metadata pair in place.** A metadata pair that
+doesn't read or check makes read-write mounts fail (LFS3-DEG-03), so today
+the only way back to a writable filesystem is to copy out what a degraded
+read-only mount serves and reformat. Options: (a) keep it so; (b) an
+explicit call, for example a check flag accepted only on a mount opened for
+repair, that drops each damaged mdir from the mtree, losing its entries,
+commits a gcksum and global state rebuilt from the mdirs left, clears
+pending removes, rebuilds the gbmap, and removes, or gathers into a
+lost+found directory, the entries whose directory's bookmark was in the
+dropped mdir; (c) for a pair with one block that reads, an explicit call
+that rewrites the pair from that block, accepting that it may be older.
+Principles 2 and 4 say any of these must be the application's call, never
+automatic; the API, and what becomes of orphaned entries, is the owner's
+choice.
 
 ## 9. Requirements that need new tests
 

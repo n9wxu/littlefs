@@ -78,16 +78,25 @@ fail once and pass later. Reads that fail are listed by
 
 **Rebuild**, with the smallest repair that works:
 
-1. Run `lfs3_fs_ck(lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)` with `ck_retries`
-   set (we suggest 3). It reads failing blocks again, and on a writable
-   filesystem moves the data of any block that needed a retry to a new
-   block. If it returns 0, retry the call.
-2. If it still returns `LFS3_ERR_CORRUPT`, find the damaged files with
-   `lfs3_file_ck` and remove or rewrite them. A gbmap that doesn't read is
-   built again at the next write; `lfs3_fs_stat` reports `LFS3_I_MKGBMAP`
-   until then.
-3. Only damaged metadata leaves no repair but a reformat, which loses
-   everything, see [Contingencies](#contingencies).
+1. **Read again.** Run `lfs3_fs_ck(lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)`
+   with `ck_retries` set (we suggest 3). It reads failing blocks again,
+   and on a writable filesystem moves what needed a retry to a new block,
+   data blocks and the B-tree nodes of files, the mtree and the gbmap, and
+   settles an mdir into its other block. If it returns 0, retry the call.
+2. **Remove the damaged file.** If the check still returns
+   `LFS3_ERR_CORRUPT`, find the damaged files with `lfs3_file_ck` and
+   remove them, or rewrite them from a copy kept elsewhere. A removal
+   doesn't read the damage and leaves the other files as they were, and
+   writes that needed a scan for free blocks work again once nothing
+   references the damage.
+3. **Let the gbmap rebuild.** A gbmap that doesn't read is built again at
+   the next write; until then `lfs3_fs_stat` reports `LFS3_I_MKGBMAP` and
+   checks return `LFS3_ERR_CORRUPT`. The bad blocks it marked are marked
+   again as they fail.
+4. **Copy out, then reformat.** A damaged metadata pair, entries of a
+   directory, has no repair in place, and the next read-write mount
+   fails. Mount read-only, which mounts degraded, see below, copy out
+   what reads, then reformat, see [Contingencies](#contingencies).
 
 From `lfs3_mount`, CORRUPT means no filesystem was found, or its
 metadata is damaged: a metadata pair that doesn't read or check, or a

@@ -459,7 +459,10 @@ Most of v2's reasoning still applies, so we'll only go over it briefly:
 1. Each block starts with a 32-bit revision count. The block with the more
    recent revision count, compared with
    [sequence arithmetic][wikipedia-sna], is the active one. If it has no valid
-   commit, littlefs falls back to the other block.
+   commit, littlefs falls back to the other block. A read the block device
+   fails is different: it says nothing about which block is newer or where
+   its log ends, so littlefs reads again, up to `ck_retries` times, and then
+   treats the pair as damaged rather than fall back.
 
 2. New commits are appended to the active block.
 
@@ -1412,9 +1415,13 @@ covers file data and B-tree nodes too, through the chain of checksums
 described above. It is order-sensitive, so two filesystems with the same
 contents can have different gcksums.
 
-Currently a gcksum mismatch at mount is fatal: the mount fails, even
-read-only, and there is no degraded mode. The gcksum costs 4 bytes in each
-commit that carries a delta, and a few ring multiplications per commit.
+A gcksum mismatch at mount fails a read-write mount: some mdir isn't as last
+written, and a commit would build on deltas that don't add up. A read-only
+mount goes on, degraded, and so does one that can't read an mdir of the
+mtree at all: it reports `LFS3_I_DEGRADED`, serves every mdir it can read,
+returns `LFS3_ERR_CORRUPT` for the rest, and does without the global state,
+whose deltas it couldn't all read. The gcksum costs 4 bytes in each commit
+that carries a delta, and a few ring multiplications per commit.
 
 ## Settling after a power loss
 
@@ -1890,17 +1897,23 @@ than once, which catches more bits that read differently each time.
 
 ### What v3 still doesn't handle
 
-1. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
-   goes bad, the filesystem keeps working until littlefs next has to rewrite
-   that block, and from then on writes fail with `LFS3_ERR_NOSPC`. Format
-   also needs blocks 0 and 1 to be good.
+1. **Blocks 0 and 1 must work.** The anchor can't move, though its wear is
+   bounded, see `block_recycles` in `lfs3.h`. If one of its blocks fails an
+   erase or a program, writes that need to rewrite it fail with
+   `LFS3_ERR_NOSPC`. If one stops reading, nothing tells which block is
+   newer: a read-write mount fails, and a read-only mount takes what reads,
+   degraded. Format also needs blocks 0 and 1 to be good.
 
-2. **An unreadable metadata block stops allocation.** Repopulating the
-   lookahead buffer or rebuilding the gbmap traverses the whole filesystem,
-   so a metadata block that can't be read makes every write that needs a
-   traversal fail.
+2. **An unreadable metadata block limits allocation.** A scan for free
+   blocks can't see what it references, so nothing it might reference is
+   freed: with the gbmap, writes go on with the blocks the gbmap knows are
+   free, then fail; without it, every write that needs a scan fails.
 
-3. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
+3. **A damaged metadata pair can't be repaired in place.** A read-only
+   mount serves everything else, degraded, but a read-write mount fails
+   until the filesystem is reformatted.
+
+4. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
    retried when the allocator comes back around to it, and after every
    mount.
 
