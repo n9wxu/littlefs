@@ -9624,3 +9624,192 @@ code = '''
     free(new);
     free(rbuf);
 '''
+
+# damage confined to one file's data
+#
+# A data block or B-tree node of one file that no longer reads makes that
+# file's reads return LFS3_ERR_CORRUPT, and nothing else: every other file
+# reads and writes, and the damaged file can be removed without reading
+# the damage, which leaves its blocks unreferenced (LFS3-DEG-02). A scan
+# for free blocks can't see past a B-tree node it can't read, so without
+# the gbmap, writes that need one fail until the file is removed, and
+# with it, writes use the blocks the gbmap knows are free (LFS3-DEG-04)
+#
+# TARGET=0 => a data block
+# TARGET=1 => the file's B-tree root
+[cases.test_badblocks_confined_data]
+defines.TARGET = [0, 1]
+defines.GBMAP = [false, true]
+defines.SHRUB_SIZE = 'TARGET == 1 ? 0 : BLOCK_SIZE/4'
+defines.FORMAT_BLOCK_COUNT = '(GBMAP) ? 3 : 2'
+defines.N = 8
+defines.SIZE = '4*BLOCK_SIZE'
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write some files
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE);
+    assert(wbuf && rbuf);
+    uint32_t seeds[N];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        seeds[i] = i;
+        uint32_t prng = seeds[i];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // find our target's blocks
+    lfs3_size_t target = N/2;
+    char target_name[256];
+    sprintf(target_name, "spider%03x", target);
+    lfs3_block_t blocks[SIZE/BLOCK_SIZE + 1];
+    lfs3_size_t block_count = 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, target_name, LFS3_O_RDONLY) => 0;
+    assert(TARGET != 1 || !lfs3_bshrub_isbshrub(&file.b));
+    if (!lfs3_bshrub_isbshrub(&file.b)) {
+        blocks[block_count++] = file.b.b.r.blocks[0];
+    }
+    for (lfs3_bid_t pos = 0; pos < SIZE;) {
+        lfs3_bid_t bid;
+        lfs3_bid_t weight;
+        lfs3_bptr_t bptr;
+        lfs3_file_lookupnext(&lfs3, &file, pos, &bid, &weight, &bptr) => 0;
+        assert(lfs3_bptr_isbptr(&bptr));
+        assert(block_count < sizeof(blocks)/sizeof(blocks[0]));
+        blocks[block_count++] = lfs3_bptr_block(&bptr);
+        pos = bid+1;
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_block_t badblock = (TARGET == 0)
+            ? blocks[block_count-1]
+            : blocks[0];
+    lfs3_unmount(&lfs3) => 0;
+
+    // our target no longer reads
+    lfs3_emubd_mktransient(CFG, badblock, 0xffffffff) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // only our target's reads fail
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        int err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+        assert(!err || (i == target && err == LFS3_ERR_CORRUPT));
+        if (err) {
+            continue;
+        }
+        lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf, SIZE);
+        lfs3_file_close(&lfs3, &file) => 0;
+        if (i == target) {
+            assert(d == LFS3_ERR_CORRUPT);
+            continue;
+        }
+        assert(d == SIZE);
+        uint32_t prng = seeds[i];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    }
+
+    // every other file writes, except without the gbmap, where a scan
+    // for free blocks can't see past the damaged B-tree node, the damaged
+    // file can be removed, and then every file writes
+    for (int removed = 0; removed < 2; removed++) {
+        if (removed) {
+            lfs3_remove(&lfs3, target_name) => 0;
+
+            // which leaves its blocks unreferenced
+            lfs3_trv_t trv;
+            lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+            while (true) {
+                struct lfs3_tinfo tinfo;
+                int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err == LFS3_ERR_NOENT) {
+                    break;
+                }
+                for (lfs3_size_t j = 0; j < block_count; j++) {
+                    assert(tinfo.block != blocks[j]);
+                }
+            }
+            lfs3_trv_close(&lfs3, &trv) => 0;
+
+            // the damaged block is free now, as if it recovered, a bad
+            // block would be marked by its next erase or prog
+            lfs3_emubd_mktransient(CFG, badblock, 0) => 0;
+        }
+
+        for (lfs3_size_t i = 0; i < N; i++) {
+            if (i == target) {
+                continue;
+            }
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t seed = (1+removed)*N + i;
+            uint32_t prng = seed;
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            lfs3_file_open(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_TRUNC) => 0;
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, wbuf, SIZE);
+            int err = (d < 0) ? (int)d : lfs3_file_sync(&lfs3, &file);
+            lfs3_file_close(&lfs3, &file);
+            assert(!err || (!removed && TARGET == 1 && !GBMAP
+                    && err == LFS3_ERR_CORRUPT));
+            if (!err) {
+                assert(d == SIZE);
+                seeds[i] = seed;
+            }
+        }
+    }
+
+    // nothing left doesn't check
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // and everything is still there after a remount
+    for (int remount = 0; remount < 2; remount++) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, target_name, &info) => LFS3_ERR_NOENT;
+        for (lfs3_size_t i = 0; i < N; i++) {
+            if (i == target) {
+                continue;
+            }
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+            lfs3_file_close(&lfs3, &file) => 0;
+            uint32_t prng = seeds[i];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+    free(wbuf);
+    free(rbuf);
+'''
