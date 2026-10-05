@@ -117,18 +117,27 @@ enum lfs3_err {
     LFS3_ERR_NOMEM       = -12,  // No more memory available
     LFS3_ERR_NOATTR      = -61,  // No data/attr available
     LFS3_ERR_NAMETOOLONG = -36,  // File name too long
+    LFS3_ERR_BADFD       = -77,  // File handle in bad state
     LFS3_ERR_RANGE       = -34,  // Result out of range
 };
+
+// Each function lists the codes it can return. What each code means, what
+// to do about it, and the state each call leaves after an error, are in
+// ERRORS.md. LFS3_ERR_UNKNOWN and LFS3_ERR_RANGE are never returned. Any
+// other negative code a block device callback returns, or with
+// LFS3_THREADSAFE the lock or unlock callback, is passed through unchanged
+// by the function that called it.
 
 // Note on errors from functions that write
 //
 // Most errors leave the filesystem as it was before the call. An error
 // from the sync callback after a commit has been programmed is different:
-// the commit is already readable, so littlefs keeps it, finishes the
-// operation as though the sync succeeded, and then returns the sync error.
-// The operation's effect is visible right away. A power-loss before the
-// next successful sync may undo it, the device decides, but either way the
-// filesystem mounts consistently, with or without it.
+// the commit is already readable, so littlefs keeps it and returns the
+// sync error once. The call's change has then happened, or, if the kept
+// commit came before the one that makes it, not, but never in part, and
+// RAM and disk agree. A power-loss before the next successful sync may
+// undo a kept commit, the device decides, but the filesystem mounts
+// consistently, with or without it.
 
 // File types
 //
@@ -544,8 +553,8 @@ struct lfs3_cfg {
     // are propagated to the user.
     //
     // littlefs syncs after each commit. If this fails after a commit has
-    // been programmed, the commit is kept and the error is returned after
-    // the operation finishes, see the note on errors above.
+    // been programmed, the commit is kept and the error is returned, see
+    // the note on errors above.
     #ifndef LFS3_RDONLY
     int (*sync)(const struct lfs3_cfg *c);
     #endif
@@ -1571,8 +1580,10 @@ typedef struct lfs3 {
 // With LFS3_F_GBMAP, the gbmap's root goes in the first block from 2 on
 // that erases and progs, and any blocks skipped are marked bad.
 //
-// Returns LFS3_ERR_NOSPC if no block is left for the gbmap's root, or a
-// negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOSPC if no block is left for the
+// gbmap's root, LFS3_ERR_CORRUPT if blocks 0 and 1 can't be written,
+// LFS3_ERR_IO if the block device fails, or LFS3_ERR_NOMEM if a buffer
+// can't be allocated.
 #ifndef LFS3_RDONLY
 int lfs3_format(lfs3_t *lfs3, uint32_t flags,
         const struct lfs3_cfg *cfg);
@@ -1585,34 +1596,54 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // lfs3 and config must be allocated while mounted. The config struct must
 // be zeroed for defaults and backwards compatibility.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_CORRUPT if no filesystem is found or a
+// read fails its check, LFS3_ERR_NOTSUP if the filesystem needs a version,
+// feature or geometry this build or configuration doesn't have, LFS3_ERR_IO
+// if the block device fails, LFS3_ERR_NOMEM if a buffer can't be allocated,
+// or, with mount-time work that writes, LFS3_ERR_NOSPC if the disk is full.
 int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
         const struct lfs3_cfg *cfg);
 
 // Unmounts a littlefs
 //
 // Does nothing besides releasing any allocated resources.
-// Returns a negative error code on failure.
+// Returns 0, unmount never fails.
 int lfs3_unmount(lfs3_t *lfs3);
 
 /// General operations ///
 
 // Get the value of a file
 //
-// Returns the number of bytes read, or a negative error code on failure.
-// Note this may be less than the on-disk file size if the buffer is not
-// large enough.
+// Note the number of bytes read may be less than the on-disk file size if
+// the buffer is not large enough.
+//
+// Returns the number of bytes read, or LFS3_ERR_NOENT if the path, or one
+// of its parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a
+// directory, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_ISDIR if the path is a directory, LFS3_ERR_NOTSUP if the file is
+// of an unknown type, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 lfs3_ssize_t lfs3_get(lfs3_t *lfs3, const char *path,
         void *buffer, lfs3_size_t size);
 
 // Get a file's size
 //
-// Returns the size of the file, or a negative error code on failure.
+// Returns the size of the file, or LFS3_ERR_NOENT if the path, or one of
+// its parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a
+// directory, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_ISDIR if the path is a directory, LFS3_ERR_NOTSUP if the file is
+// of an unknown type, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 lfs3_ssize_t lfs3_size(lfs3_t *lfs3, const char *path);
 
 // Set the value of a file
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_FBIG if the value is larger than
+// file_limit, LFS3_ERR_NOENT if a parent doesn't exist, LFS3_ERR_NOTDIR if
+// a parent isn't a directory, LFS3_ERR_ISDIR if the path is a directory,
+// LFS3_ERR_NAMETOOLONG if the name is longer than name_limit,
+// LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_NOTSUP if the file is of an unknown type, LFS3_ERR_NOSPC if the
+// disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write
+// fails.
 #ifndef LFS3_RDONLY
 int lfs3_set(lfs3_t *lfs3, const char *path,
         const void *buffer, lfs3_size_t size);
@@ -1621,7 +1652,12 @@ int lfs3_set(lfs3_t *lfs3, const char *path,
 // Removes a file or directory
 //
 // If removing a directory, the directory must be empty.
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the path, or one of its
+// parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory,
+// LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_NOTEMPTY if the directory isn't empty, LFS3_ERR_BUSY if the path
+// is the root, LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_remove(lfs3_t *lfs3, const char *path);
 #endif
@@ -1632,8 +1668,15 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 // If the destination is a directory, the directory must be empty.
 // A directory can not be moved into itself or one of its children.
 //
-// Returns LFS3_ERR_INVAL if the destination is inside the source
-// directory, or a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the source, or a parent of
+// either path, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory
+// or a directory would replace a file, LFS3_ERR_ISDIR if a file would
+// replace a directory, LFS3_ERR_NOTEMPTY if the destination is a directory
+// that isn't empty, LFS3_ERR_BUSY if either path is the root,
+// LFS3_ERR_NAMETOOLONG if the new name is longer than name_limit,
+// LFS3_ERR_INVAL if the destination is inside the source directory, or a
+// path is empty or climbs above the root, LFS3_ERR_NOSPC if the disk is
+// full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path);
 #endif
@@ -1641,20 +1684,32 @@ int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path);
 // Find info about a file or directory
 //
 // Fills out the info structure, based on the specified file or directory.
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the path, or one of its
+// parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory,
+// LFS3_ERR_INVAL if the path is empty or climbs above the root, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_stat(lfs3_t *lfs3, const char *path, struct lfs3_info *info);
 
 // Get a custom attribute
 //
-// Returns the number of bytes read, or a negative error code on failure.
-// Note this may be less than the on-disk attr size if the buffer is not
-// large enough.
+// Note the number of bytes read may be less than the on-disk attr size if
+// the buffer is not large enough.
+//
+// Returns the number of bytes read, or LFS3_ERR_NOATTR if the attribute
+// doesn't exist, LFS3_ERR_NOENT if the path, or one of its parents, doesn't
+// exist, LFS3_ERR_NOTDIR if a parent isn't a directory, LFS3_ERR_INVAL if
+// the path is empty or climbs above the root, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read fails.
 lfs3_ssize_t lfs3_getattr(lfs3_t *lfs3, const char *path, uint8_t type,
         void *buffer, lfs3_size_t size);
 
 // Get a custom attribute's size
 //
-// Returns the size of the attribute, or a negative error code on failure.
+// Returns the size of the attribute, or LFS3_ERR_NOATTR if the attribute
+// doesn't exist, LFS3_ERR_NOENT if the path, or one of its parents, doesn't
+// exist, LFS3_ERR_NOTDIR if a parent isn't a directory, LFS3_ERR_INVAL if
+// the path is empty or climbs above the root, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read fails.
 lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 
 // Set a custom attributes
@@ -1662,8 +1717,11 @@ lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 // Custom attributes are stored inline in metadata, so an attribute must fit
 // in a metadata block together with the file's name and other attributes.
 //
-// Returns LFS3_ERR_NOSPC if the attribute does not fit, or a negative error
-// code on failure.
+// Returns 0 on success, or LFS3_ERR_NOSPC if the attribute doesn't fit or
+// the disk is full, LFS3_ERR_NOENT if the path, or one of its parents,
+// doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory,
+// LFS3_ERR_INVAL if the path is empty or climbs above the root, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
         const void *buffer, lfs3_size_t size);
@@ -1671,7 +1729,11 @@ int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
 
 // Removes a custom attribute
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOATTR if the attribute doesn't exist,
+// LFS3_ERR_NOENT if the path, or one of its parents, doesn't exist,
+// LFS3_ERR_NOTDIR if a parent isn't a directory, LFS3_ERR_INVAL if the path
+// is empty or climbs above the root, LFS3_ERR_NOSPC if the disk is full, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 #endif
@@ -1684,7 +1746,16 @@ int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type);
 // The mode that the file is opened in is determined by the flags, which
 // are values from the enum lfs3_open_flags that are bitwise-ored together.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the file doesn't exist and
+// LFS3_O_CREAT isn't given, or a parent doesn't exist, LFS3_ERR_EXIST if
+// the file exists and LFS3_O_CREAT and LFS3_O_EXCL are given,
+// LFS3_ERR_NOTDIR if a parent isn't a directory, LFS3_ERR_ISDIR if the path
+// is a directory, LFS3_ERR_NAMETOOLONG if a new file's name is longer than
+// name_limit, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_NOTSUP if the file is of an unknown type, LFS3_ERR_NOMEM if the
+// file's cache can't be allocated, LFS3_ERR_NOSPC if the disk is full, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails, or with
+// LFS3_O_CKMETA or LFS3_O_CKDATA, a check finds damage.
 #ifndef LFS3_NO_MALLOC
 int lfs3_file_open(lfs3_t *lfs3, lfs3_file_t *file,
         const char *path, uint32_t flags);
@@ -1699,7 +1770,16 @@ int lfs3_file_open(lfs3_t *lfs3, lfs3_file_t *file,
 // above. The config struct must remain allocated while the file is open, and
 // the config struct must be zeroed for defaults and backwards compatibility.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the file doesn't exist and
+// LFS3_O_CREAT isn't given, or a parent doesn't exist, LFS3_ERR_EXIST if
+// the file exists and LFS3_O_CREAT and LFS3_O_EXCL are given,
+// LFS3_ERR_NOTDIR if a parent isn't a directory, LFS3_ERR_ISDIR if the path
+// is a directory, LFS3_ERR_NAMETOOLONG if a new file's name is longer than
+// name_limit, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_NOTSUP if the file is of an unknown type, LFS3_ERR_NOMEM if the
+// file's cache can't be allocated, without fcache_buffer, LFS3_ERR_NOSPC if
+// the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write
+// fails, or with LFS3_O_CKMETA or LFS3_O_CKDATA, a check finds damage.
 int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
         const char *path, uint32_t flags,
         const struct lfs3_file_cfg *cfg);
@@ -1720,7 +1800,10 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
 // result of lfs3_file_sync before closing to know if data reached
 // storage.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or, writing out pending changes, LFS3_ERR_NOSPC if
+// the disk or the file's metadata block is full, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read or write fails. The handle is released either
+// way.
 int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Synchronize a file on storage
@@ -1739,7 +1822,9 @@ int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file);
 // unsynchronized and is desynchronized, so calling lfs3_file_sync again
 // commits and syncs again.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_BADFD if the handle is torn, see
+// lfs3_file_desync, LFS3_ERR_NOSPC if the disk or the file's metadata block
+// is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Flush any buffered data
@@ -1748,7 +1833,9 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file);
 // Calling this explicitly may be useful for preventing write errors in
 // read operations.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_BADFD if the handle is torn,
+// LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
+// a read or write fails.
 int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Mark a file as desynchronized
@@ -1763,12 +1850,14 @@ int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file);
 // An explicit and successful call to either lfs3_file_sync or
 // lfs3_file_resync reverses this, marking the file as synchronized again.
 //
-// Some errors can leave a file partially updated, matching neither its
-// contents before nor after the failed operation. lfs3_file_sync then
-// returns LFS3_ERR_INVAL instead of writing it out, and only
-// lfs3_file_resync can recover the file.
+// Some errors can leave a file handle torn, matching neither the file's
+// contents before nor after the failed operation. Calls that would read,
+// write, flush, sync, check or size it then return LFS3_ERR_BADFD and
+// write nothing, as does lfs3_file_seek from LFS3_SEEK_END. Only
+// lfs3_file_resync, which drops the unsynchronized changes, or closing
+// the file recovers it.
 //
-// Returns a negative error code on failure.
+// Returns 0, desync never fails.
 int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Discard unsynchronized changes and mark a file as synchronized
@@ -1776,13 +1865,16 @@ int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file);
 // This is effectively the same as closing and reopening the file, and
 // may read from disk to figure out file state.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the file has been removed, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_file_resync(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Read data from file
 //
 // Takes a buffer and size indicating where to store the read data.
-// Returns the number of bytes read, or a negative error code on failure.
+// Returns the number of bytes read, or LFS3_ERR_BADFD if the handle is
+// torn, LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails, or, if pending
+// writes must be flushed first, LFS3_ERR_NOSPC if the disk is full.
 lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
         void *buffer, lfs3_size_t size);
 
@@ -1791,7 +1883,10 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
 // Takes a buffer and size indicating the data to write. The file will not
 // actually be updated on the storage until either sync or close is called.
 //
-// Returns the number of bytes written, or a negative error code on failure.
+// Returns the number of bytes written, or LFS3_ERR_FBIG if the file would
+// grow past file_limit, LFS3_ERR_BADFD if the handle is torn,
+// LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
+// a read or write fails.
 #ifndef LFS3_RDONLY
 lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         const void *buffer, lfs3_size_t size);
@@ -1800,7 +1895,9 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
 // Change the position of the file
 //
 // The change in position is determined by the offset and whence flag.
-// Returns the new position of the file, or a negative error code on failure.
+// Returns the new position of the file, or LFS3_ERR_INVAL if it would be
+// past file_limit, or LFS3_ERR_BADFD if the handle is torn and whence is
+// LFS3_SEEK_END.
 lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file,
         lfs3_soff_t off, uint32_t whence);
 
@@ -1809,7 +1906,9 @@ lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file,
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
+// LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_NOSPC if the disk is full,
+// or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 #endif
@@ -1819,7 +1918,9 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
+// LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_NOSPC if the disk is full,
+// or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 #endif
@@ -1827,25 +1928,26 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 // Return the position of the file
 //
 // Equivalent to lfs3_file_seek(lfs3, file, 0, LFS3_SEEK_CUR)
-// Returns the position of the file, or a negative error code on failure.
+// Returns the position of the file, tell never fails.
 lfs3_soff_t lfs3_file_tell(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Change the position of the file to the beginning of the file
 //
 // Equivalent to lfs3_file_seek(lfs3, file, 0, LFS3_SEEK_SET)
-// Returns a negative error code on failure.
+// Returns 0, rewind never fails.
 int lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Return the size of the file
 //
 // Similar to lfs3_file_seek(lfs3, file, 0, LFS3_SEEK_END)
-// Returns the size of the file, or a negative error code on failure.
+// Returns the size of the file, or LFS3_ERR_BADFD if the handle is torn.
 lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file);
 
 // Check a file for errors and other work
 //
-// Returns LFS3_ERR_CORRUPT if a checksum mismatch is found, or a negative
-// error code on failure.
+// Returns 0 on success, or LFS3_ERR_CORRUPT if a checksum mismatch is
+// found, LFS3_ERR_BADFD if the handle is torn, or LFS3_ERR_IO if the block
+// device fails.
 int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags);
 
 
@@ -1853,7 +1955,12 @@ int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags);
 
 // Create a directory
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_EXIST if the path already exists,
+// LFS3_ERR_NOENT if a parent doesn't exist, LFS3_ERR_NOTDIR if a parent
+// isn't a directory, LFS3_ERR_NAMETOOLONG if the name is longer than
+// name_limit, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
+// a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_mkdir(lfs3_t *lfs3, const char *path);
 #endif
@@ -1861,20 +1968,23 @@ int lfs3_mkdir(lfs3_t *lfs3, const char *path);
 // Open a directory
 //
 // Once open a directory can be used with read to iterate over files.
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if the path, or one of its
+// parents, doesn't exist, LFS3_ERR_NOTDIR if the path or a parent isn't a
+// directory, LFS3_ERR_INVAL if the path is empty or climbs above the root,
+// or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_dir_open(lfs3_t *lfs3, lfs3_dir_t *dir, const char *path);
 
 // Close a directory
 //
 // Releases any allocated resources.
-// Returns a negative error code on failure.
+// Returns 0, close never fails.
 int lfs3_dir_close(lfs3_t *lfs3, lfs3_dir_t *dir);
 
 // Read an entry in the directory
 //
 // Fills out the info structure, based on the specified file or directory.
-// Returns 0 on success, LFS3_ERR_NOENT at the end of directory, or a
-// negative error code on failure.
+// Returns 0 on success, LFS3_ERR_NOENT at the end of the directory, or if
+// it has been removed, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_dir_read(lfs3_t *lfs3, lfs3_dir_t *dir, struct lfs3_info *info);
 
 // Change the position of the directory
@@ -1882,7 +1992,7 @@ int lfs3_dir_read(lfs3_t *lfs3, lfs3_dir_t *dir, struct lfs3_info *info);
 // The new off must be a value previous returned from tell and specifies
 // an absolute offset in the directory seek.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off);
 
 // Return the position of the directory
@@ -1890,12 +2000,12 @@ int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off);
 // The returned offset is only meant to be consumed by seek and may not make
 // sense, but does indicate the current position in the directory iteration.
 //
-// Returns the position of the directory, or a negative error code on failure.
+// Returns the position of the directory, tell never fails.
 lfs3_soff_t lfs3_dir_tell(lfs3_t *lfs3, lfs3_dir_t *dir);
 
 // Change the position of the directory to the beginning of the directory
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 int lfs3_dir_rewind(lfs3_t *lfs3, lfs3_dir_t *dir);
 
 
@@ -1909,27 +2019,30 @@ int lfs3_dir_rewind(lfs3_t *lfs3, lfs3_dir_t *dir);
 // Note LFS3_T_PREERASE is accepted, but does nothing. Pre-erasing is
 // only performed by lfs3_fs_gc and lfs3_fs_ck.
 //
-// Returns a negative error code on failure.
+// Returns 0, opening a traversal never fails.
 int lfs3_trv_open(lfs3_t *lfs3, lfs3_trv_t *trv, uint32_t flags);
 
 // Close a traversal
 //
 // Releases any allocated resources.
-// Returns a negative error code on failure.
+// Returns 0, close never fails.
 int lfs3_trv_close(lfs3_t *lfs3, lfs3_trv_t *trv);
 
 // Progress the traversal and read an entry
 //
 // Fills out the tinfo structure.
 //
-// Returns 0 on success, LFS3_ERR_NOENT at the end of traversal, or a
-// negative error code on failure.
+// Returns 0 on success, LFS3_ERR_NOENT at the end of the traversal,
+// LFS3_ERR_BUSY if the traversal was opened with LFS3_T_EXCL and the
+// filesystem changed, LFS3_ERR_CORRUPT if a read fails its check,
+// LFS3_ERR_IO if the block device fails, or, with work flags that write,
+// LFS3_ERR_NOSPC if the disk is full.
 int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv,
         struct lfs3_tinfo *tinfo);
 
 // Reset the traversal
 //
-// Returns a negative error code on failure.
+// Returns 0, rewind never fails.
 int lfs3_trv_rewind(lfs3_t *lfs3, lfs3_trv_t *trv);
 
 
@@ -1938,7 +2051,7 @@ int lfs3_trv_rewind(lfs3_t *lfs3, lfs3_trv_t *trv);
 // Find on-disk info about the filesystem
 //
 // Fills out the fsinfo structure based on the filesystem found on-disk.
-// Returns a negative error code on failure.
+// Returns 0, stat never fails.
 int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
 
 // Finds the number of blocks in use by the filesystem
@@ -1949,7 +2062,8 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
 // With the gbmap, blocks marked bad are included, since they can't be
 // used either.
 //
-// Returns the number of allocated blocks, or a negative error code on failure.
+// Returns the number of allocated blocks, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read fails.
 lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
 
 // Get the current filesystem checksum
@@ -1965,7 +2079,7 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3);
 // Also note this is only a 32-bit checksum. Collisions should be
 // expected.
 //
-// Returns a negative error code on failure.
+// Returns 0, cksum never fails.
 int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum);
 
 // Attempt to make the filesystem consistent and ready for writing
@@ -1975,7 +2089,8 @@ int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum);
 // function allows the work to be performed earlier and without other
 // filesystem changes.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_NOSPC if the disk is full, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_fs_mkconsistent(lfs3_t *lfs3);
 #endif
@@ -1996,8 +2111,9 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3);
 // removed, a damaged gbmap can be rebuilt with lfs3_fs_rmgbmap and
 // lfs3_fs_mkgbmap, and only damaged metadata needs a reformat.
 //
-// Returns LFS3_ERR_CORRUPT if a checksum mismatch is found that reading
-// again doesn't fix, or a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_CORRUPT if a checksum mismatch is found
+// that reading again doesn't fix, LFS3_ERR_IO if the block device fails,
+// or, with work flags that write, LFS3_ERR_NOSPC if the disk is full.
 int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags);
 
 // Perform any janitorial work that may be pending
@@ -2007,7 +2123,9 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags);
 // Calling this function is not required, but may allow the offloading of
 // expensive janitorial work to a less time-critical code path.
 //
-// Returns a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_CORRUPT if a checksum mismatch is found
+// that reading again doesn't fix, LFS3_ERR_IO if the block device fails,
+// or, with work flags that write, LFS3_ERR_NOSPC if the disk is full.
 #ifdef LFS3_GC
 int lfs3_fs_gc(lfs3_t *lfs3);
 #endif
@@ -2021,7 +2139,7 @@ int lfs3_fs_gc(lfs3_t *lfs3);
 // LFS3_I_CANCKMETA and LFS3_I_CANCKDATA. Otherwise littlefs will perform
 // only one scan after mount.
 //
-// Returns a negative error code on failure.
+// Returns 0, unck never fails.
 int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags);
 
 // Change the number of blocks used by the filesystem
@@ -2031,17 +2149,19 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags);
 //
 // Note: This is irreversible.
 //
-// Returns LFS3_ERR_INVAL if block_count is less than the current block
-// count (shrinking is not supported) or more than the configured
-// block_count, or a negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_INVAL if block_count is less than the
+// current block count (shrinking is not supported) or more than the
+// configured block_count, LFS3_ERR_NOSPC if the disk is full, or
+// LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #ifndef LFS3_RDONLY
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count);
 #endif
 
 // Enable the global on-disk block-map
 //
-// Returns LFS3_ERR_EXIST if a gbmap already exists, or a negative error
-// code on failure.
+// Returns 0 on success, or LFS3_ERR_EXIST if a gbmap already exists,
+// LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
+// a read or write fails.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 #endif
@@ -2050,8 +2170,9 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 //
 // Note this forgets any bad blocks, see lfs3_fs_mkbad.
 //
-// Returns LFS3_ERR_NOENT if no gbmap is found, or a negative error code
-// on failure.
+// Returns 0 on success, or LFS3_ERR_NOENT if no gbmap is found,
+// LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
+// a read or write fails.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
 int lfs3_fs_rmgbmap(lfs3_t *lfs3);
 #endif
@@ -2066,10 +2187,10 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3);
 // gbmap's root, and a block device that refuses to erase a known-bad
 // block keeps format from using it for the root.
 //
-// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
-// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap,
-// LFS3_ERR_BUSY if the block is in use, or a negative error code on
-// failure.
+// Returns 0 on success, or LFS3_ERR_INVAL if the block is out of range or
+// one of the mroot anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no
+// gbmap, LFS3_ERR_BUSY if the block is in use, LFS3_ERR_NOSPC if the disk
+// is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block);
 #endif
@@ -2078,9 +2199,10 @@ int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block);
 //
 // The block can be allocated again once it is free.
 //
-// Returns LFS3_ERR_INVAL if the block is out of range or one of the mroot
-// anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no gbmap, or a
-// negative error code on failure.
+// Returns 0 on success, or LFS3_ERR_INVAL if the block is out of range or
+// one of the mroot anchor blocks 0 and 1, LFS3_ERR_NOTSUP if there is no
+// gbmap, LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or
+// LFS3_ERR_CORRUPT if a read or write fails.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block);
 #endif
@@ -2089,8 +2211,8 @@ int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block);
 //
 // This includes bad blocks not yet marked on disk, see LFS3_I_BADBLOCKS.
 //
-// Returns the first bad block >= block, LFS3_ERR_NOENT if there are no
-// more bad blocks, or a negative error code on failure.
+// Returns the first bad block >= block, LFS3_ERR_NOENT if there are no more
+// bad blocks, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read fails.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block);
 #endif
@@ -2104,8 +2226,8 @@ lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block);
 // unmount, an application that wants to keep them must store them
 // itself. Finding them never writes, so read-only mounts find them too.
 //
-// Returns the first suspect block >= block, LFS3_ERR_NOENT if there are
-// no more suspect blocks, or a negative error code on failure.
+// Returns the first suspect block >= block, or LFS3_ERR_NOENT if there are
+// no more suspect blocks.
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 lfs3_sblock_t lfs3_fs_nextsuspect(lfs3_t *lfs3, lfs3_block_t block);
 #endif

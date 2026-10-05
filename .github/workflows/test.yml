@@ -24,7 +24,7 @@ jobs:
         arch: [x86_64, thumb, mips, powerpc]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -98,6 +98,9 @@ jobs:
       # under qemu the full suite takes hours, so the cross archs only run
       # the non-fuzz tests without powerloss here, the nightly runs the
       # rest on the big-endian archs
+      #
+      # TEST_ERRS records the error codes each public function returns,
+      # test-errs checks them against lfs3.h
       - name: test
         run: |
           make clean
@@ -105,7 +108,15 @@ jobs:
           then
             TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
           fi
-          make test
+          mkdir -p errs
+          TEST_ERRS=$PWD/errs/${{matrix.arch}}.txt make test
+      - name: upload-errs
+        if: ${{!cancelled()}}
+        uses: actions/upload-artifact@v6
+        with:
+          name: errs-${{matrix.arch}}
+          path: errs
+          retention-days: 1
 
       # find compile-time measurements
       - name: sizes
@@ -202,7 +213,7 @@ jobs:
 
       # create size statuses
       - name: upload-sizes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: sizes-${{matrix.arch}}
           path: sizes
@@ -248,7 +259,7 @@ jobs:
             }' | tee status/$(basename $f .csv).json
           done
       - name: upload-status-sizes
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: status-sizes-${{matrix.arch}}
           path: status
@@ -265,7 +276,7 @@ jobs:
         arch: [x86_64, mips]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -295,14 +306,23 @@ jobs:
           then
             TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
           fi
-          CFLAGS="$CFLAGS -DLFS3_BIGGEST" make test
+          mkdir -p errs
+          TEST_ERRS=$PWD/errs/biggest-${{matrix.arch}}.txt \
+            CFLAGS="$CFLAGS -DLFS3_BIGGEST" make test
+      - name: upload-errs
+        if: ${{!cancelled()}}
+        uses: actions/upload-artifact@v6
+        with:
+          name: errs-biggest-${{matrix.arch}}
+          path: errs
+          retention-days: 1
 
   # run with LFS3_YES_GBMAP, some tests only run with the gbmap enabled
   test-yes-gbmap:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -312,7 +332,95 @@ jobs:
           python3 --version
       - name: test-yes-gbmap
         run: |
-          CFLAGS="$CFLAGS -DLFS3_YES_GBMAP" make test
+          mkdir -p errs
+          TEST_ERRS=$PWD/errs/yes-gbmap.txt \
+            CFLAGS="$CFLAGS -DLFS3_YES_GBMAP" make test
+      - name: upload-errs
+        if: ${{!cancelled()}}
+        uses: actions/upload-artifact@v6
+        with:
+          name: errs-yes-gbmap
+          path: errs
+          retention-days: 1
+
+  # check the error codes the test jobs recorded against the codes each
+  # function lists in lfs3.h, and that none is internal, see
+  # scripts/ckerrs.py
+  #
+  # this runs on whatever the jobs recorded, even if some failed
+  test-errs:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [test, test-biggest, test-yes-gbmap]
+    if: ${{!cancelled()}}
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq python3
+          python3 --version
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: 'errs-*'
+          merge-multiple: true
+          path: errs
+      - name: test-errs
+        run: |
+          ./scripts/ckerrs.py -v errs/*.txt
+
+  # check that builds with and without LFS3_GBMAP exchange images
+  test-compat-gbmap:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-compat-gbmap
+        run: |
+          make test-compat-gbmap
+
+  # run the bad-block suites without malloc, with static buffers
+  test-nomalloc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-nomalloc
+        run: |
+          make test-nomalloc
+
+  # run the tests with emubd checking that nothing is progged twice
+  # without an erase
+  test-progonce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-progonce
+        run: |
+          make test-progonce
 
   # run with LFS3_NO_ASSERT, the release build, where littlefs's asserts
   # compile out
@@ -337,7 +445,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -358,7 +466,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -395,7 +503,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -422,7 +530,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -443,7 +551,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -461,7 +569,7 @@ jobs:
 
       # create cov statuses
       - name: upload-cov
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: cov
           path: cov
@@ -497,7 +605,7 @@ jobs:
             }' | tee status/$(basename $f .csv)-$s.json
           done
       - name: upload-status-cov
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: status-cov
           path: status
@@ -513,7 +621,7 @@ jobs:
     runs-on: ubuntu-24.04
     needs: [test, cov]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         if: ${{github.event_name == 'pull_request'}}
       - name: install
         if: ${{github.event_name == 'pull_request'}}
@@ -522,14 +630,14 @@ jobs:
           sudo apt-get install -qq gcc python3
           gcc --version
           python3 --version
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{github.event_name == 'pull_request'}}
         continue-on-error: true
         with:
           pattern: '{sizes,sizes-*}'
           merge-multiple: true
           path: sizes
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         if: ${{github.event_name == 'pull_request'}}
         continue-on-error: true
         with:
@@ -659,7 +767,7 @@ jobs:
             body: $comment,
           }' | tee comment/comment.json
       - name: upload-comment
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: comment
           path: comment

@@ -3334,6 +3334,15 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
     return 0;
 }
 
+// number of times to read a block again when it fails a check
+//
+// note this being a function keeps gcc's -Wtype-limits quiet without
+// the gbmap, where it's always 0
+static inline lfs3_size_t lfs3_ckretries(const lfs3_t *lfs3) {
+    (void)lfs3;
+    return LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0);
+}
+
 // check an rbyd against the cksum its parent records, reading it again up
 // to ck_retries times, a read can fail while the supply is low and pass
 // later
@@ -3344,7 +3353,7 @@ static int lfs3_rbyd_ckretry(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
     for (lfs3_size_t i = 0;; i++) {
         int err = lfs3_rbyd_fetchck(lfs3, rbyd, block, trunk, cksum);
         if (err != LFS3_ERR_CORRUPT
-                || i >= LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0)) {
+                || i >= lfs3_ckretries(lfs3)) {
             return err;
         }
 
@@ -3358,7 +3367,7 @@ static int lfs3_bptr_ckretry(lfs3_t *lfs3, const lfs3_bptr_t *bptr) {
     for (lfs3_size_t i = 0;; i++) {
         int err = lfs3_bptr_ck(lfs3, bptr);
         if (err != LFS3_ERR_CORRUPT
-                || i >= LFS3_IFDEF_GBMAP(lfs3->cfg->ck_retries, 0)) {
+                || i >= lfs3_ckretries(lfs3)) {
             return err;
         }
 
@@ -14206,6 +14215,13 @@ lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file,
     // can't read from writeonly files
     LFS3_ASSERT(!lfs3_o_iswronly(file->b.h.flags));
 
+    #ifndef LFS3_RDONLY
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
+    #endif
+
     // note reads are clamped to our file size, which always fits in
     // lfs3_ssize_t, so size can be anything
     lfs3_off_t pos_ = file->pos;
@@ -15366,6 +15382,11 @@ lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
     // can't write to readonly files
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
 
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
+
     // size=0 is a bit special and is guaranteed to have no effects on the
     // underlying file, this means no updating file pos or file size
     //
@@ -15512,6 +15533,13 @@ failed:;
 int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
     (void)lfs3;
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
+
+    #ifndef LFS3_RDONLY
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
+    #endif
 
     // do nothing if our file is already flushed, crystallized,
     // and grafted
@@ -15843,10 +15871,10 @@ int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
         return lfs3_file_resync(lfs3, file);
     }
 
-    // partially grafted? only lfs3_file_resync can recover from this
+    // torn? only lfs3_file_resync can recover
     int err;
     if (lfs3_o_istorn(file->b.h.flags)) {
-        err = LFS3_ERR_INVAL;
+        err = LFS3_ERR_BADFD;
         goto failed;
     }
 
@@ -15973,6 +16001,12 @@ lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file,
     } else if (whence == LFS3_SEEK_CUR) {
         pos_ = file->pos + off;
     } else if (whence == LFS3_SEEK_END) {
+        #ifndef LFS3_RDONLY
+        // torn? only lfs3_file_resync can recover
+        if (lfs3_o_istorn(file->b.h.flags)) {
+            return LFS3_ERR_BADFD;
+        }
+        #endif
         pos_ = lfs3_file_size_(file) + off;
     } else {
         LFS3_UNREACHABLE();
@@ -16007,6 +16041,13 @@ lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file) {
     (void)lfs3;
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
 
+    #ifndef LFS3_RDONLY
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
+    #endif
+
     return lfs3_file_size_(file);
 }
 
@@ -16015,6 +16056,11 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
     // can't write to readonly files
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
+
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
 
     // do nothing if our size does not change
     lfs3_off_t size = lfs3_file_size_(file);
@@ -16111,6 +16157,11 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
     // can't write to readonly files
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
+
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
 
     // do nothing if our size does not change
     lfs3_off_t size = lfs3_file_size_(file);
@@ -16233,6 +16284,13 @@ int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
     LFS3_ASSERT((flags & ~(
             LFS3_CK_CKMETA
                 | LFS3_CK_CKDATA)) == 0);
+
+    #ifndef LFS3_RDONLY
+    // torn? only lfs3_file_resync can recover
+    if (lfs3_o_istorn(file->b.h.flags)) {
+        return LFS3_ERR_BADFD;
+    }
+    #endif
 
     // validate ungrafted data block?
     if (lfs3_t_isckdata(flags)
@@ -17017,7 +17075,7 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
     if (tag < 0) {
         if (tag == LFS3_ERR_NOENT) {
             LFS3_ERROR("No geometry found");
-            return LFS3_ERR_INVAL;
+            return LFS3_ERR_CORRUPT;
         }
         return tag;
     }

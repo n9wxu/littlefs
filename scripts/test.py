@@ -39,6 +39,7 @@ except ModuleNotFoundError:
 
 RUNNER_PATH = ['./runners/test_runner']
 HEADER_PATHS = ['./runners/test_runner.h']
+HOOK_PATHS = ['./runners/test_errs.h']
 
 GDB_PATH = ['gdb']
 GDB_SCRIPTS = ['./scripts/dbg.gdb.py']
@@ -521,6 +522,13 @@ def compile(test_paths, **args):
                 f.writeln("#include \"%s\"" % header)
             f.writeln()
 
+            # hooks may wrap what test code calls, so they go after any
+            # source we compile and before any test code
+            def write_hooks(f):
+                for hook in (args.get('hook') or HOOK_PATHS):
+                    f.writeln("#include \"%s\"" % hook)
+                f.writeln()
+
             # write out generated functions, this can end up in different
             # files depending on the "in" attribute
             #
@@ -621,6 +629,8 @@ def compile(test_paths, **args):
                         f.writeln()
 
             if not args.get('source'):
+                write_hooks(f)
+
                 # write any ifdef prologues
                 if suite.ifdef or suite.ifndef:
                     for ifdef in suite.ifdef:
@@ -789,6 +799,8 @@ def compile(test_paths, **args):
                 with open(args['source']) as sf:
                     shutil.copyfileobj(sf, f)
                 f.writeln()
+
+                write_hooks(f)
 
                 # merge all defines we need, otherwise we will run into
                 # redefinition errors
@@ -2031,6 +2043,12 @@ if __name__ == "__main__":
                 '-i', '--include',
                 help="Inject these header files into every compiled test "
                     "file. Defaults to %r." % HEADER_PATHS)
+        comp_parser.add_argument(
+                '--hook',
+                action='append',
+                help="Inject these header files after any source and before "
+                    "any test code, so they can wrap what tests call. "
+                    "Defaults to %r." % HOOK_PATHS)
         comp_parser.add_argument(
                 '--no-internal',
                 action='store_true',

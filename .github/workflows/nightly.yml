@@ -32,7 +32,7 @@ jobs:
         pls: [none, linear]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -100,7 +100,7 @@ jobs:
             cflags: -DLFS3_BIGGEST
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -124,7 +124,7 @@ jobs:
         value: ['0x00', '-1']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -164,7 +164,7 @@ jobs:
             slow: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -186,7 +186,7 @@ jobs:
     timeout-minutes: 360
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -214,7 +214,7 @@ jobs:
         behavior: [0, 1, 2, 3, 4]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -254,7 +254,7 @@ jobs:
           - TRACE
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -278,7 +278,7 @@ jobs:
         disk: [nor, nand]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: install
         run: |
           # need a few things
@@ -312,7 +312,7 @@ jobs:
 
       # create bench statuses
       - name: upload-bench
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: bench-${{matrix.disk}}
           path: bench
@@ -348,7 +348,7 @@ jobs:
             }' | tee status/$(basename $f .csv)-$s.json
           done
       - name: upload-status-bench
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: status-bench-${{matrix.disk}}
           path: status

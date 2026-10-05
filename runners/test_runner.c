@@ -635,6 +635,63 @@ static void test_malloc_reset(void) {
 }
 
 
+// error recording, see runners/test_errs.h
+//
+// each line is "function error case", written whole and flushed, so
+// runners running in parallel can append to the same file
+static const struct test_case *test_err_case = NULL;
+
+int test_err(const char *func, int err) {
+    if (err >= 0) {
+        return err;
+    }
+
+    static const char *path = NULL;
+    static FILE *file = NULL;
+    if (!path) {
+        path = getenv("TEST_ERRS");
+        if (!path) {
+            path = "";
+        } else if (path[0]) {
+            file = fopen(path, "a");
+            if (!file) {
+                fprintf(stderr, "error: could not open %s: %d\n",
+                        path, -errno);
+                exit(-1);
+            }
+        }
+    }
+    if (!file) {
+        return err;
+    }
+
+    // only record each pair once
+    static struct test_err_seen {
+        const char *func;
+        int err;
+    } *seen = NULL;
+    static size_t seen_count = 0;
+    static size_t seen_capacity = 0;
+    for (size_t i = 0; i < seen_count; i++) {
+        if (seen[i].err == err && strcmp(seen[i].func, func) == 0) {
+            return err;
+        }
+    }
+    struct test_err_seen *s = mappend((void**)&seen,
+            sizeof(struct test_err_seen),
+            &seen_count,
+            &seen_capacity);
+    s->func = func;
+    s->err = err;
+
+    fprintf(file, "%s %d %s\n",
+            func, err,
+            (test_err_case) ? test_err_case->name : "-");
+    fflush(file);
+    return err;
+}
+
+
 // caches for littlefs without malloc
 #ifdef LFS3_NO_MALLOC
 void *test_buffer(int i, size_t size) {
@@ -2600,6 +2657,7 @@ void perm_run(
 
     // run the test, possibly under powerloss
     test_malloc_reset();
+    test_err_case = case_;
     powerloss->run(powerloss, suite, case_);
 }
 

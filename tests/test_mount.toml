@@ -1796,6 +1796,33 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that we fail if we find no geometry, an mroot without one isn't
+# littlefs, so this is corruption, not a bad argument
+[cases.test_mount_no_geometry]
+in = 'lfs3.c'
+code = '''
+    // create a superblock
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // delete the geometry
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+            LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_GEOMETRY, 0),
+            LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount should now fail
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+'''
+
 # test that we fail to mount incompatible block sizes
 [cases.test_mount_incompat_block_size]
 defines.INC_BLOCK_SIZE = ['BLOCK_SIZE/2', 'BLOCK_SIZE*2']
