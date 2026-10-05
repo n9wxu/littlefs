@@ -1426,6 +1426,33 @@ returns `LFS3_ERR_CORRUPT` for the rest, and does without the global state,
 whose deltas it couldn't all read. The gcksum costs 4 bytes in each commit
 that carries a delta, and a few ring multiplications per commit.
 
+## Salvaging damaged metadata
+
+A metadata pair that doesn't read fails a read-write mount, since its share
+of the global checksum and state is gone with it. `LFS3_M_SALVAGE` gives
+that share up. The mount starts over degraded, so fetches take what reads
+and traversals skip an mdir nothing reads, still counting its blocks in use
+so nothing allocates over them. Each mroot, then each mdir of the mtree,
+that fails a strict fetch is rewritten into a new pair from what reads of
+it, through an ordinary compaction forced to relocate, or, if nothing
+reads, dropped from the mtree; the first mdir, which holds the root's
+bookmark, is replaced by a new mdir holding only that.
+
+A drop takes entries other mdirs need. Entries are sorted by directory id,
+so the salvage walks them once per id and removes every id no directory
+entry names, until none is left, a directory has one name, so this
+can't cycle; then every directory left gets a bookmark if it lost one.
+Pending removes are cleared and a new gbmap is built. The global checksum
+goes last: the deltas read so far don't sum to the cube of the checksum,
+and that difference goes into the mroot's delta in the salvage's final
+commit, so until then a mount without the flag still finds a mismatch, and
+a power loss during the salvage leaves the filesystem damaged rather than
+half repaired.
+
+With the gbmap, the blocks of a pair given up on that failed reads are
+tested like any block data was moved off of, and marked bad if they still
+fail.
+
 ## Settling after a power loss
 
 Checksums tell littlefs whether a commit is whole. They can't tell it
@@ -1912,9 +1939,11 @@ than once, which catches more bits that read differently each time.
    freed: with the gbmap, writes go on with the blocks the gbmap knows are
    free, then fail; without it, every write that needs a scan fails.
 
-3. **A damaged metadata pair can't be repaired in place.** A read-only
-   mount serves everything else, degraded, but a read-write mount fails
-   until the filesystem is reformatted.
+3. **A damaged metadata pair costs what it holds.** A read-only mount
+   serves everything else, degraded, and `LFS3_M_SALVAGE` makes the
+   filesystem writable again by rewriting the pair from a block that
+   still reads, losing the commits since its last compaction, or by
+   dropping it with its entries and the directories it named.
 
 4. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
    retried when the allocator comes back around to it, and after every

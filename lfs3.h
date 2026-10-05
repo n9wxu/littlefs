@@ -102,8 +102,10 @@ typedef uint32_t lfs3_ocompat_t;
 
 // Maximum number of blocks kept in RAM that littlefs failed to write as
 // the next state of a metadata pair, so a read that fails on one never
-// stops the pair's other block being read. Each costs a block address in
-// lfs3_t. If more fail, the oldest are forgotten. Limited to <= 32.
+// stops the pair's other block being read, and that a salvage gave up on,
+// which it keeps out of use, see LFS3_M_SALVAGE. Each costs a block
+// address in lfs3_t. If more fail, the oldest are forgotten. Limited to
+// <= 32.
 #ifndef LFS3_MFAILED_SIZE
 #define LFS3_MFAILED_SIZE 4
 #endif
@@ -342,6 +344,9 @@ enum lfs3_type {
 #endif
 #ifndef LFS3_RDONLY
 #define LFS3_M_SETTLE   0x00004000  // Settle metadata written since last mount
+#endif
+#ifndef LFS3_RDONLY
+#define LFS3_M_SALVAGE  0x00000002  // Rewrite, else drop, damaged metadata
 #endif
 #define LFS3_M_CKMETA   0x00001000  // Check metadata checksums
 #define LFS3_M_CKDATA   0x00002000  // Check metadata + data checksums
@@ -1699,8 +1704,9 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // read fails its check, LFS3_ERR_NOTSUP if the filesystem needs a version,
 // feature or geometry this build or configuration doesn't have, LFS3_ERR_IO
 // if the block device fails, LFS3_ERR_NOMEM if a buffer can't be allocated,
-// or, with mount-time work that writes, LFS3_ERR_NOSPC if the disk is full.
-// A read-only mount of damaged metadata succeeds, degraded, see below.
+// or, with mount-time work that writes, LFS3_M_SALVAGE included,
+// LFS3_ERR_NOSPC if the disk is full. A read-only mount of damaged
+// metadata succeeds, degraded, see below.
 //
 // Note on damage
 //
@@ -1723,6 +1729,25 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // mount can't order, so near the end of a device's life a read-write
 // mount can fail where a read-only one mounts degraded. See ERRORS.md
 // for the smallest repair.
+//
+// LFS3_M_SALVAGE repairs damaged metadata in place, at the cost of what
+// the damage holds, instead of failing a read-write mount. A pair one of
+// whose blocks reads, and checks, is rewritten from it into a new pair,
+// losing at most the commits made to it since it last compacted. A pair
+// of the mtree no block reads is dropped, losing the entries it held,
+// and with them every directory it named, contents and all; a directory
+// whose bookmark it held keeps its other entries under a new bookmark,
+// the root included. The global checksum and state are rebuilt: no
+// pending removes, so a file a power loss left half removed or renamed
+// may keep its old name too, and a new gbmap, whose bad-block marks are
+// found again as blocks fail. With LFS3_GBMAP, the blocks of a pair given
+// up on that failed reads are tested, and marked bad if they still fail.
+// Blocks a dropped pair referenced may be reused, so it stays lost even
+// if it would read later. With no damage the flag does nothing. A power
+// loss during a salvage leaves the filesystem damaged, so a read-write
+// mount without the flag fails, until a salvage completes. An mroot with
+// no block that checks, or a damaged B-tree node of the mtree, leaves
+// nothing to salvage from, LFS3_ERR_CORRUPT.
 //
 // Note on power loss
 //

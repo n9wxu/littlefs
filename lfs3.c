@@ -8024,6 +8024,17 @@ static inline bool lfs3_m_isdegraded(uint32_t flags) {
     return flags & LFS3_I_DEGRADED;
 }
 
+// a read-write mount is only ever degraded while it salvages
+static inline bool lfs3_m_issalvaging(uint32_t flags) {
+    return lfs3_m_isdegraded(flags) && !lfs3_m_isrdonly(flags);
+}
+
+#ifndef LFS3_RDONLY
+static inline bool lfs3_m_issalvage(uint32_t flags) {
+    return flags & LFS3_M_SALVAGE;
+}
+#endif
+
 // a gbmap that didn't read, we do without it until it's rebuilt
 #ifdef LFS3_GBMAP
 static inline bool lfs3_i_ismkgbmap(uint32_t flags) {
@@ -8800,10 +8811,11 @@ static int lfs3_mdir_fetch_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
 // so read again, up to ck_retries times, rather than take an older
 // state for the latest, a pair that never reads is damaged
 //
-// a read-only mount, which builds nothing on it, takes what reads and
-// reports itself degraded
-static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
-        lfs3_smid_t mid, const lfs3_block_t mptr[static 2]) {
+// lenient takes what reads once the reads run out, and reports the
+// mount degraded
+static int lfs3_mdir_fetchretry(lfs3_t *lfs3, lfs3_mdir_t *mdir,
+        lfs3_smid_t mid, const lfs3_block_t mptr[static 2],
+        bool lenient) {
     // mptr may reference the blocks in the mdir
     const lfs3_block_t mptr_[2] = {mptr[0], mptr[1]};
     for (lfs3_size_t i = 0;; i++) {
@@ -8815,7 +8827,7 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         if (i >= lfs3_ckretries(lfs3)) {
             LFS3_ERROR("Can't read mdir 0x{%"PRIx32",%"PRIx32"}",
                     mptr_[0], mptr_[1]);
-            if (lfs3_m_isrdonly(lfs3->flags)) {
+            if (lenient) {
                 LFS3_WARN("Taking what reads of mdir "
                             "0x{%"PRIx32",%"PRIx32"}, degraded",
                         mptr_[0], mptr_[1]);
@@ -8828,6 +8840,15 @@ static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         // read past any cached copy
         lfs3_bd_droprcache(lfs3);
     }
+}
+
+// a read-only mount builds nothing on what it reads, and a salvage
+// rewrites it, so these take what reads
+static int lfs3_mdir_fetch(lfs3_t *lfs3, lfs3_mdir_t *mdir,
+        lfs3_smid_t mid, const lfs3_block_t mptr[static 2]) {
+    return lfs3_mdir_fetchretry(lfs3, mdir, mid, mptr,
+            lfs3_m_isrdonly(lfs3->flags)
+                || lfs3_m_isdegraded(lfs3->flags));
 }
 
 static int lfs3_data_fetchmdir(lfs3_t *lfs3,
@@ -8925,6 +8946,37 @@ static inline lfs3_mid_t lfs3_mtree_weight(lfs3_t *lfs3) {
     return lfs3_max(lfs3->mtree.r.weight, 1 << lfs3->mbits);
 }
 
+// lookup the blocks of the mdir in the mtree containing a given mid,
+// without fetching it
+static int lfs3_mtree_lookupmptr(lfs3_t *lfs3, lfs3_smid_t mid,
+        lfs3_block_t mptr_[static 2]) {
+    lfs3_bid_t bid;
+    lfs3_rbyd_t rbyd;
+    lfs3_srid_t rid;
+    lfs3_bid_t weight;
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_btree_lookupnext_(lfs3, &lfs3->mtree, mid,
+            &bid, &rbyd, &rid, &weight, &data);
+    if (tag < 0) {
+        return lfs3_ckfound(tag);
+    }
+    LFS3_ASSERT((lfs3_sbid_t)bid == lfs3_mbid(lfs3, mid));
+    LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
+    LFS3_ASSERT(tag == LFS3_TAG_MNAME
+            || tag == LFS3_TAG_MDIR);
+
+    // if we found an mname, lookup the mdir
+    if (tag == LFS3_TAG_MNAME) {
+        tag = lfs3_rbyd_lookup(lfs3, &rbyd, rid, LFS3_TAG_MDIR,
+                &data);
+        if (tag < 0) {
+            return lfs3_ckfound(tag);
+        }
+    }
+
+    return lfs3_data_readmptr(lfs3, &data, mptr_);
+}
+
 // lookup mdir containing a given mid
 static int lfs3_mtree_lookup(lfs3_t *lfs3, lfs3_smid_t mid,
         lfs3_mdir_t *mdir_) {
@@ -8945,32 +8997,13 @@ static int lfs3_mtree_lookup(lfs3_t *lfs3, lfs3_smid_t mid,
 
     // look up mdir in actual mtree
     } else {
-        lfs3_bid_t bid;
-        lfs3_srid_t rid;
-        lfs3_bid_t weight;
-        lfs3_data_t data;
-        lfs3_stag_t tag = lfs3_btree_lookupnext_(lfs3, &lfs3->mtree, mid,
-                &bid, &mdir_->r, &rid, &weight, &data);
-        if (tag < 0) {
-            return lfs3_ckfound(tag);
-        }
-        LFS3_ASSERT((lfs3_sbid_t)bid == lfs3_mbid(lfs3, mid));
-        LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
-        LFS3_ASSERT(tag == LFS3_TAG_MNAME
-                || tag == LFS3_TAG_MDIR);
-
-        // if we found an mname, lookup the mdir
-        if (tag == LFS3_TAG_MNAME) {
-            tag = lfs3_rbyd_lookup(lfs3, &mdir_->r, rid, LFS3_TAG_MDIR,
-                    &data);
-            if (tag < 0) {
-                return lfs3_ckfound(tag);
-            }
+        int err = lfs3_mtree_lookupmptr(lfs3, mid, mdir_->r.blocks);
+        if (err) {
+            return err;
         }
 
         // fetch mdir
-        return lfs3_data_fetchmdir(lfs3, &data, mid,
-                mdir_);
+        return lfs3_mdir_fetch(lfs3, mdir_, mid, mdir_->r.blocks);
     }
 }
 
@@ -9098,6 +9131,12 @@ static int lfs3_mdir_swap___(lfs3_t *lfs3, lfs3_mdir_t *mdir_,
         return (force) ? LFS3_ERR_CORRUPT : LFS3_ERR_NOSPC;
     }
     #endif
+
+    // our other block failed a write, or a read a salvage gave up on?
+    // relocate if we can
+    if (!force && lfs3_mdir_findfailed(lfs3, mdir->r.blocks[1]) >= 0) {
+        return LFS3_ERR_NOSPC;
+    }
 
     // swap our blocks
     mdir_->r.blocks[0] = mdir->r.blocks[1];
@@ -11728,6 +11767,25 @@ again:;
         int err = lfs3_mtree_lookup(lfs3, mtrv->h.mdir.mid,
                 &mtrv->h.mdir);
         if (err) {
+            // salvaging? an mdir no block reads is about to be dropped,
+            // until then its blocks stay in use, and it holds nothing
+            #ifndef LFS3_RDONLY
+            if (err == LFS3_ERR_CORRUPT
+                    && lfs3_m_issalvaging(lfs3->flags)) {
+                err = lfs3_mtree_lookupmptr(lfs3, mtrv->h.mdir.mid,
+                        mtrv->h.mdir.r.blocks);
+                if (err) {
+                    return err;
+                }
+                mtrv->h.mdir.r.trunk = 0;
+                mtrv->h.mdir.r.weight = 0;
+                mtrv->h.mdir.r.eoff = -1;
+                mtrv->h.mdir.r.cksum = 0;
+                mtrv->h.mdir.gcksumdelta = 0;
+                bptr_->d.u.buffer = (const uint8_t*)&mtrv->h.mdir;
+                return LFS3_TAG_MDIR;
+            }
+            #endif
             return err;
         }
 
@@ -13301,6 +13359,15 @@ static void lfs3_alloc_inc(lfs3_t *lfs3) {
 }
 #endif
 
+// blocks a salvage found unreadable stay out of use until it ends
+#ifndef LFS3_RDONLY
+static inline bool lfs3_alloc_issalvaged(const lfs3_t *lfs3,
+        lfs3_block_t block) {
+    return lfs3_m_issalvaging(lfs3->flags)
+            && lfs3_mdir_findfailed(lfs3, block) >= 0;
+}
+#endif
+
 // find next free block in lookahead/gbmap, if there is one
 #ifndef LFS3_RDONLY
 static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
@@ -13350,7 +13417,8 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
 
             // free block in our gbmap? not bad?
             if (lfs3->gbmap.next > 0
-                    && !lfs3_alloc_isbad(lfs3, lfs3->gbmap.window)) {
+                    && !lfs3_alloc_isbad(lfs3, lfs3->gbmap.window)
+                    && !lfs3_alloc_issalvaged(lfs3, lfs3->gbmap.window)) {
                 // found a free block
                 #ifdef LFS3_PREERASE
                 if (ecksum_) {
@@ -13368,7 +13436,9 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
                         & (1 << (lfs3->lookahead.off % 8)))
                     && !LFS3_IFDEF_GBMAP(
                         lfs3_alloc_isbad(lfs3, lfs3->lookahead.window),
-                        false)) {
+                        false)
+                    && !lfs3_alloc_issalvaged(lfs3,
+                        lfs3->lookahead.window)) {
                 // found a free block
                 #ifdef LFS3_PREERASE
                 if (ecksum_) {
@@ -18847,15 +18917,14 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
     }
 
     // gstate is the sum of every mdir's deltas, and a damaged mdir takes
-    // its share with it, so a degraded mount does without, no pending
-    // grms, and no gbmap
-    if (lfs3_m_isdegraded(lfs3->flags)) {
-        lfs3_memset(lfs3->grm_d, 0, LFS3_GRM_DSIZE);
-        #ifdef LFS3_GBMAP
+    // its share with it, so a degraded mount does without: no pending
+    // grms, and no gbmap, a salvage builds both again from the sums we
+    // did read
+    #ifdef LFS3_GBMAP
+    if (lfs3_m_isdegraded(lfs3->flags) && lfs3_m_isrdonly(lfs3->flags)) {
         lfs3->flags &= ~LFS3_I_GBMAP;
-        lfs3_memset(lfs3->gbmap_d, 0, LFS3_GBMAP_DSIZE);
-        #endif
     }
+    #endif
 
     // keep track of the current gcksum
     #ifndef LFS3_RDONLY
@@ -18872,21 +18941,27 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
     #endif
 
     // decode grm so we can report any removed files as missing
-    int err = lfs3_data_readgrm(lfs3,
-            &LFS3_DATA_BUF(lfs3->grm_d, LFS3_GRM_DSIZE),
-            &lfs3->grm);
+    int err = (lfs3_m_isdegraded(lfs3->flags))
+            ? LFS3_ERR_CORRUPT
+            : lfs3_data_readgrm(lfs3,
+                &LFS3_DATA_BUF(lfs3->grm_d, LFS3_GRM_DSIZE),
+                &lfs3->grm);
     if (err) {
         // a grm we can't decode? a read-only mount does without
-        if (err != LFS3_ERR_CORRUPT || !lfs3_m_isrdonly(lfs3->flags)) {
+        if (err != LFS3_ERR_CORRUPT
+                || !(lfs3_m_isrdonly(lfs3->flags)
+                    || lfs3_m_isdegraded(lfs3->flags))) {
             return err;
         }
-        LFS3_WARN("Found corrupt grm, mounting degraded");
-        lfs3->flags |= LFS3_I_DEGRADED;
+        if (!lfs3_m_isdegraded(lfs3->flags)) {
+            LFS3_WARN("Found corrupt grm, mounting degraded");
+            lfs3->flags |= LFS3_I_DEGRADED;
+            #ifdef LFS3_GBMAP
+            lfs3->flags &= ~LFS3_I_GBMAP;
+            #endif
+        }
         lfs3->grm.queue[0] = 0;
         lfs3->grm.queue[1] = 0;
-        #ifdef LFS3_GBMAP
-        lfs3->flags &= ~LFS3_I_GBMAP;
-        #endif
     }
 
     // found pending grms? this should only happen if we lost power
@@ -18964,10 +19039,23 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
         //
         lfs3->lookahead.window = lfs3->gcksum % lfs3->block_count;
     }
+
+    // salvaging? the first write builds a new gbmap
+    #ifdef LFS3_GBMAP
+    if (lfs3_m_issalvaging(lfs3->flags) && lfs3_f_isgbmap(lfs3->flags)) {
+        lfs3_gbmap_init(&lfs3->gbmap);
+        lfs3->flags |= LFS3_I_MKGBMAP;
+    }
+    #endif
     #endif
 
     return 0;
 }
+
+// needed in lfs3_mountsettle
+#ifndef LFS3_RDONLY
+static void lfs3_mountreset(lfs3_t *lfs3);
+#endif
 
 // settle any mdirs a power loss may have left reading differently each
 // time, before anything is built on them
@@ -19021,17 +19109,7 @@ static int lfs3_mountsettle(lfs3_t *lfs3) {
     // refetch everything, mount narrows our limits and sets our gbmap
     // flag to what's on disk, so start over from our configuration
     if (settled) {
-        #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
-        lfs3->flags &= ~LFS3_I_GBMAP;
-        #endif
-        lfs3->block_count = lfs3->cfg->block_count;
-        lfs3->name_limit = (lfs3->cfg->name_limit)
-                ? lfs3->cfg->name_limit
-                : LFS3_NAME_MAX;
-        lfs3->file_limit = (lfs3->cfg->file_limit)
-                ? lfs3->cfg->file_limit
-                : LFS3_FILE_MAX;
-
+        lfs3_mountreset(lfs3);
         int err = lfs3_mountinited(lfs3);
         if (err) {
             return err;
@@ -19039,6 +19117,552 @@ static int lfs3_mountsettle(lfs3_t *lfs3) {
     }
 
     return 0;
+}
+#endif
+
+// start a mount over from our configuration, mount narrows our limits
+// and sets our gbmap flag to what's on disk
+#ifndef LFS3_RDONLY
+static void lfs3_mountreset(lfs3_t *lfs3) {
+    #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+    lfs3->flags &= ~LFS3_I_GBMAP;
+    #endif
+    #ifdef LFS3_GBMAP
+    lfs3->flags &= ~LFS3_I_MKGBMAP;
+    #endif
+    lfs3->block_count = lfs3->cfg->block_count;
+    lfs3->name_limit = (lfs3->cfg->name_limit)
+            ? lfs3->cfg->name_limit
+            : LFS3_NAME_MAX;
+    lfs3->file_limit = (lfs3->cfg->file_limit)
+            ? lfs3->cfg->file_limit
+            : LFS3_FILE_MAX;
+}
+#endif
+
+// salvaging damaged metadata, see LFS3_M_SALVAGE
+//
+// a salvage mounts degraded, so fetches take what reads and traversals
+// skip mdirs nothing reads, rewrites each damaged pair one block still
+// reads into a new pair, drops the rest, removes what the drops left
+// unreachable, and only then fixes the gcksum, so a power loss leaves
+// the filesystem damaged until a salvage completes
+
+// needed in lfs3_salvage_retest
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_retest(lfs3_t *lfs3, lfs3_block_t block);
+#endif
+
+// test the blocks of a pair we gave up on that failed reads, they're
+// reused if they work, marked bad if they don't
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_retest(lfs3_t *lfs3,
+        const lfs3_block_t mptr[static 2]) {
+    #ifdef LFS3_GBMAP
+    for (int i = 0; i < 2; i++) {
+        if (lfs3_alloc_findsuspect(lfs3, mptr[i]) < 0) {
+            continue;
+        }
+
+        // nothing else may use it
+        struct lfs3_badq badq;
+        badq.blocks[0] = mptr[i];
+        badq.weights[0] = 1;
+        badq.count = 1;
+        uint32_t inuse;
+        int err = lfs3_alloc_ckinuse(lfs3, &badq, &inuse);
+        if (err) {
+            return err;
+        }
+        if (inuse) {
+            continue;
+        }
+
+        err = lfs3_alloc_retest(lfs3, mptr[i]);
+        if (err) {
+            return err;
+        }
+    }
+    #else
+    (void)lfs3;
+    (void)mptr;
+    #endif
+    return 0;
+}
+#endif
+
+// rewrite any mroot in our chain one block still reads
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_mroots(lfs3_t *lfs3) {
+again:;
+    lfs3_block_t mptr[2] = {0, 1};
+    while (true) {
+        lfs3_mdir_t mdir;
+        int err = lfs3_mdir_fetchretry(lfs3, &mdir, -1, mptr, false);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+
+        if (err) {
+            // keep both blocks out of use, and relocate
+            lfs3_mdir_pushfailed(lfs3, mptr[0]);
+            lfs3_mdir_pushfailed(lfs3, mptr[1]);
+            err = lfs3_mdir_fetchretry(lfs3, &mdir, -1, mptr, true);
+            if (err) {
+                return err;
+            }
+
+            LFS3_WARN("Rewriting mroot 0x{%"PRIx32",%"PRIx32"}",
+                    mptr[0], mptr[1]);
+            err = lfs3_mdir_compact(lfs3,
+                    (lfs3_mdir_cmp(&mdir, &lfs3->mroot) == 0)
+                        ? &lfs3->mroot
+                        : &mdir);
+            if (err) {
+                return err;
+            }
+
+            err = lfs3_salvage_retest(lfs3, mptr);
+            if (err) {
+                return err;
+            }
+            goto again;
+        }
+
+        // on to the next mroot in our chain
+        lfs3_data_t data;
+        lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, &mdir, LFS3_TAG_MROOT,
+                &data);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                return 0;
+            }
+            return tag;
+        }
+
+        err = lfs3_data_readmptr(lfs3, &data, mptr);
+        if (err) {
+            return err;
+        }
+    }
+}
+#endif
+
+// drop an mdir no block reads from the mtree, the first mdir holds the
+// root's bookmark, so it's replaced by a new mdir holding only that
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_drop(lfs3_t *lfs3, lfs3_smid_t mid) {
+    // all in-use blocks are tracked, our mdir's blocks included
+    int err = lfs3_alloc_ckpoint(lfs3);
+    if (err) {
+        return err;
+    }
+
+    lfs3_btree_t mtree_ = lfs3->mtree;
+    if (lfs3_mbid(lfs3, mid) == lfs3_mbid(lfs3, 0)) {
+        lfs3_mdir_t mdir_;
+        while (true) {
+            err = lfs3_mdir_alloc___(lfs3, &mdir_, 0, false);
+            if (err) {
+                return err;
+            }
+
+            err = lfs3_mdir_commit___(lfs3, &mdir_, -1, -2,
+                    0, LFS3_RATTRS(
+                        LFS3_RATTR(2, LFS3_TAG_BOOKMARK, +1,
+                            LFS3_FROM_LEB128),
+                        LFS3_RATTR_ARG(LFS3_DID_ROOT),
+                        LFS3_RATTR_NULL));
+            // bad prog? try another block
+            if (err != LFS3_ERR_CORRUPT) {
+                break;
+            }
+        }
+        if (err) {
+            return err;
+        }
+
+        err = lfs3_mtree_commit(lfs3, &mtree_,
+                lfs3_mbid(lfs3, mid), LFS3_RATTRS(
+                    LFS3_RATTR(2, LFS3_TAG_MDIR, 0, LFS3_FROM_MPTR),
+                    LFS3_RATTR_ARG(mdir_.r.blocks),
+                    LFS3_RATTR_NULL));
+        if (err) {
+            return err;
+        }
+
+    } else {
+        err = lfs3_mtree_commit(lfs3, &mtree_,
+                lfs3_mbid(lfs3, mid), LFS3_RATTRS(
+                    LFS3_RATTR(2, LFS3_tag_RM, -2),
+                    LFS3_RATTR_WEIGHT(-(1 << lfs3->mbits)),
+                    LFS3_RATTR_NULL));
+        if (err) {
+            return err;
+        }
+    }
+
+    // make sure the mtree is on disk before the mroot names it, nothing
+    // between these may checkpoint the allocator
+    err = lfs3_bd_sync(lfs3);
+    if (err) {
+        return err;
+    }
+
+    err = lfs3_mdir_commit_(lfs3, &lfs3->mroot, LFS3_RATTRS(
+            LFS3_RATTR(2, LFS3_tag_MASK8 | LFS3_TAG_MTREE, 0,
+                LFS3_FROM_BTREE),
+            LFS3_RATTR_ARG(&mtree_),
+            LFS3_RATTR_NULL));
+    if (err) {
+        return err;
+    }
+    lfs3->mtree = mtree_;
+    return 0;
+}
+#endif
+
+// rewrite or drop each damaged mdir of our mtree
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_mtree(lfs3_t *lfs3) {
+    lfs3_smid_t mid = 0;
+    while (lfs3->mtree.r.weight != 0
+            && (lfs3_mid_t)mid < lfs3_mtree_weight(lfs3)) {
+        lfs3_block_t mptr[2];
+        int err = lfs3_mtree_lookupmptr(lfs3, mid, mptr);
+        if (err) {
+            return err;
+        }
+
+        lfs3_mdir_t mdir;
+        err = lfs3_mdir_fetchretry(lfs3, &mdir, mid, mptr, false);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+        if (!err) {
+            mid = lfs3_mbid(lfs3, mid) + 1;
+            continue;
+        }
+
+        // keep both blocks out of use, and relocate
+        lfs3_mdir_pushfailed(lfs3, mptr[0]);
+        lfs3_mdir_pushfailed(lfs3, mptr[1]);
+        err = lfs3_mdir_fetchretry(lfs3, &mdir, mid, mptr, true);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+
+        // one block reads? rewrite from it
+        if (!err) {
+            LFS3_WARN("Rewriting mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"}",
+                    lfs3_dbgmbid(lfs3, mid),
+                    mptr[0], mptr[1]);
+            err = lfs3_mdir_compact(lfs3, &mdir);
+            if (err) {
+                return err;
+            }
+            mid = lfs3_mbid(lfs3, mid) + 1;
+
+        // no block reads? drop it, the next mdir takes its mids
+        } else {
+            LFS3_WARN("Dropping mdir %"PRId32" 0x{%"PRIx32",%"PRIx32"}",
+                    lfs3_dbgmbid(lfs3, mid),
+                    mptr[0], mptr[1]);
+            err = lfs3_salvage_drop(lfs3, mid);
+            if (err) {
+                return err;
+            }
+            if (lfs3_mbid(lfs3, mid) == lfs3_mbid(lfs3, 0)) {
+                mid = lfs3_mbid(lfs3, mid) + 1;
+            }
+        }
+
+        err = lfs3_salvage_retest(lfs3, mptr);
+        if (err) {
+            return err;
+        }
+    }
+
+    return 0;
+}
+#endif
+
+// find the name tag of the entry at or after mdir's mid, stepping into
+// the next mdir as needed, LFS3_ERR_NOENT at the end
+#ifndef LFS3_RDONLY
+static lfs3_stag_t lfs3_salvage_next(lfs3_t *lfs3, lfs3_mdir_t *mdir,
+        lfs3_did_t *did_) {
+    while (lfs3_mrid(lfs3, mdir->mid) >= (lfs3_srid_t)mdir->r.weight) {
+        int err = lfs3_mtree_lookup(lfs3,
+                lfs3_mbid(lfs3, mdir->mid-1) + 1,
+                mdir);
+        if (err) {
+            return err;
+        }
+    }
+
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, mdir,
+            LFS3_tag_MASK8 | LFS3_TAG_NAME,
+            &data);
+    if (tag < 0) {
+        return lfs3_ckfound(tag);
+    }
+
+    int err = lfs3_data_readleb128(lfs3, &data, did_);
+    if (err) {
+        return err;
+    }
+    return tag;
+}
+#endif
+
+// read the did a directory entry names
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_did(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
+        lfs3_did_t *did_) {
+    lfs3_data_t data;
+    lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, mdir, LFS3_TAG_DID,
+            &data);
+    if (tag < 0) {
+        return lfs3_ckfound(tag);
+    }
+
+    return lfs3_data_readleb128(lfs3, &data, did_);
+}
+#endif
+
+// give every directory, and the root, a bookmark
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_bookmarks(lfs3_t *lfs3) {
+    lfs3_did_t did = LFS3_DID_ROOT;
+    lfs3_mdir_t mdir;
+    mdir.mid = -1;
+    while (true) {
+        // does our did have a bookmark?
+        lfs3_mdir_t mdir_;
+        lfs3_stag_t tag = lfs3_mtree_namelookup(lfs3, did, NULL, 0,
+                &mdir_, NULL);
+        if (tag < 0 && tag != LFS3_ERR_NOENT) {
+            return tag;
+        }
+        if (tag == LFS3_ERR_NOENT) {
+            LFS3_WARN("Recreating bookmark of did 0x%"PRIx32, did);
+            int err = lfs3_mdir_commit(lfs3, &mdir_, LFS3_RATTRS(
+                    LFS3_RATTR(2, LFS3_TAG_BOOKMARK, +1, LFS3_FROM_LEB128),
+                    LFS3_RATTR_ARG(did),
+                    LFS3_RATTR_NULL));
+            if (err) {
+                return err;
+            }
+
+            // mids moved, start over
+            mdir.mid = -1;
+        }
+
+        // on to the next directory
+        if (mdir.mid == -1) {
+            int err = lfs3_mtree_lookup(lfs3, 0, &mdir);
+            if (err) {
+                return err;
+            }
+        } else {
+            mdir.mid += 1;
+        }
+        while (true) {
+            lfs3_did_t did_;
+            tag = lfs3_salvage_next(lfs3, &mdir, &did_);
+            if (tag < 0) {
+                if (tag == LFS3_ERR_NOENT) {
+                    return 0;
+                }
+                return tag;
+            }
+            if (tag == LFS3_TAG_DIR) {
+                int err = lfs3_salvage_did(lfs3, &mdir, &did);
+                if (err) {
+                    return err;
+                }
+                break;
+            }
+            mdir.mid += 1;
+        }
+    }
+}
+#endif
+
+// does any directory name this did?
+#ifndef LFS3_RDONLY
+static lfs3_sbool_t lfs3_salvage_isnamed(lfs3_t *lfs3, lfs3_did_t did) {
+    lfs3_mdir_t mdir;
+    int err = lfs3_mtree_lookup(lfs3, 0, &mdir);
+    if (err) {
+        return err;
+    }
+
+    while (true) {
+        lfs3_did_t did_;
+        lfs3_stag_t tag = lfs3_salvage_next(lfs3, &mdir, &did_);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                return false;
+            }
+            return tag;
+        }
+
+        if (tag == LFS3_TAG_DIR) {
+            err = lfs3_salvage_did(lfs3, &mdir, &did_);
+            if (err) {
+                return err;
+            }
+            if (did_ == did) {
+                return true;
+            }
+        }
+        mdir.mid += 1;
+    }
+}
+#endif
+
+// remove the entries of directories no name reaches, which may leave
+// more such directories, but never a cycle, a directory has one name
+#ifndef LFS3_RDONLY
+static int lfs3_salvage_orphans(lfs3_t *lfs3) {
+again:;
+    lfs3_mdir_t mdir;
+    int err = lfs3_mtree_lookup(lfs3, 0, &mdir);
+    if (err) {
+        return err;
+    }
+
+    // entries are sorted by did, so check each did once
+    lfs3_did_t checked = LFS3_DID_ROOT;
+    while (true) {
+        lfs3_did_t did;
+        lfs3_stag_t tag = lfs3_salvage_next(lfs3, &mdir, &did);
+        if (tag < 0) {
+            if (tag == LFS3_ERR_NOENT) {
+                return 0;
+            }
+            return tag;
+        }
+
+        if (did != checked) {
+            lfs3_sbool_t named = lfs3_salvage_isnamed(lfs3, did);
+            if (named < 0) {
+                return named;
+            }
+
+            if (!named) {
+                LFS3_WARN("Removing unreachable did 0x%"PRIx32, did);
+                while (true) {
+                    lfs3_stag_t tag_ = lfs3_mtree_namelookup(lfs3,
+                            did, NULL, 0,
+                            &mdir, NULL);
+                    if (tag_ < 0 && tag_ != LFS3_ERR_NOENT) {
+                        return tag_;
+                    }
+
+                    lfs3_did_t did_;
+                    tag_ = lfs3_salvage_next(lfs3, &mdir, &did_);
+                    if (tag_ < 0 && tag_ != LFS3_ERR_NOENT) {
+                        return tag_;
+                    }
+                    if (tag_ == LFS3_ERR_NOENT || did_ != did) {
+                        break;
+                    }
+
+                    err = lfs3_mdir_commit(lfs3, &mdir, LFS3_RATTRS(
+                            LFS3_RATTR(1, LFS3_tag_RM, -1),
+                            LFS3_RATTR_NULL));
+                    if (err) {
+                        return err;
+                    }
+                }
+                goto again;
+            }
+
+            checked = did;
+        }
+        mdir.mid += 1;
+    }
+}
+#endif
+
+#ifndef LFS3_RDONLY
+static int lfs3_mountsalvage(lfs3_t *lfs3) {
+    LFS3_WARN("Salvaging damaged metadata");
+
+    // mount again, degraded, so we read what we can
+    lfs3_mountreset(lfs3);
+    lfs3->flags |= LFS3_I_DEGRADED;
+    int err = lfs3_mountinited(lfs3);
+    if (err) {
+        goto failed;
+    }
+
+    // what our gcksumdeltas are off by, nothing we read accounts for
+    // the damage, this goes in last
+    uint32_t gcksumdelta = lfs3->gcksum_d
+            ^ lfs3_crc32c_cube(lfs3->gcksum);
+
+    // rewrite or drop what doesn't read
+    err = lfs3_salvage_mroots(lfs3);
+    if (err) {
+        goto failed;
+    }
+
+    err = lfs3_salvage_mtree(lfs3);
+    if (err) {
+        goto failed;
+    }
+
+    // remove what no name reaches, and give every directory left, the
+    // root included, a bookmark
+    err = lfs3_salvage_orphans(lfs3);
+    if (err) {
+        goto failed;
+    }
+
+    err = lfs3_salvage_bookmarks(lfs3);
+    if (err) {
+        goto failed;
+    }
+
+    // build our gbmap now, an mroot commit without it would name
+    // nothing
+    err = lfs3_alloc_ckpoint(lfs3);
+    if (err) {
+        goto failed;
+    }
+    #ifdef LFS3_GBMAP
+    if (lfs3_i_ismkgbmap(lfs3->flags)) {
+        err = LFS3_ERR_NOSPC;
+        goto failed;
+    }
+    #endif
+
+    // and fix our gcksum, with our grm cleared and our new gbmap, this
+    // makes the filesystem whole again
+    lfs3->mroot.gcksumdelta ^= gcksumdelta;
+    err = lfs3_mdir_commit(lfs3, &lfs3->mroot, LFS3_RATTRS(
+            LFS3_RATTR_NULL));
+    if (err) {
+        goto failed;
+    }
+
+    // mount as without the salvage
+    lfs3->flags &= ~LFS3_I_DEGRADED;
+    lfs3_mountreset(lfs3);
+    #ifdef LFS3_GBMAP
+    lfs3_gbmap_init(&lfs3->gbmap);
+    #endif
+    LFS3_INFO("Salvaged damaged metadata");
+    return lfs3_mountinited(lfs3);
+
+failed:;
+    lfs3->flags &= ~LFS3_I_DEGRADED;
+    return err;
 }
 #endif
 
@@ -19090,12 +19714,14 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
                     LFS3_IFDEF_PREERASE(LFS3_M_PREERASE, 0))
                 | LFS3_IFDEF_RDONLY(0, LFS3_M_COMPACT)
                 | LFS3_IFDEF_RDONLY(0, LFS3_M_SETTLE)
+                | LFS3_IFDEF_RDONLY(0, LFS3_M_SALVAGE)
                 | LFS3_M_CKMETA
                 | LFS3_M_CKDATA)) == 0);
     // these flags require a writable filesystem
     #ifndef LFS3_RDONLY
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_ismkconsistent(flags));
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_m_issettle(flags));
+    LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_m_issalvage(flags));
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_islookahead(flags));
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(!lfs3_m_isrdonly(flags) || !lfs3_t_ispreerase(flags));
@@ -19127,6 +19753,12 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
     }
 
     err = lfs3_mountinited(lfs3);
+    // damaged? salvage what we can if asked to
+    #ifndef LFS3_RDONLY
+    if (err == LFS3_ERR_CORRUPT && lfs3_m_issalvage(flags)) {
+        err = lfs3_mountsalvage(lfs3);
+    }
+    #endif
     if (err) {
         goto failed;
     }

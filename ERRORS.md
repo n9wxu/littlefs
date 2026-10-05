@@ -93,10 +93,10 @@ fail once and pass later. Reads that fail are listed by
    the next write; until then `lfs3_fs_stat` reports `LFS3_I_MKGBMAP` and
    checks return `LFS3_ERR_CORRUPT`. The bad blocks it marked are marked
    again as they fail.
-4. **Copy out, then reformat.** A damaged metadata pair, entries of a
-   directory, has no repair in place, and the next read-write mount
-   fails. Mount read-only, which mounts degraded, see below, copy out
-   what reads, then reformat, see [Contingencies](#contingencies).
+4. **Copy out, then salvage.** A damaged metadata pair, entries of a
+   directory, fails the next read-write mount. Mount read-only, which
+   mounts degraded, see below, copy out what matters, then salvage, see
+   below.
 
 From `lfs3_mount`, CORRUPT means no filesystem was found, or its
 metadata is damaged: a metadata pair that doesn't read or check, or a
@@ -115,8 +115,22 @@ pair for the latest because a read failed. **Rebuild**:
    from the block that does, which may be the older. Copy out what
    matters. An mroot with no block that checks, or a damaged B-tree node
    of the mtree, still fails this mount.
-3. The filesystem can't be written while it is damaged. Reformat, once
-   what reads has been copied out, see [Contingencies](#contingencies).
+3. Salvage: mount read-write with `LFS3_M_SALVAGE`. It rewrites each
+   damaged pair one block still reads from that block, losing at most
+   the commits made to it since it last compacted, and drops each pair
+   no block reads, losing its entries and the directories it named, with
+   their contents; it removes what the drops left unreachable, recreates
+   the bookmarks they took, and rebuilds the global checksum and state,
+   with no pending removes and a new gbmap. Then the filesystem mounts
+   read-write without the flag. Blocks a dropped pair referenced may be
+   reused, so do this only once the supply is good and what matters is
+   copied out. After a power loss during it, salvage again: until a
+   salvage completes, a read-write mount without the flag fails. From the
+   salvage, `LFS3_ERR_CORRUPT` means nothing could be salvaged from, a
+   damaged mroot chain or B-tree node of the mtree, and `LFS3_ERR_NOSPC`
+   that there was no room to rewrite.
+4. Reformat, once what reads has been copied out, see
+   [Contingencies](#contingencies).
 
 ### `LFS3_ERR_NOSPC`
 

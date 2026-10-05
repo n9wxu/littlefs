@@ -1,0 +1,621 @@
+# Test salvaging damaged metadata with LFS3_M_SALVAGE
+#
+# A read-write mount with LFS3_M_SALVAGE rewrites each damaged metadata
+# pair one block still reads, drops the rest, removes what the drops left
+# unreachable, recreates the bookmarks they took, and rebuilds the global
+# checksum and state (LFS3-DEG-16). These are internal tests so they can
+# find which mdir holds what.
+after = ['test_mount', 'test_badblocks']
+in = 'lfs3.c'
+
+# Test both with and without the gbmap if available
+defines.GBMAP = [false, true]
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+defines.BLOCK_SIZE = 512
+defines.SIZE = 8
+
+code = '''
+#include <setjmp.h>
+
+// a model of what we wrote, and where it is
+#define TEST_SALVAGE_MAX 256
+
+struct test_salvage_entry {
+    char path[64];
+    // index of our parent directory, -1 for the root
+    int parent;
+    bool dir;
+    // the mdir holding our name, and for directories our bookmark
+    lfs3_block_t pair[2];
+    lfs3_block_t bpair[2];
+    lfs3_did_t did;
+    // our contents, and what the older block of a rolled back or
+    // rewritten pair keeps
+    uint32_t seed;
+    uint32_t seed0;
+};
+
+static struct test_salvage_entry test_salvage_e[TEST_SALVAGE_MAX];
+static lfs3_size_t test_salvage_n;
+
+static void test_salvage_content(uint32_t seed, uint8_t *buf,
+        lfs3_size_t size) {
+    uint32_t prng = seed;
+    for (lfs3_size_t i = 0; i < size; i++) {
+        buf[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+}
+
+static int test_salvage_add(const char *path, int parent, bool dir,
+        uint32_t seed) {
+    assert(test_salvage_n < TEST_SALVAGE_MAX);
+    struct test_salvage_entry *e = &test_salvage_e[test_salvage_n];
+    memset(e, 0, sizeof(*e));
+    strcpy(e->path, path);
+    e->parent = parent;
+    e->dir = dir;
+    e->seed = seed;
+    e->seed0 = seed;
+    test_salvage_n += 1;
+    return test_salvage_n-1;
+}
+
+static void test_salvage_write(lfs3_t *lfs3, int i, uint32_t seed,
+        lfs3_size_t size) {
+    uint8_t buf[256];
+    assert(size <= sizeof(buf));
+    test_salvage_content(seed, buf, size);
+    int err = lfs3_set(lfs3, test_salvage_e[i].path, buf, size);
+    assert(!err);
+    test_salvage_e[i].seed = seed;
+}
+
+// two directories with files and a subdirectory, then root files, at
+// least 8, until the mtree has four mdirs
+static void test_salvage_build(lfs3_t *lfs3, lfs3_size_t size) {
+    test_salvage_n = 0;
+    uint32_t seed = 1;
+    char path[64];
+    for (int d = 0; d < 2; d++) {
+        sprintf(path, "aaa%d", d);
+        int err = lfs3_mkdir(lfs3, path);
+        assert(!err);
+        int dir = test_salvage_add(path, -1, true, 0);
+        for (int f = 0; f < 4; f++) {
+            sprintf(path, "aaa%d/f%d", d, f);
+            int i = test_salvage_add(path, dir, false, 0);
+            test_salvage_write(lfs3, i, seed++, size);
+        }
+        if (d == 0) {
+            int err = lfs3_mkdir(lfs3, "aaa0/sub");
+            assert(!err);
+            int sub = test_salvage_add("aaa0/sub", dir, true, 0);
+            for (int f = 0; f < 2; f++) {
+                sprintf(path, "aaa0/sub/g%d", f);
+                int i = test_salvage_add(path, sub, false, 0);
+                test_salvage_write(lfs3, i, seed++, size);
+            }
+        }
+    }
+
+    for (lfs3_size_t n = 0;
+            n < 8 || lfs3->mtree.r.weight < (4U << lfs3->mbits);
+            n++) {
+        sprintf(path, "spider%03d", (int)n);
+        int i = test_salvage_add(path, -1, false, 0);
+        test_salvage_write(lfs3, i, seed++, size);
+    }
+}
+
+// find which mdir holds each name and bookmark
+static void test_salvage_locate(lfs3_t *lfs3) {
+    for (lfs3_size_t i = 0; i < test_salvage_n; i++) {
+        struct test_salvage_entry *e = &test_salvage_e[i];
+        const char *path = e->path;
+        lfs3_mdir_t mdir;
+        lfs3_stag_t tag = lfs3_mtree_pathlookup(lfs3, &path, &mdir, NULL);
+        assert(tag == ((e->dir) ? LFS3_TAG_DIR : LFS3_TAG_REG));
+        e->pair[0] = mdir.r.blocks[0];
+        e->pair[1] = mdir.r.blocks[1];
+
+        if (e->dir) {
+            lfs3_data_t data;
+            tag = lfs3_mdir_lookup(lfs3, &mdir, LFS3_TAG_DID, &data);
+            assert(tag == LFS3_TAG_DID);
+            int err = lfs3_data_readleb128(lfs3, &data, &e->did);
+            assert(!err);
+
+            tag = lfs3_mtree_namelookup(lfs3, e->did, NULL, 0,
+                    &mdir, NULL);
+            assert(tag == LFS3_TAG_BOOKMARK);
+            e->bpair[0] = mdir.r.blocks[0];
+            e->bpair[1] = mdir.r.blocks[1];
+        }
+    }
+}
+
+// does a dropped pair take this entry with it, or its parent?
+static bool test_salvage_isalive(int i, const lfs3_block_t pair[2],
+        bool dropped) {
+    for (; i >= 0; i = test_salvage_e[i].parent) {
+        if (dropped
+                && lfs3_mptr_cmp(test_salvage_e[i].pair, pair) == 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// check everything against the model, rolled back is true if the pair
+// may hold its older state
+static void test_salvage_check(lfs3_t *lfs3, const lfs3_block_t pair[2],
+        bool dropped, bool rolledback, lfs3_size_t size) {
+    for (lfs3_size_t i = 0; i < test_salvage_n; i++) {
+        struct test_salvage_entry *e = &test_salvage_e[i];
+        bool alive = test_salvage_isalive(i, pair, dropped);
+        struct lfs3_info info;
+        int err = lfs3_stat(lfs3, e->path, &info);
+        if (err != ((alive) ? 0 : LFS3_ERR_NOENT)) {
+            printf("stat %s => %d, alive %d\n", e->path, err, alive);
+        }
+        assert(err == ((alive) ? 0 : LFS3_ERR_NOENT));
+        if (!alive) {
+            // nothing of a removed directory may be left
+            if (e->dir) {
+                lfs3_mdir_t mdir;
+                lfs3_stag_t tag = lfs3_mtree_namelookup(lfs3, e->did,
+                        NULL, 0,
+                        &mdir, NULL);
+                assert(tag == LFS3_ERR_NOENT);
+                lfs3_did_t did;
+                tag = lfs3_salvage_next(lfs3, &mdir, &did);
+                assert(tag == LFS3_ERR_NOENT || did != e->did);
+            }
+            continue;
+        }
+
+        assert(info.type == ((e->dir) ? LFS3_TYPE_DIR : LFS3_TYPE_REG));
+        if (!e->dir) {
+            uint8_t rbuf[256];
+            uint8_t wbuf[256];
+            lfs3_ssize_t d = lfs3_get(lfs3, e->path, rbuf, size);
+            assert(d == (lfs3_ssize_t)size);
+            bool older = rolledback
+                    && lfs3_mptr_cmp(e->pair, pair) == 0;
+            test_salvage_content(e->seed, wbuf, size);
+            if (memcmp(rbuf, wbuf, size) != 0) {
+                assert(older);
+                test_salvage_content(e->seed0, wbuf, size);
+                assert(memcmp(rbuf, wbuf, size) == 0);
+            }
+        }
+    }
+
+    // every directory lists exactly what's left in it
+    for (int i = -1; i < (int)test_salvage_n; i++) {
+        if (i >= 0 && (!test_salvage_e[i].dir
+                || !test_salvage_isalive(i, pair, dropped))) {
+            continue;
+        }
+
+        lfs3_size_t expected = 0;
+        for (lfs3_size_t j = 0; j < test_salvage_n; j++) {
+            if (test_salvage_e[j].parent == i
+                    && test_salvage_isalive(j, pair, dropped)) {
+                expected += 1;
+            }
+        }
+
+        lfs3_dir_t dir;
+        int err = lfs3_dir_open(lfs3, &dir,
+                (i < 0) ? "/" : test_salvage_e[i].path);
+        assert(!err);
+        lfs3_size_t seen = 0;
+        while (true) {
+            struct lfs3_info info;
+            err = lfs3_dir_read(lfs3, &dir, &info);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            if (strcmp(info.name, ".") == 0 || strcmp(info.name, "..") == 0) {
+                continue;
+            }
+
+            char path[64];
+            if (i < 0) {
+                strcpy(path, info.name);
+            } else {
+                sprintf(path, "%s/%s", test_salvage_e[i].path, info.name);
+            }
+            bool found = false;
+            // ours, written after the model
+            if (strcmp(info.name, "aaa_new") == 0
+                    || strcmp(info.name, "new") == 0
+                    || strcmp(info.name, "rotating") == 0) {
+                continue;
+            }
+            for (lfs3_size_t j = 0; j < test_salvage_n; j++) {
+                if (strcmp(test_salvage_e[j].path, path) == 0) {
+                    assert(test_salvage_e[j].parent == i);
+                    assert(test_salvage_isalive(j, pair, dropped));
+                    found = true;
+                }
+            }
+            if (!found) {
+                printf("unexpected %s\n", path);
+            }
+            assert(found);
+            seen += 1;
+        }
+        err = lfs3_dir_close(lfs3, &dir);
+        assert(!err);
+        assert(seen == expected);
+    }
+}
+
+// damage the first or last mdir of the mtree
+//
+// DAMAGE=0 => its newer block fails every read
+// DAMAGE=1 => both blocks fail every read
+// DAMAGE=2 => both blocks erased
+// DAMAGE=3 => both blocks rolled back to an older copy
+//
+// with DAMAGE 0 and 3, the files in it are rewritten after a compaction,
+// so its older block holds their first version
+static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
+        int damage, int which, lfs3_size_t size,
+        lfs3_block_t pair_[static 2]) {
+    lfs3_mdir_t mdir;
+    int err = lfs3_mtree_lookup(lfs3,
+            (which == 0)
+                ? 0
+                : (lfs3_smid_t)(lfs3_mtree_weight(lfs3)
+                    - (1 << lfs3->mbits)),
+            &mdir);
+    assert(!err);
+
+    uint8_t (*old)[1024] = NULL;
+    if (damage == 0 || damage == 3) {
+        // compact until a compaction stays in the pair, so the other
+        // block holds the older state, a relocation's other block holds
+        // nothing
+        while (true) {
+            lfs3_block_t pair[2] = {mdir.r.blocks[0], mdir.r.blocks[1]};
+            err = lfs3_mdir_compact(lfs3, &mdir);
+            assert(!err);
+            if (lfs3_mptr_cmp(mdir.r.blocks, pair) == 0) {
+                break;
+            }
+        }
+        test_salvage_locate(lfs3);
+        if (damage == 3) {
+            old = malloc(2*1024);
+            assert(old && cfg->block_size <= 1024);
+            for (int j = 0; j < 2; j++) {
+                err = cfg->read(cfg, mdir.r.blocks[j], 0,
+                        old[j], cfg->block_size);
+                assert(!err);
+            }
+        }
+
+        // rewrite two files of this mdir
+        lfs3_size_t rewritten = 0;
+        for (lfs3_size_t i = 0; i < test_salvage_n && rewritten < 2; i++) {
+            if (!test_salvage_e[i].dir
+                    && lfs3_mptr_cmp(test_salvage_e[i].pair,
+                        mdir.r.blocks) == 0) {
+                test_salvage_e[i].seed0 = test_salvage_e[i].seed;
+                test_salvage_write(lfs3, i,
+                        1000 + test_salvage_e[i].seed, size);
+                rewritten += 1;
+            }
+        }
+        assert(rewritten > 0);
+
+        // a rollback the gcksum can find needs a commit elsewhere
+        for (lfs3_size_t i = 0; damage == 3 && i < test_salvage_n; i++) {
+            if (!test_salvage_e[i].dir
+                    && lfs3_mptr_cmp(test_salvage_e[i].pair,
+                        mdir.r.blocks) != 0) {
+                test_salvage_write(lfs3, i,
+                        2000 + test_salvage_e[i].seed, size);
+                break;
+            }
+        }
+
+        // the newer block took the rewrites
+        lfs3_mdir_t mdir_;
+        err = lfs3_mtree_lookup(lfs3, mdir.mid, &mdir_);
+        assert(!err);
+        assert(mdir_.r.blocks[0] == mdir.r.blocks[0]);
+        assert(mdir_.r.blocks[1] == mdir.r.blocks[1]);
+    }
+    pair_[0] = mdir.r.blocks[0];
+    pair_[1] = mdir.r.blocks[1];
+    err = lfs3_unmount(lfs3);
+    assert(!err);
+
+    if (damage == 0) {
+        err = lfs3_emubd_mktransient(cfg, mdir.r.blocks[0], 0xffffffff);
+        assert(!err);
+    } else if (damage == 1) {
+        for (int j = 0; j < 2; j++) {
+            err = lfs3_emubd_mktransient(cfg, mdir.r.blocks[j], 0xffffffff);
+            assert(!err);
+        }
+    } else if (damage == 2) {
+        for (int j = 0; j < 2; j++) {
+            err = cfg->erase(cfg, mdir.r.blocks[j]);
+            assert(!err);
+        }
+    } else {
+        for (int j = 0; j < 2; j++) {
+            err = cfg->erase(cfg, mdir.r.blocks[j]);
+            assert(!err);
+            err = cfg->prog(cfg, mdir.r.blocks[j], 0,
+                    old[j], cfg->block_size);
+            assert(!err);
+        }
+        free(old);
+    }
+
+    // a power loss mustn't undo our damage
+    err = cfg->sync(cfg);
+    assert(!err);
+}
+
+// lose power by jumping back into our test
+static void test_salvage_powerloss(void *data) {
+    longjmp(*(jmp_buf*)data, 1);
+}
+'''
+
+
+# salvage one damaged mdir
+#
+# DAMAGE 0 rewrites the pair from its older block, 1 and 2 drop it, 3 is
+# a rollback that only the gcksum notices; WHICH 0 damages the first mdir
+# of the mtree, with the root's bookmark and the directories' names,
+# WHICH 1 the last
+[cases.test_salvage_damage]
+defines.DAMAGE = [0, 1, 2, 3]
+defines.WHICH = [0, 1]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    test_salvage_build(&lfs3, SIZE);
+    test_salvage_locate(&lfs3);
+    lfs3_block_t pair[2];
+    test_salvage_damage(&lfs3, CFG, DAMAGE, WHICH, SIZE, pair);
+    bool dropped = (DAMAGE == 1 || DAMAGE == 2);
+
+    // a read-write mount fails
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+
+    // a salvage doesn't
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_DEGRADED));
+    test_salvage_check(&lfs3, pair, dropped, !dropped, SIZE);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // the damaged blocks read again, as if the supply recovered, the
+    // salvage stands
+    for (int j = 0; j < 2; j++) {
+        lfs3_emubd_mktransient(CFG, pair[j], 0) => 0;
+    }
+
+    // and the filesystem mounts and writes as any other
+    for (int i = 0; i < 2; i++) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        test_salvage_check(&lfs3, pair, dropped, !dropped, SIZE);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        if (i == 0) {
+            lfs3_mkdir(&lfs3, "new") => 0;
+            lfs3_set(&lfs3, "new/x", "hello", 5) => 0;
+            lfs3_set(&lfs3, "aaa_new", "world", 5) => 0;
+        }
+        uint8_t buf[8];
+        lfs3_get(&lfs3, "new/x", buf, sizeof(buf)) => 5;
+        assert(memcmp(buf, "hello", 5) == 0);
+        lfs3_get(&lfs3, "aaa_new", buf, sizeof(buf)) => 5;
+        assert(memcmp(buf, "world", 5) == 0);
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+# a salvage of an undamaged filesystem writes nothing
+[cases.test_salvage_undamaged]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    test_salvage_build(&lfs3, SIZE);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    lfs3_emubd_progs(CFG) => progs;
+    lfs3_emubd_erases(CFG) => erases;
+    lfs3_block_t none[2] = {-1, -1};
+    test_salvage_check(&lfs3, none, false, false, SIZE);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# lose power at each prog and erase of a salvage
+#
+# Until a salvage completes, a read-write mount without the flag fails,
+# and the next salvage finishes the repair. DAMAGE 0's failing reads
+# stop with the power loss, as if the supply recovered, so the pair may
+# keep its newer state, losing less
+[cases.test_salvage_powerloss]
+defines.DAMAGE = [0, 2]
+defines.WHICH = [0, 1]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+]
+code = '''
+    // our own emubd, so we can lose power by jumping back here, and our
+    // own buffers, so a lost mount leaks nothing
+    struct lfs3_cfg cfg = *CFG;
+    lfs3_emubd_t bd;
+    cfg.context = &bd;
+    jmp_buf powerloss_jmp;
+    struct lfs3_emubd_cfg bdcfg = {
+        .erase_value = ERASE_VALUE,
+        .powerloss_behavior = POWERLOSS_BEHAVIOR,
+        .powerloss_cb = test_salvage_powerloss,
+        .powerloss_data = &powerloss_jmp,
+    };
+    uint8_t *rcache = malloc(cfg.rcache_size);
+    uint8_t *pcache = malloc(cfg.pcache_size);
+    uint8_t *lookahead = malloc(cfg.lookahead_size);
+    assert(rcache && pcache && lookahead);
+    cfg.rcache_buffer = rcache;
+    cfg.pcache_buffer = pcache;
+    cfg.lookahead_buffer = lookahead;
+    bool dropped = (DAMAGE == 2);
+
+    for (uint32_t n = 1;; n++) {
+        // a bit hacky, but this catches salvages that never finish
+        assert(n < 10000);
+
+        lfs3_emubd_createcfg(&cfg, NULL, &bdcfg) => 0;
+        lfs3_t lfs3;
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                &cfg) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        test_salvage_build(&lfs3, SIZE);
+        test_salvage_locate(&lfs3);
+        lfs3_block_t pair[2];
+        test_salvage_damage(&lfs3, &cfg, DAMAGE, WHICH, SIZE, pair);
+
+        // lose power at the n-th prog or erase of the salvage
+        bool done = false;
+        lfs3_emubd_setpowercycles(&cfg, n) => 0;
+        if (!setjmp(powerloss_jmp)) {
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, &cfg) => 0;
+            lfs3_unmount(&lfs3) => 0;
+            done = true;
+        }
+        lfs3_emubd_setpowercycles(&cfg, 0) => 0;
+        if (DAMAGE == 0) {
+            lfs3_emubd_mktransient(&cfg, pair[0], 0) => 0;
+        }
+
+        // without the flag, a mount fails until a salvage completes,
+        // unless the failing reads stopped before the salvage wrote
+        // anything
+        int err = lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg);
+        assert(!err || err == LFS3_ERR_CORRUPT);
+        assert(!done || !err);
+        if (err) {
+            lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, &cfg) => 0;
+        }
+        test_salvage_check(&lfs3, pair, dropped, true, SIZE);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // and everything stays
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        test_salvage_check(&lfs3, pair, dropped, true, SIZE);
+        lfs3_set(&lfs3, "aaa_new", "world", 5) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        lfs3_emubd_destroy(&cfg) => 0;
+        if (done) {
+            printf("salvaged with %d progs and erases\n", (int)n-1);
+            break;
+        }
+    }
+    free(rcache);
+    free(pcache);
+    free(lookahead);
+'''
+
+# a salvage tests the blocks of a pair it gives up on, those that failed
+# reads, so blocks that don't work are marked bad, and others reused
+#
+# KIND=0 => both blocks of the mdir are bad, every read fails
+# KIND=1 => both blocks erased, they read, nothing checks
+[cases.test_salvage_badblocks]
+defines.KIND = [0, 1]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+defines.GBMAP = true
+ifdef = 'LFS3_GBMAP'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    test_salvage_build(&lfs3, SIZE);
+    test_salvage_locate(&lfs3);
+    lfs3_mdir_t mdir;
+    lfs3_mtree_lookup(&lfs3,
+            lfs3_mtree_weight(&lfs3) - (1 << lfs3.mbits),
+            &mdir) => 0;
+    lfs3_block_t pair[2] = {mdir.r.blocks[0], mdir.r.blocks[1]};
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int j = 0; j < 2; j++) {
+        if (KIND == 0) {
+            lfs3_emubd_mkbad(CFG, pair[j]) => 0;
+        } else {
+            CFG->erase(CFG, pair[j]) => 0;
+        }
+    }
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    test_salvage_check(&lfs3, pair, true, false, SIZE);
+    lfs3_unmount(&lfs3) => 0;
+
+    // the bad blocks are marked, the others aren't
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    for (int j = 0; j < 2; j++) {
+        lfs3_sblock_t bad = lfs3_fs_nextbad(&lfs3, pair[j]);
+        assert(bad >= 0 || bad == LFS3_ERR_NOENT);
+        assert((bad == (lfs3_sblock_t)pair[j]) == (KIND == 0));
+    }
+    lfs3_emubd_sio_t progs[2];
+    lfs3_emubd_swear_t wear[2];
+    for (int j = 0; j < 2; j++) {
+        progs[j] = lfs3_emubd_blockprogs(CFG, pair[j]);
+        wear[j] = lfs3_emubd_wear(CFG, pair[j]);
+    }
+
+    // write until the allocator has gone around the disk twice
+    uint8_t wbuf[256];
+    for (lfs3_size_t i = 0; i < 2*BLOCK_COUNT; i++) {
+        memset(wbuf, 'a' + (i % 26), sizeof(wbuf));
+        lfs3_set(&lfs3, "rotating", wbuf, sizeof(wbuf)) => 0;
+    }
+
+    // bad blocks are never written again, good ones are reused
+    bool reused = false;
+    for (int j = 0; j < 2; j++) {
+        bool written = lfs3_emubd_blockprogs(CFG, pair[j]) != progs[j]
+                || lfs3_emubd_wear(CFG, pair[j]) != wear[j];
+        assert(KIND != 0 || !written);
+        reused |= written;
+    }
+    assert(KIND == 0 || reused);
+    test_salvage_check(&lfs3, pair, true, false, SIZE);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
