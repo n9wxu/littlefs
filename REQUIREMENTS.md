@@ -482,10 +482,12 @@ suite.
   suite with `-Pnone` in B-DEF and B-BIG with zero reports, with
   `UBSAN_OPTIONS=halt_on_error=1` so that a report fails its case.
 - **Fail:** any report.
-- **Verified by:** NEW: sanitizer build of `runners/test_runner`.
+- **Verified by:** `make test-sanitize`, which also runs `-Plinear`: job
+  `test-sanitize` in `.github/workflows/test.yml` for B-DEF, and job
+  `test-sanitize-biggest` in `.github/workflows/nightly.yml` for B-BIG.
 - **Status:** Known defect (4-api R17, 1-meta 0.7c). Fixed on v3-fixes:
   F-1, F-3. D-7 is fixed on `v3-integration` (82ab4f07, b5888089).
-- **When:** every CI run.
+- **When:** every CI run in B-DEF; nightly in B-BIG.
 
 #### LFS3-GEN-04
 
@@ -6328,9 +6330,13 @@ undefined-behaviour sanitizers.
 - **Source:** Derived: v2 CI ran valgrind; LFS3-GEN-03.
 - **Measure:** CI job results.
 - **Pass:** jobs run `test.py --valgrind -Pnone` and a sanitizer build with
-  `-Pnone`, and both pass.
+  `-Pnone`, and both pass. The sanitizer build runs every suite in B-DEF
+  with `UBSAN_OPTIONS=halt_on_error=1`, and on Linux with LeakSanitizer,
+  which checks the `-Pnone` run only: power loss longjmps out of a test
+  and leaks what the test allocated.
 - **Fail:** any job missing or failing.
-- **Verified by:** `.github/workflows/test.yml`.
+- **Verified by:** `.github/workflows/test.yml`: jobs `test-valgrind` and
+  `test-sanitize` (`make test-sanitize`).
 - **Status:** Known defect (2-files B19: the v2 job passes `-Gdefault`, which
   v3 does not have).
 - **When:** every CI run.
@@ -6411,9 +6417,9 @@ behaviour.
   reasons unrelated to littlefs.
 - **Measure:** sanitizer reports attributed to test code.
 - **Pass:** the sanitizer job of LFS3-CI-04 reports nothing in
-  `tests/*.toml` code.
+  `tests/*.toml` code, leaks included.
 - **Fail:** any report.
-- **Verified by:** sanitizer job.
+- **Verified by:** job `test-sanitize` (`make test-sanitize`).
 - **Status:** Known defect (F-4 to F-8; fixed on v3-fixes).
 - **When:** every CI run.
 
