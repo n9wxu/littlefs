@@ -1826,6 +1826,17 @@ driver that allocates a marked block from a traversal treats it as it would an
 unmarked bad block: one failed erase or prog, then relocation. A flag would
 instead stop every such driver from writing the filesystem at all.
 
+**A gbmap that doesn't read** can't say what's free, so littlefs drops it.
+It erases the gbmap's root on disk, so that root can never read again after
+its other nodes are reused, keeps that block out of use until remount, since
+the on-disk gstate names it until the next commit, and allocates by
+lookahead scans until the next checkpoint builds a new gbmap, as
+`lfs3_fs_mkgbmap` would. A mount checks the gbmap's root against the
+checksum the gstate records, and one that doesn't check is rebuilt at the
+first write. `LFS3_I_MKGBMAP` reports a gbmap waiting to be rebuilt. The
+marks the old gbmap held are lost; those blocks are marked again when they
+next fail.
+
 ### Suspect blocks
 
 A read that fails, with `LFS3_ERR_CORRUPT` from the block device or a

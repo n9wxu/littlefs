@@ -661,6 +661,13 @@ code = '''
         bool degraded = fsinfo.flags & LFS3_I_DEGRADED;
         assert(!degraded
                 || (RDONLY && failed && ERR == LFS3_ERR_CORRUPT));
+        // a gbmap whose root didn't read is built again at the next
+        // write, a check reports it until then
+        bool mkgbmap = false;
+        #ifdef LFS3_GBMAP
+        mkgbmap = fsinfo.flags & LFS3_I_MKGBMAP;
+        #endif
+        assert(!mkgbmap || (failed && ERR == LFS3_ERR_CORRUPT));
 
         // check we can still read everything, nothing rolled back, a
         // degraded mount may have taken an mroot's older block, but says
@@ -691,7 +698,7 @@ code = '''
             lfs3_file_close(&lfs3, &file) => 0;
         }
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
-                => (degraded) ? LFS3_ERR_CORRUPT : 0;
+                => (degraded || mkgbmap) ? LFS3_ERR_CORRUPT : 0;
         lfs3_unmount(&lfs3) => 0;
 
         // done once mount no longer reaches the nth read

@@ -368,6 +368,9 @@ enum lfs3_type {
 #define LFS3_I_BADBLOCKS \
                         0x04000000  // Bad blocks not yet marked on disk
 #endif
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+#define LFS3_I_MKGBMAP  0x00000008  // Gbmap didn't read, rebuilt next write
+#endif
 #define LFS3_I_FLUSH    0x00000040  // Mounted with LFS3_M_FLUSH
 #define LFS3_I_SYNC     0x00000080  // Mounted with LFS3_M_SYNC
 #if !defined(LFS3_RDONLY) && defined(LFS3_REVPERTURB)
@@ -1646,6 +1649,9 @@ typedef struct lfs3 {
             lfs3_sblock_t moving;
             uint8_t count;
         } suspects;
+        // the root of a gbmap we dropped, kept out of use until remount,
+        // the on-disk gstate may still name it
+        lfs3_sblock_t dropped;
         #endif
         lfs3_btree_t b;
         lfs3_btree_t b_p;

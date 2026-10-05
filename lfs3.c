@@ -35,6 +35,8 @@ enum lfs3_ierr {
     // a read the block device failed decides which commit of a metadata
     // pair is its latest, reading again may decide it
     LFS3_ERR_RDCORRUPT  = -0x1055,
+    // the gbmap, not what it maps, failed a read or check
+    LFS3_ERR_GBMAPCORRUPT = -0x1056,
 };
 
 // for lookups of things an earlier read says exist, not finding them
@@ -7984,6 +7986,33 @@ static inline bool lfs3_m_isdegraded(uint32_t flags) {
     return flags & LFS3_I_DEGRADED;
 }
 
+// a gbmap that didn't read, we do without it until it's rebuilt
+#ifdef LFS3_GBMAP
+static inline bool lfs3_i_ismkgbmap(uint32_t flags) {
+    (void)flags;
+    #ifndef LFS3_RDONLY
+    return flags & LFS3_I_MKGBMAP;
+    #else
+    return false;
+    #endif
+}
+#endif
+
+// is this the gbmap we dropped? its root may be erased
+#ifdef LFS3_GBMAP
+static inline bool lfs3_gbmap_isdropped(const lfs3_t *lfs3,
+        const lfs3_btree_t *gbmap) {
+    (void)lfs3;
+    (void)gbmap;
+    #ifndef LFS3_RDONLY
+    return lfs3_rbyd_trunk(&gbmap->r)
+            && (lfs3_sblock_t)gbmap->r.blocks[0] == lfs3->gbmap.dropped;
+    #else
+    return false;
+    #endif
+}
+#endif
+
 #ifdef LFS3_REVPERTURB
 static inline bool lfs3_m_isrevperturb(uint32_t flags) {
     (void)flags;
@@ -11533,6 +11562,7 @@ again:;
         } else if (LFS3_IFDEF_GBMAP(
                 mtrv->h.mdir.mid == LFS3_MID_GBMAP
                     && lfs3_f_isgbmap(lfs3->flags)
+                    && !lfs3_i_ismkgbmap(lfs3->flags)
                     && !lfs3_t_ismtreeonly(mtrv->h.flags),
                 false)) {
             #ifdef LFS3_GBMAP
@@ -11550,7 +11580,8 @@ again:;
                     && !lfs3_t_ismtreeonly(mtrv->h.flags)
                     && lfs3_btree_cmp(
                         &lfs3->gbmap.b_p,
-                        &lfs3->gbmap.b) != 0,
+                        &lfs3->gbmap.b) != 0
+                    && !lfs3_gbmap_isdropped(lfs3, &lfs3->gbmap.b_p),
                 false)) {
             #ifdef LFS3_GBMAP
             mtrv->b = lfs3->gbmap.b_p;
@@ -11773,11 +11804,15 @@ eot:;
         return LFS3_ERR_CORRUPT;
     }
 
-    // a degraded mount found damage that no check passes
+    // a degraded mount found damage that no check passes, and a gbmap
+    // that didn't read is damage until it's rebuilt
     if ((lfs3_t_isckmeta(mtrv->h.flags)
                 || lfs3_t_isckdata(mtrv->h.flags))
             && !lfs3_t_ismtreeonly(mtrv->h.flags)
-            && lfs3_m_isdegraded(lfs3->flags)) {
+            && (lfs3_m_isdegraded(lfs3->flags)
+                || LFS3_IFDEF_GBMAP(
+                    lfs3_i_ismkgbmap(lfs3->flags),
+                    false))) {
         return LFS3_ERR_CORRUPT;
     }
 
@@ -11813,6 +11848,10 @@ static int lfs3_gbmap_setbptr(lfs3_t *lfs3, lfs3_btree_t *gbmap,
         lfs3_tag_t tag_);
 static int lfs3_alloc_adoptgbmap(lfs3_t *lfs3,
         const lfs3_btree_t *gbmap, lfs3_block_t known);
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_dropgbmap(lfs3_t *lfs3);
+static int lfs3_gbmap_keepdropped(lfs3_t *lfs3, lfs3_btree_t *gbmap);
+#endif
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_mtree_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         lfs3_tag_t tag, const lfs3_bptr_t *bptr);
@@ -11880,6 +11919,14 @@ static lfs3_stag_t lfs3_mtree_gc(lfs3_t *lfs3, lfs3_mgc_t *mgc,
                 int err = lfs3_gbmap_zerounknown(lfs3, &mgc->gbmap_,
                         lfs3->gbmap.window + lfs3->gbmap.known,
                         lfs3->lookahead.ckpoint - lfs3->gbmap.known);
+                // a gbmap that doesn't read? drop it, scan into the
+                // lookahead buffer instead, the next write builds a new
+                // gbmap
+                if (err == LFS3_ERR_CORRUPT) {
+                    lfs3_bd_droppcache(lfs3);
+                    err = lfs3_alloc_dropgbmap(lfs3);
+                    mgc->gbmap_.r.weight = 0;
+                }
                 if (err) {
                     return err;
                 }
@@ -12046,7 +12093,12 @@ eot:;
         // was gbmap scan successful?
         if (LFS3_IFDEF_GBMAP(mgc->gbmap_.r.weight != 0, false)) {
             #ifdef LFS3_GBMAP
-            int err = lfs3_alloc_adoptgbmap(lfs3, &mgc->gbmap_,
+            int err = lfs3_gbmap_keepdropped(lfs3, &mgc->gbmap_);
+            if (err) {
+                return err;
+            }
+
+            err = lfs3_alloc_adoptgbmap(lfs3, &mgc->gbmap_,
                     lfs3->lookahead.ckpoint);
             if (err) {
                 return err;
@@ -12101,6 +12153,7 @@ static void lfs3_gbmap_init(lfs3_gbmap_t *gbmap) {
     #ifndef LFS3_RDONLY
     gbmap->badq.count = 0;
     gbmap->badq_ = NULL;
+    gbmap->dropped = -1;
     #endif
     lfs3_btree_init(&gbmap->b);
     lfs3_btree_init(&gbmap->b_p);
@@ -12408,6 +12461,20 @@ static int lfs3_gbmap_setbptr(lfs3_t *lfs3, lfs3_btree_t *gbmap,
 }
 #endif
 
+// the root of a gbmap we dropped stays in use until remount, the on-disk
+// gstate may still name it
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_gbmap_keepdropped(lfs3_t *lfs3, lfs3_btree_t *gbmap) {
+    if (lfs3->gbmap.dropped < 0) {
+        return 0;
+    }
+
+    return lfs3_gbmap_set__(lfs3, gbmap, lfs3->gbmap.dropped, 1,
+            LFS3_TAG_BMINUSE, &lfs3_gbmap_defaultecksum,
+            true);
+}
+#endif
+
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 // note this is not completely atomic, but worst case we just end up with
 // only some ranges zeroed
@@ -12534,6 +12601,11 @@ static inline bool lfs3_alloc_isbadqfull(const lfs3_t *lfs3) {
 }
 #endif
 
+// needed in lfs3_alloc_isknownbad and lfs3_alloc_flushbad
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_dropgbmap(lfs3_t *lfs3);
+#endif
+
 // is this block known to be bad, waiting in our queue or marked in the
 // gbmap? only needed before writing a block we didn't just allocate
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
@@ -12542,7 +12614,7 @@ static lfs3_sbool_t lfs3_alloc_isknownbad(lfs3_t *lfs3,
     if (lfs3_alloc_isbad(lfs3, block)) {
         return true;
     }
-    if (!lfs3_f_isgbmap(lfs3->flags)) {
+    if (!lfs3_f_isgbmap(lfs3->flags) || lfs3_i_ismkgbmap(lfs3->flags)) {
         return false;
     }
 
@@ -12550,7 +12622,15 @@ static lfs3_sbool_t lfs3_alloc_isknownbad(lfs3_t *lfs3,
             NULL, NULL, NULL);
     if (tag < 0) {
         // past the gbmap? lfs3_fs_grow allocates before resizing it
-        return (tag == LFS3_ERR_NOENT) ? false : tag;
+        if (tag == LFS3_ERR_NOENT) {
+            return false;
+        }
+        // a gbmap that doesn't read knows nothing
+        if (tag == LFS3_ERR_CORRUPT) {
+            int err = lfs3_alloc_dropgbmap(lfs3);
+            return (err) ? err : false;
+        }
+        return tag;
     }
     return tag == LFS3_TAG_BMBAD;
 }
@@ -12723,6 +12803,7 @@ static void lfs3_alloc_pushsuspect(lfs3_t *lfs3, lfs3_block_t block) {
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static inline bool lfs3_alloc_canflushbad(const lfs3_t *lfs3) {
     return lfs3_f_isgbmap(lfs3->flags)
+            && !lfs3_i_ismkgbmap(lfs3->flags)
             && lfs3->gbmap.badq.count > 0;
 }
 #endif
@@ -12804,12 +12885,20 @@ static int lfs3_alloc_flushbad(lfs3_t *lfs3) {
     // make sure the allocator sees the new marks
     lfs3->gbmap.badq_ = NULL;
     lfs3->gbmap.next = 0;
+    // a gbmap that doesn't read? the queue waits for its rebuild
+    if (err == LFS3_ERR_CORRUPT) {
+        lfs3_bd_droppcache(lfs3);
+        return lfs3_alloc_dropgbmap(lfs3);
+    }
     return (err == LFS3_ERR_NOSPC) ? 0 : err;
 }
 #endif
 
 // needed in lfs3_alloc_ckpoint
 static int lfs3_alloc_lookgbmap(lfs3_t *lfs3);
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_regbmap(lfs3_t *lfs3);
+#endif
 
 // checkpoint the allocator
 //
@@ -12841,15 +12930,26 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
         lfs3_alloc_ckpoint_(lfs3);
     }
 
-    if (lookgbmap) {
-        int err = lfs3_alloc_lookgbmap(lfs3);
+    // repopulate the gbmap, or build a new one in place of one that
+    // didn't read
+    if (lookgbmap || lfs3_i_ismkgbmap(lfs3->flags)) {
+        int err = (lfs3_i_ismkgbmap(lfs3->flags))
+                ? lfs3_alloc_regbmap(lfs3)
+                : lfs3_alloc_lookgbmap(lfs3);
+        if (err == LFS3_ERR_GBMAPCORRUPT) {
+            lfs3_bd_droppcache(lfs3);
+            err = lfs3_alloc_regbmap(lfs3);
+        }
         // no room for a new gbmap? fall back to the lookahead buffer,
         // a full disk must not prevent removes from freeing blocks
         //
         // something we can't read? it may reference any block the gbmap
         // doesn't know is free, so keep allocating from those, and leave
         // the damage for the next scan, or a check, to report
-        if (err && err != LFS3_ERR_NOSPC && err != LFS3_ERR_CORRUPT) {
+        if (err
+                && err != LFS3_ERR_NOSPC
+                && err != LFS3_ERR_CORRUPT
+                && err != LFS3_ERR_GBMAPCORRUPT) {
             return err;
         }
         // the failed repopulation may leave a partial commit in the
@@ -12892,8 +12992,10 @@ static inline bool lfs3_alloc_canlookahead(const lfs3_t *lfs3) {
 // can we repopulate the gbmap?
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static inline bool lfs3_alloc_canlookgbmap(const lfs3_t *lfs3) {
-    // do we even have a gbmap?
+    // do we even have a gbmap? one we dropped is rebuilt by the next
+    // write
     return lfs3_f_isgbmap(lfs3->flags)
+            && !lfs3_i_ismkgbmap(lfs3->flags)
             // below gc_lookgbmap_thresh?
             && lfs3->gbmap.known
                 <= lfs3_min(
@@ -12998,6 +13100,15 @@ static void lfs3_alloc_setinusebptr(lfs3_t *lfs3,
 static int lfs3_alloc_setinusebad(lfs3_t *lfs3) {
     #ifdef LFS3_GBMAP
     if (!lfs3_f_isgbmap(lfs3->flags)) {
+        return 0;
+    }
+
+    // the root of a gbmap we dropped, the on-disk gstate may still name
+    // it, and a dropped gbmap knows of no bad blocks
+    if (lfs3->gbmap.dropped >= 0) {
+        lfs3_alloc_setinuse(lfs3, lfs3->gbmap.dropped);
+    }
+    if (lfs3_i_ismkgbmap(lfs3->flags)) {
         return 0;
     }
 
@@ -13167,6 +13278,14 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
                         &block, NULL,
                         LFS3_IFDEF_PREERASE(&lfs3->gbmap.ecksum, NULL));
                 if (tag < 0) {
+                    // a gbmap that doesn't read? drop it, and look ahead
+                    if (tag == LFS3_ERR_CORRUPT) {
+                        int err = lfs3_alloc_dropgbmap(lfs3);
+                        if (err) {
+                            return err;
+                        }
+                        continue;
+                    }
                     return tag;
                 }
                 lfs3_block_t d = lfs3_min(
@@ -13474,12 +13593,14 @@ static int lfs3_alloc_lookgbmap(lfs3_t *lfs3) {
     // we do this instead of creating a new gbmap to (1) preserve any
     // known erased/bad info and (2) try to best use any in-btree
     // erased-state
+    //
+    // a gbmap that fails a read gets its own error, it can be rebuilt
     LFS3_ASSERT(lfs3->lookahead.ckpoint >= lfs3->gbmap.known);
     int err = lfs3_gbmap_zerounknown(lfs3, &gbmap_,
             lfs3->gbmap.window + lfs3->gbmap.known,
             lfs3->lookahead.ckpoint - lfs3->gbmap.known);
     if (err) {
-        return err;
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_GBMAPCORRUPT : err;
     }
 
     // traverse the filesystem, building up knowledge of what blocks are
@@ -13494,6 +13615,11 @@ static int lfs3_alloc_lookgbmap(lfs3_t *lfs3) {
             if (tag == LFS3_ERR_NOENT) {
                 break;
             }
+            if (tag == LFS3_ERR_CORRUPT
+                    && (mtrv.h.mdir.mid == LFS3_MID_GBMAP
+                        || mtrv.h.mdir.mid == LFS3_MID_GBMAP_P)) {
+                return LFS3_ERR_GBMAPCORRUPT;
+            }
             return tag;
         }
 
@@ -13501,8 +13627,18 @@ static int lfs3_alloc_lookgbmap(lfs3_t *lfs3) {
         err = lfs3_gbmap_setbptr(lfs3, &gbmap_, tag, &bptr,
                 LFS3_TAG_BMINUSE);
         if (err) {
-            return err;
+            return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_GBMAPCORRUPT : err;
         }
+    }
+
+    err = lfs3_gbmap_keepdropped(lfs3, &gbmap_);
+    if (err) {
+        return (err == LFS3_ERR_CORRUPT) ? LFS3_ERR_GBMAPCORRUPT : err;
+    }
+
+    // did we drop the gbmap as we went? build a new one
+    if (lfs3_i_ismkgbmap(lfs3->flags)) {
+        return LFS3_ERR_GBMAPCORRUPT;
     }
 
     // update gbmap with what we found
@@ -13513,6 +13649,76 @@ static int lfs3_alloc_lookgbmap(lfs3_t *lfs3) {
     // gbmap if we lose power
     //
     return lfs3_alloc_adoptgbmap(lfs3, &gbmap_, lfs3->lookahead.ckpoint);
+}
+#endif
+
+// drop a gbmap that failed a read or check
+//
+// it can't tell us what's free, and a root that read again later, after
+// its other nodes were reused, would hand out blocks in use, so erase the
+// on-disk root, keep it out of use until remount, and do without a gbmap
+// until lfs3_alloc_ckpoint builds a new one, the bad blocks it marked are
+// found again as they fail
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_dropgbmap(lfs3_t *lfs3) {
+    if (lfs3_rbyd_trunk(&lfs3->gbmap.b_p.r)
+            && !lfs3_gbmap_isdropped(lfs3, &lfs3->gbmap.b_p)) {
+        LFS3_WARN("Dropping gbmap 0x%"PRIx32", it doesn't read",
+                lfs3->gbmap.b_p.r.blocks[0]);
+        int err = lfs3_bd_erase(lfs3, lfs3->gbmap.b_p.r.blocks[0]);
+        if (err && err != LFS3_ERR_CORRUPT) {
+            return err;
+        }
+        lfs3->gbmap.dropped = lfs3->gbmap.b_p.r.blocks[0];
+    }
+
+    // the next commit names the old root, but knows nothing of it
+    lfs3->gbmap.b = lfs3->gbmap.b_p;
+    lfs3->gbmap.known = 0;
+    lfs3->gbmap.next = 0;
+    #ifdef LFS3_PREERASE
+    lfs3->gbmap.preeraser.known = 0;
+    lfs3->gbmap.preeraser.count = 0;
+    #endif
+    lfs3->flags |= LFS3_I_MKGBMAP;
+    return 0;
+}
+#endif
+
+// build a new gbmap in place of one we dropped, as lfs3_fs_mkgbmap
+// does, the bad blocks still queued are marked at the next checkpoint
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_alloc_regbmap(lfs3_t *lfs3) {
+    int err = lfs3_alloc_dropgbmap(lfs3);
+    if (err) {
+        return err;
+    }
+
+    LFS3_INFO("Rebuilding gbmap");
+    lfs3_btree_t gbmap_;
+    lfs3_btree_init(&gbmap_);
+    err = lfs3_gbmap_commit(lfs3, &gbmap_, 0, LFS3_RATTRS(
+            LFS3_RATTR(2, LFS3_TAG_BMFREE, -2),
+            LFS3_RATTR_WEIGHT(+lfs3->block_count),
+            LFS3_RATTR_NULL));
+    if (err) {
+        return err;
+    }
+
+    lfs3->gbmap.b = gbmap_;
+    lfs3->gbmap.window = lfs3->lookahead.window;
+    lfs3->flags &= ~LFS3_I_MKGBMAP;
+    err = lfs3_alloc_lookgbmap(lfs3);
+    if (err) {
+        // try again at the next checkpoint
+        lfs3->gbmap.b = lfs3->gbmap.b_p;
+        lfs3->gbmap.known = 0;
+        lfs3->gbmap.next = 0;
+        lfs3->flags |= LFS3_I_MKGBMAP;
+        return err;
+    }
+
+    return 0;
 }
 #endif
 
@@ -18674,6 +18880,24 @@ static int lfs3_mountinited(lfs3_t *lfs3) {
             lfs3_gbmap_init(&lfs3->gbmap);
         }
 
+        // a gbmap whose root doesn't check can't tell us what's free,
+        // build a new one at the first write
+        if (!lfs3_m_isdegraded(lfs3->flags)
+                && lfs3_rbyd_trunk(&lfs3->gbmap.b.r)) {
+            lfs3_rbyd_t r = lfs3->gbmap.b.r;
+            err = lfs3_rbyd_ckretry(lfs3, &r);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+            if (err) {
+                LFS3_WARN("Found corrupt gbmap 0x%"PRIx32", "
+                            "rebuilding at the next write",
+                        lfs3->gbmap.b.r.blocks[0]);
+                lfs3->flags |= LFS3_I_MKGBMAP;
+                lfs3->gbmap.known = 0;
+            }
+        }
+
         // if we have a gbmap, position our lookahead buffer at the last
         // known gbmap window
         lfs3->lookahead.window = lfs3->gbmap.window;
@@ -19254,7 +19478,9 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
                     | LFS3_I_CKDATA
                     | LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)
                     | LFS3_IFDEF_RDONLY(0,
-                        LFS3_IFDEF_GBMAP(LFS3_I_BADBLOCKS, 0))))
+                        LFS3_IFDEF_GBMAP(LFS3_I_BADBLOCKS, 0))
+                    | LFS3_IFDEF_RDONLY(0,
+                        LFS3_IFDEF_GBMAP(LFS3_I_MKGBMAP, 0))))
             // LFS3_I_MKCONSISTENT is a bit of a special case,
             // internally it strictly indicates untracked orphans, but
             // externally it also includes any pending grms
@@ -19322,7 +19548,9 @@ lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
 
     // count bad blocks, these can't be used either
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
-    if (lfs3_f_isgbmap(lfs3->flags) && !lfs3_m_isdegraded(lfs3->flags)) {
+    if (lfs3_f_isgbmap(lfs3->flags)
+            && !lfs3_m_isdegraded(lfs3->flags)
+            && !lfs3_i_ismkgbmap(lfs3->flags)) {
         for (lfs3_block_t block = 0;; block++) {
             lfs3_sblock_t block_ = lfs3_gbmap_nextbad(lfs3, block);
             if (block_ < 0) {
@@ -20589,7 +20817,7 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
 
     // on success mark gbmap as not-in-use internally, this forgets
     // any bad blocks
-    lfs3->flags &= ~(LFS3_F_GBMAP | LFS3_I_BADBLOCKS);
+    lfs3->flags &= ~(LFS3_F_GBMAP | LFS3_I_BADBLOCKS | LFS3_I_MKGBMAP);
     lfs3->gbmap.badq.count = 0;
     return lfs3_fs_syncerr(lfs3, 0);
 }
@@ -20689,8 +20917,10 @@ lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
         return LFS3_ERR_NOENT;
     }
 
-    // marked in the gbmap?
-    lfs3_sblock_t next = lfs3_gbmap_nextbad(lfs3, block);
+    // marked in the gbmap? a gbmap we dropped marks nothing
+    lfs3_sblock_t next = (lfs3_i_ismkgbmap(lfs3->flags))
+            ? LFS3_ERR_NOENT
+            : lfs3_gbmap_nextbad(lfs3, block);
     if (next < 0 && next != LFS3_ERR_NOENT) {
         return next;
     }

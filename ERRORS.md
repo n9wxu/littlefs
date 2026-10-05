@@ -83,8 +83,9 @@ fail once and pass later. Reads that fail are listed by
    filesystem moves the data of any block that needed a retry to a new
    block. If it returns 0, retry the call.
 2. If it still returns `LFS3_ERR_CORRUPT`, find the damaged files with
-   `lfs3_file_ck` and remove or rewrite them. A damaged gbmap can be rebuilt
-   with `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`.
+   `lfs3_file_ck` and remove or rewrite them. A gbmap that doesn't read is
+   built again at the next write; `lfs3_fs_stat` reports `LFS3_I_MKGBMAP`
+   until then.
 3. Only damaged metadata leaves no repair but a reformat, which loses
    everything, see [Contingencies](#contingencies).
 

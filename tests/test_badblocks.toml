@@ -7804,7 +7804,8 @@ code = '''
 # unreadable
 #
 # we should report the error and never allocate over anything the
-# unreadable block might reference
+# unreadable block might reference, a gbmap that doesn't read is built
+# again elsewhere
 [cases.test_badblocks_live_readerror]
 # TARGET=0 => a non-anchor mdir
 # TARGET=1 => a file's btree node
@@ -8031,18 +8032,20 @@ code = '''
             assert(!err || err == LFS3_ERR_CORRUPT);
             // without a gbmap, the first allocation scans the filesystem
             assert(TARGET != 1 || GBMAP || err == LFS3_ERR_CORRUPT);
+            // a gbmap that doesn't read is built again elsewhere
             assert(TARGET != 2 || !err);
+            assert(TARGET != 3 || !err);
         }
 
         // gc work that scans the filesystem should error
         err = lfs3_fs_ck(&lfs3, LFS3_CK_LOOKAHEAD);
-        assert(err == ((TARGET == 2) ? 0 : LFS3_ERR_CORRUPT));
+        assert(err == ((TARGET >= 2) ? 0 : LFS3_ERR_CORRUPT));
 
         // and so should checks
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA)
-                => (TARGET == 2) ? 0 : LFS3_ERR_CORRUPT;
+                => (TARGET >= 2) ? 0 : LFS3_ERR_CORRUPT;
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
-                => LFS3_ERR_CORRUPT;
+                => (TARGET == 3) ? 0 : LFS3_ERR_CORRUPT;
         lfs3_unmount(&lfs3) => 0;
 
         // a read-only mount should still be able to read files that don't
@@ -8720,10 +8723,10 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
-# test the gbmap becoming unreadable, we should either error or work
-# around it, but never lose or corrupt data
+# test the gbmap becoming unreadable, it's built again elsewhere, and no
+# data is lost or corrupted
 #
-# rmgbmap is the way out, it shouldn't need to read the gbmap
+# rmgbmap still works, it shouldn't need to read the gbmap
 [cases.test_badblocks_gbmap_readerror]
 defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
 defines.N = 8
@@ -8765,7 +8768,7 @@ code = '''
     lfs3_emubd_mkbad(CFG, badblock) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
 
-    // write until we need the gbmap, this should error
+    // write until we need the gbmap, which is built again elsewhere
     lfs3_size_t errors = 0;
     for (lfs3_size_t round = 0; round < 2; round++) {
         for (lfs3_size_t i = 0; i < N; i++) {
@@ -8792,11 +8795,9 @@ code = '''
             }
         }
     }
-    // once we need the gbmap we should notice it's unreadable
-    assert(errors > 0);
-
-    // checks should notice too
-    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+    // so nothing errors
+    assert(errors == 0);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
 
     // but every file should still be readable
     for (lfs3_size_t i = 0; i < N; i++) {
@@ -8813,7 +8814,7 @@ code = '''
         lfs3_file_close(&lfs3, &file) => 0;
     }
 
-    // removing the gbmap should let us keep going
+    // removing the gbmap still works
     lfs3_fs_rmgbmap(&lfs3) => 0;
     for (lfs3_size_t i = 0; i < N; i++) {
         char name[256];
@@ -9976,4 +9977,109 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
     free(wbuf);
     free(rbuf);
+'''
+
+# a gbmap root that stops reading
+#
+# The gbmap can't say what's free, so allocation falls back to lookahead
+# scans, the old root is erased, so it never reads again after its nodes
+# are reused, and the next checkpoint builds a new gbmap elsewhere, every
+# write succeeds (LFS3-DEG-08)
+#
+# WHEN=0 => while mounted
+# WHEN=1 => before a mount, which finds it and reports LFS3_I_MKGBMAP
+[cases.test_badblocks_gbmap_root]
+defines.WHEN = [0, 1]
+defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
+defines.N = 8
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.SEED = 42
+ifdef = 'LFS3_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write some files
+    uint32_t seeds[N];
+    uint32_t prng = SEED;
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE];
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "spider%03x", i);
+        seeds[i] = TEST_PRNG(&prng);
+        uint32_t wprng = seeds[i];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+        }
+        lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+    }
+    lfs3_alloc_ckpoint(&lfs3) => 0;
+    lfs3_alloc_syncgbmap(&lfs3) => 0;
+    lfs3_block_t badblock = lfs3.gbmap.b.r.blocks[0];
+
+    // the gbmap's root stops reading
+    struct lfs3_fsinfo fsinfo;
+    if (WHEN == 1) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_MKGBMAP);
+    } else {
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+        lfs3_bd_droprcache(&lfs3);
+        #ifdef LFS3_BLEAFCACHE
+        lfs3_btree_discardleaf(&lfs3.gbmap.b);
+        #endif
+        lfs3.gbmap.next = 0;
+    }
+    lfs3_emubd_swear_t wear = lfs3_emubd_wear(CFG, badblock);
+    lfs3_emubd_sio_t progs = lfs3_emubd_blockprogs(CFG, badblock);
+
+    // every write succeeds
+    for (lfs3_size_t round = 0; round < 2; round++) {
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            seeds[i] = TEST_PRNG(&prng);
+            uint32_t wprng = seeds[i];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_set(&lfs3, name, wbuf, SIZE) => 0;
+        }
+    }
+
+    // the gbmap was built again elsewhere, the old root erased at most
+    // once, and never written
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_MKGBMAP));
+    assert(lfs3.gbmap.b.r.blocks[0] != badblock);
+    assert(lfs3_emubd_wear(CFG, badblock) <= wear + 1);
+    assert(lfs3_emubd_blockprogs(CFG, badblock) == progs);
+
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(!(fsinfo.flags & LFS3_I_MKGBMAP));
+        }
+
+        for (lfs3_size_t i = 0; i < N; i++) {
+            char name[256];
+            sprintf(name, "spider%03x", i);
+            uint32_t wprng = seeds[i];
+            for (lfs3_size_t j = 0; j < SIZE; j++) {
+                wbuf[j] = 'a' + (TEST_PRNG(&wprng) % 26);
+            }
+            lfs3_get(&lfs3, name, rbuf, SIZE) => SIZE;
+            assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
 '''
