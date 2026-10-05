@@ -10050,8 +10050,12 @@ compact:;
     //
     // only split if we can, mroot commits and an mroot with an mtree have
     // nothing to split, so these compact as long as they fit
+    //
+    // removals compact in place, splitting needs room a full disk or a
+    // full mroot may not have
     if ((lfs3_size_t)estimate > lfs3->cfg->block_size/2
             && split_rid_
+            && !rm
             && !(lfs3_mdir_cmp(mdir, &lfs3->mroot) == 0
                 && lfs3->mtree.r.weight != 0)) {
         return LFS3_ERR_RANGE;

@@ -1630,6 +1630,7 @@ code = '''
     }
 
     // clean up sim/files
+    free(sim_sizes);
     free(sim_prngs);
     for (lfs3_size_t j = 0; j < N; j++) {
         if (sim_files[j]) {

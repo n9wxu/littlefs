@@ -482,10 +482,18 @@ suite.
   suite with `-Pnone` in B-DEF and B-BIG with zero reports, with
   `UBSAN_OPTIONS=halt_on_error=1` so that a report fails its case.
 - **Fail:** any report.
-- **Verified by:** NEW: sanitizer build of `runners/test_runner`.
-- **Status:** Known defect (4-api R17, 1-meta 0.7c). Fixed on v3-fixes:
-  F-1, F-3. D-7 is fixed on `v3-integration` (82ab4f07, b5888089).
-- **When:** every CI run.
+- **Verified by:** `make test-sanitize`, which also runs `-Plinear`: job
+  `test-sanitize` in `.github/workflows/test.yml` for B-DEF, and job
+  `test-sanitize-biggest` in `.github/workflows/nightly.yml` for B-BIG.
+- **Status:** Tested on `v3-integration` (41165ec9): `make test-sanitize`
+  reports nothing in the CI image (Ubuntu 24.04, GCC 13.3), in B-DEF with
+  `-Pnone` and LeakSanitizer (642,838 permutations) and `-Plinear`
+  (25,099), and in B-BIG with `-Pnone` and LeakSanitizer (1,101,749) and
+  `-Plinear` (32,633); with clang on macOS the whole B-DEF suite and B-BIG
+  `-Plinear` pass too. The jobs have not run on GitHub yet. 4-api R17
+  (fb675e5b), 1-meta 0.7c (7f689b8), F-1, F-3 and D-7 (82ab4f07,
+  b5888089) are fixed.
+- **When:** every CI run in B-DEF; nightly in B-BIG.
 
 #### LFS3-GEN-04
 
@@ -6377,11 +6385,18 @@ undefined-behaviour sanitizers.
 - **Source:** Derived: v2 CI ran valgrind; LFS3-GEN-03.
 - **Measure:** CI job results.
 - **Pass:** jobs run `test.py --valgrind -Pnone` and a sanitizer build with
-  `-Pnone`, and both pass.
+  `-Pnone`, and both pass. The sanitizer build runs every suite in B-DEF
+  with `UBSAN_OPTIONS=halt_on_error=1`, and on Linux with LeakSanitizer,
+  which checks the `-Pnone` run only: power loss longjmps out of a test
+  and leaks what the test allocated.
 - **Fail:** any job missing or failing.
-- **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Known defect (2-files B19: the v2 job passes `-Gdefault`, which
-  v3 does not have).
+- **Verified by:** `.github/workflows/test.yml`: jobs `test-valgrind` and
+  `test-sanitize` (`make test-sanitize`).
+- **Status:** Tested on `v3-integration` (41165ec9) in the CI image
+  (Ubuntu 24.04, GCC 13.3): the `test-valgrind` command passes (2,433
+  permutations), and `make test-sanitize` passes in B-DEF with
+  LeakSanitizer (see LFS3-GEN-03). `test-valgrind` also passed on GitHub
+  at 8fc4d1d0; `test-sanitize` has not run on GitHub yet.
 - **When:** every CI run.
 
 #### LFS3-CI-05
@@ -6460,10 +6475,13 @@ behaviour.
   reasons unrelated to littlefs.
 - **Measure:** sanitizer reports attributed to test code.
 - **Pass:** the sanitizer job of LFS3-CI-04 reports nothing in
-  `tests/*.toml` code.
+  `tests/*.toml` code, leaks included.
 - **Fail:** any report.
-- **Verified by:** sanitizer job.
-- **Status:** Known defect (F-4 to F-8; fixed on v3-fixes).
+- **Verified by:** job `test-sanitize` (`make test-sanitize`).
+- **Status:** Tested on `v3-integration` (41165ec9): no report in B-DEF
+  or B-BIG (see LFS3-GEN-03). F-4 to F-8 are fixed; LeakSanitizer found
+  cases in `test_rbyd`, `test_btree`, `test_kv`, `test_mount` and
+  `test_ck` that never freed what they allocated, fixed in 6fad1a62.
 - **When:** every CI run.
 
 #### LFS3-CI-10
@@ -7188,18 +7206,32 @@ metadata block is unreadable.
 #### LFS3-DEG-05
 
 littlefs shall let the application remove files and attributes on a full or
-worn filesystem.
+worn filesystem. A removal shall never need more room in its metadata
+block than the block already holds, so that it always makes progress.
 
 - **Source:** Proposal. Reclaiming space is the application's main way to
-  keep operating.
+  keep operating, and a removal that needs room a full disk or a full mroot
+  does not have can never free that room (issue #23).
 - **Measure:** `lfs3_remove` and `lfs3_removeattr` results on a full disk,
-  with and without the gbmap, and with a full mroot.
-- **Pass:** they return 0, and space is freed.
-- **Fail:** `LFS3_ERR_NOSPC` from a removal.
+  with and without the gbmap, and with a full mroot, including an inlined
+  mroot whose compaction alone fills its block.
+- **Pass:** they return 0, and space is freed. `mtree::commit_too_big`
+  passes with its fuzz seeds and with the 44 seeds of issue #23 (found at
+  `ERASE_SIZE` 512, 1024 and 4096: 34, 8 and 2), at every block size,
+  under `-Pnone` and `-Plinear`, in B-DEF, B-YGB and B-BIG.
+- **Fail:** `LFS3_ERR_NOSPC` or an assert from a removal.
 - **Verified by:** `mtree::commit_too_big`, `gbmap::nospc_remove`,
   `alloc::nospc_recover`.
 - **Status:** Known defect at `b10efaa`; fixed and tested on
-  `v3-integration` (eba40790, 60026203, f29b8985, 0535a265, 501eda31).
+  `v3-integration` (eba40790, 60026203, f29b8985, 0535a265, 501eda31,
+  819e1a10): `mtree::commit_too_big` passes in B-DEF, B-YGB and B-BIG and
+  under ASan and UBSan in B-DEF, and with `-DSEED='range(4096)'` no
+  removal fails in B-DEF (`-Pnone`, and `-Plinear` with atomic power
+  loss), B-YGB and B-BIG (`-Pnone`). Before 819e1a10, 44 of those 12,288
+  runs failed in B-DEF (D-8, issue #23): 42 with `LFS3_ERR_NOSPC` from
+  `lfs3_removeattr("/")`, 1 with `LFS3_ERR_NOSPC` from `lfs3_remove`, and
+  1 where an `lfs3_remove` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)`
+  in the mtree's B-tree split. One run still fails, in a mkdir (D-9).
 - **When:** every CI run.
 
 #### LFS3-DEG-06
@@ -7801,7 +7833,7 @@ new environment (9.2).
 |---|---|---|---|
 | LFS3-GEN-01 | Untested | every CI run | CI job: `make test` on thumb under qemu-arm |
 | LFS3-GEN-02 | Untested | every CI run | cross-endian image round trip, x86_64 and mips/powerpc |
-| LFS3-GEN-03 | Defect | every CI run | runner built with `-fsanitize=undefined,address`, `-Pnone`, B-DEF and B-BIG |
+| LFS3-GEN-03 | Tested | every CI run (B-DEF), nightly (B-BIG) | `make test-sanitize`, jobs `test-sanitize` and `test-sanitize-biggest` (41165ec9) |
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
 | LFS3-GEN-05 | Partly | every CI run | runner wrapper that checks every negative return value |
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
@@ -8041,10 +8073,10 @@ new environment (9.2).
 | LFS3-CI-01 | Defect | every CI run | v3 workflow |
 | LFS3-CI-02 | Defect | every CI run | v3 workflow, cross architectures |
 | LFS3-CI-03 | Untested | every CI run | v3 workflow, feature builds |
-| LFS3-CI-04 | Defect | every CI run | v3 workflow, valgrind and sanitizers |
+| LFS3-CI-04 | Tested | every CI run | jobs `test-valgrind` and `test-sanitize` (41165ec9) |
 | LFS3-CI-06 | Defect | every CI run | v3 workflow, sizes |
 | LFS3-CI-07 | Defect | every CI run | v3 workflow, coverage |
-| LFS3-CI-09 | Defect | every CI run | sanitizer job (LFS3-CI-04) |
+| LFS3-CI-09 | Tested | every CI run | job `test-sanitize`, leaks included (6fad1a62, 41165ec9) |
 
 
 ## Appendix A. Defect register
@@ -8088,6 +8120,8 @@ upstream yet. Requirement status always describes `b10efaa`.
 | D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09; the re-fetch fallback is issue #6 |
 | D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
 | D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | `82ab4f07`, `b5888089` (issue #22) |
+| D-8 | A commit that only removes still splits an mdir whose compaction estimate is over half a block. Splitting an inlined mroot whose root attrs fill its block moves its entries to a new mdir and needs an mtree the mroot has no room for, so `lfs3_removeattr("/")` fails with `LFS3_ERR_NOSPC` every time; splitting any other mdir needs new blocks and an mtree update that a full disk or a full mroot may not take, and can overflow the mtree's B-tree split | `lfs3_mdir_commit__`, `lfs3_mdir_commit_` | run (`mtree::commit_too_big` with `-DSEED='range(4096)'`: 44 of 12,288 in B-DEF) | DEG-05 | `819e1a10` (issue #23) |
+| D-9 | An mtree B-tree split can leave the rattrs of an mdir split, two mdir pointers and the new mdir's first name, no room in the sibling they go to: on 512-byte blocks, with names within `name_limit` (132 bytes), a sibling held 378 bytes after compaction, and `lfs3_mkdir` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in `lfs3_btree_commit_`. The `name_limit` bound assumes each half of a split fits in half a block, which a few large names in one node make untrue | `lfs3_btree_commit_` | run (`mtree::commit_too_big` with `ERASE_SIZE=512`, `SEED=637`, in B-DEF and B-BIG) | META-03, DIR-02 | none |
 
 ### A.3 From the analyses
 

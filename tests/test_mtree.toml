@@ -1168,7 +1168,8 @@ code = '''
             LFS3_RATTR_NULL)) => 0;
     assert(mdir.r.weight == 3);
 
-    // remove an entry, forcing the mdir to be dropped
+    // remove an entry, removals compact in place instead of splitting,
+    // so the mroot stays inlined
     memset(buffer+1, 'b', SIZE-1);
     lfs3_mtree_namelookup(&lfs3, 0, (const char*)buffer+1, SIZE-1,
             &mdir, NULL) => LFS3_TAG_REG;
@@ -1180,10 +1181,10 @@ code = '''
             LFS3_RATTR_NULL)) => 0;
     assert(mdir.r.weight == 2);
 
-    // assert split/drop worked out
-    assert(lfs3.mtree.r.weight == (1 << lfs3.mbits));
-    // assert mroot still has no entries
-    assert(lfs3.mroot.r.weight == 0);
+    // assert nothing was uninlined
+    assert(lfs3.mtree.r.weight == 0);
+    // assert mroot still has our entries
+    assert(lfs3.mroot.r.weight == 2);
 
     // assert that our entries are still in the mtree
     lfs3_mtree_lookup(&lfs3, (0 << lfs3.mbits)+1, &mdir) => 0;
@@ -1197,10 +1198,10 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR | M_FLAGS, CFG) => 0;
 
-    // assert mdir was dropped
-    assert(lfs3.mtree.r.weight == (1 << lfs3.mbits));
-    // assert mroot still has no entries
-    assert(lfs3.mroot.r.weight == 0);
+    // assert nothing was uninlined
+    assert(lfs3.mtree.r.weight == 0);
+    // assert mroot still has our entries
+    assert(lfs3.mroot.r.weight == 2);
 
     // assert that our entries are still in the mtree
     lfs3_mtree_lookup(&lfs3, (0 << lfs3.mbits)+1, &mdir) => 0;
@@ -6358,7 +6359,17 @@ code = '''
 defines.ERASE_SIZE = [512, 1024, 4096]
 defines.COUNT = 32
 defines.STEPS = 200
-defines.SEED = 'range(8)'
+# after seeds 0 to 7, seeds that leave mdirs, the mroot in particular,
+# too full for a removal to split them, found at 512, 1024 and 4096-byte
+# blocks in that order (issue #23)
+defines.SEED = [
+    'range(8)',
+    169, 511, 519, 593, 649, 995, 1089, 1276, 1317, 1409, 1577, 1636,
+    1670, 1840, 1873, 2003, 2214, 2268, 2338, 2415, 2517, 3043, 3108,
+    3162, 3176, 3257, 3355, 3437, 3506, 3682, 3686, 3712, 3803, 3979,
+    94, 1211, 1287, 2069, 2358, 3144, 3343, 4069,
+    2022, 2204,
+]
 defines.POWERLOSS_BEHAVIOR = [
     'LFS3_EMUBD_POWERLOSS_ATOMIC',
     'LFS3_EMUBD_POWERLOSS_SOMEBITS',

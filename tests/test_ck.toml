@@ -1317,6 +1317,7 @@ code = '''
         }
 
         lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
     }
 done:;
 '''
@@ -1467,6 +1468,7 @@ code = '''
         }
 
         lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
     }
 done:;
 '''
