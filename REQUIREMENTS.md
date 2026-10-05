@@ -1143,12 +1143,16 @@ erased-state checksum (ecksum).
 - **Pass:** `mtree::ecksum_disturb`, which flips the valid bit of the first
   byte after the last commit of an mdir, a bit of the last byte of that prog
   unit, or a bit of the last byte the ecksum covers, remounts and commits,
-  finds the mdir compacted into its other block, in B-DEF with `PROG_SIZE`
-  in {1, 16} and `ERASE_VALUE` in {0xff, 0x00, -1}. Without a flip the
-  commit appends.
+  finds the commit off the disturbed bytes, in B-DEF with `PROG_SIZE`
+  in {1, 16} and `ERASE_VALUE` in {0xff, 0x00, -1}: either the commit
+  compacts the mdir into its other block, or, since a disturbed erased
+  region reads as a torn tail, the mount settles the mdir into its other
+  block (LFS3-DEG-12) and the commit compacts the settled copy into the
+  disturbed block, after erasing it. Without a flip the commit appends.
 - **Fail:** the commit is appended to the disturbed block.
 - **Verified by:** `mtree::ecksum_disturb`.
-- **Status:** Tested on v3-integration (f6e23134).
+- **Status:** Tested on v3-integration (f6e23134); with the settling mount
+  not met at `e78b4263`, where the test still expects no settle.
 - **When:** every CI run.
 
 #### LFS3-INT-05
