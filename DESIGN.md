@@ -462,7 +462,10 @@ Most of v2's reasoning still applies, so we'll only go over it briefly:
    commit, littlefs falls back to the other block. A read the block device
    fails is different: it says nothing about which block is newer or where
    its log ends, so littlefs reads again, up to `ck_retries` times, and then
-   treats the pair as damaged rather than fall back.
+   treats the pair as damaged rather than fall back, unless the block can't
+   be the newer: the mroot's other block, and a block littlefs failed to
+   write as the pair's next state, which it remembers until it erases the
+   block again. A read-only mount takes what reads, and reports it.
 
 2. New commits are appended to the active block.
 

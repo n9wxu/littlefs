@@ -1582,11 +1582,16 @@ mounted.
   the mtree, which fetches it again, returned the older state the same
   way while mounted. A pair whose only readable block is the older one
   is damaged: a read-only mount serves the rest of the filesystem
-  (LFS3-DEG-03), a read-write mount fails. Two exceptions keep what can
-  be kept: while mounted the mroot's newer block is known, so a read its
-  other block fails doesn't decide anything; and a read-only mount takes
-  what reads of an mroot, and says so (LFS3-DEG-03), since nothing past
-  the mroot could be served otherwise.
+  (LFS3-DEG-03), a read-write mount fails. Only a block that can't be
+  the newer is passed over: the mroot's other block, while mounted, when
+  littlefs knows its newer block, and a block littlefs failed to write as
+  the pair's next state, kept in RAM (`LFS3_MFAILED_SIZE`) until it is
+  erased again: a compaction that fails into a block that then doesn't
+  read, as a worn block does, must not stop the pair. A read-only mount
+  builds nothing on what it reads, so it takes what reads of any pair,
+  and says so (LFS3-DEG-03). After a remount nothing records a failed
+  compaction, so at the end of a device's life a read-write mount can
+  fail where a read-only one mounts degraded.
 - **Measure:** results of mount and of lookups while mounted, and what
   they return, with each read of a mount failing in turn with
   `LFS3_ERR_CORRUPT`, and with the newer block of an mdir in the mtree
@@ -1604,7 +1609,10 @@ mounted.
   and `badblocks::grow` with READERROR: a read-write mount of an anchor
   with a block that doesn't read returns `LFS3_ERR_CORRUPT`, a read-only
   one mounts degraded, and writes go on while mounted after the mroot's
-  other block stops reading; in B-DEF, B-YGB and B-BIG.
+  other block stops reading; `exhaustion::*` with READERROR and
+  `LFS3_M_CKPROGS`: writes go on until NOSPC, and the read-only mount
+  after it reads every synced file, degraded where a failed compaction
+  left a block that doesn't read; in B-DEF, B-YGB and B-BIG.
 - **Fail:** an older state, or a shorter log, returned without an error.
 - **Verified by:** `mount::readerror` (NEW-140),
   `mount::readerror_mounted` (NEW-141), `powerloss::settle_newer`
@@ -7279,9 +7287,9 @@ return `LFS3_ERR_CORRUPT`. A read-write mount, or a mount with
 - **Verified by:** `mount::degraded` (NEW-142), `mount::fail_nowrite`,
   `ck::rollback`, `mount::readerror` (NEW-140).
 - **Status:** Not implemented at `6f80e646`.
-- **Limits:** an mroot one of whose blocks doesn't read is taken from
-  the block that does, and the mount degraded, nothing past it could be
-  served otherwise; an mroot with no block that checks, or a damaged
+- **Limits:** a pair one of whose blocks doesn't read is taken from the
+  block that does, which may be the older, and the mount reports it; an
+  mroot with no block that checks, or a damaged
   B-tree node of the mtree, still fails the mount, a lookup through a
   damaged node can't be confined to its subtree without checking every
   fetch; a degraded mount

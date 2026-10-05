@@ -1715,11 +1715,14 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // mismatch every pair reads, but one of them is older than last written,
 // and which can't be told. A degraded mount has no gbmap and no pending
 // removes, so a file that a power loss left half removed or renamed may
-// show under its old name as well. An mroot one of whose blocks doesn't
-// read is taken from the block that does, which may be the older,
-// nothing past it could be served otherwise; an mroot with no block that
-// checks, or a damaged B-tree node of the mtree, still fails the mount.
-// See ERRORS.md for the smallest repair.
+// show under its old name as well. A pair one of whose blocks doesn't
+// read is taken from the block that does, which may be the older; an
+// mroot with no block that checks, or a damaged B-tree node of the
+// mtree, still fails the mount. A compaction that fails into a block
+// that then doesn't read, as a worn block does, leaves a pair a later
+// mount can't order, so near the end of a device's life a read-write
+// mount can fail where a read-only one mounts degraded. See ERRORS.md
+// for the smallest repair.
 //
 // Note on power loss
 //

@@ -111,8 +111,8 @@ pair for the latest because a read failed. **Rebuild**:
    pairs of the mtree, or to its global checksum, mounts degraded:
    `lfs3_fs_stat` reports `LFS3_I_DEGRADED`, every file outside the
    damaged pairs reads, and what needs a damaged pair returns
-   `LFS3_ERR_CORRUPT`. An mroot one of whose blocks doesn't read is
-   taken from the block that does, which may be the older. Copy out what
+   `LFS3_ERR_CORRUPT`. A pair one of whose blocks doesn't read is taken
+   from the block that does, which may be the older. Copy out what
    matters. An mroot with no block that checks, or a damaged B-tree node
    of the mtree, still fails this mount.
 3. The filesystem can't be written while it is damaged. Reformat, once
