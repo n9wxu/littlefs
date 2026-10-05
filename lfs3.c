@@ -4985,7 +4985,7 @@ static lfs3_ssize_t lfs3_rbyd_estimate(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
                 }
                 return tag;
             }
-            if (rid_ > a_rid+lfs3_smax(weight_-1, 0)) {
+            if (rid_-lfs3_smax(weight_-1, 0) > a_rid) {
                 break;
             }
 
