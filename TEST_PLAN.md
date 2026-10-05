@@ -1293,19 +1293,21 @@ defines; procedure; pass and fail; extension needed.
   (btree); `SYNCS` 0, 1, 3.
 - **Procedure:** Format, and check that the `SETTLED` wcompat flag is
   clear. Create a file, write `SIZE` bytes, sync `SYNCS` times, close,
-  looking up the file's `DIRTY` tag on disk after each step, and count the
-  progs and erases of the close. Reopen it, write, sync and close. Write a
-  second file with `lfs3_set`. Then write and sync a third file, and desync
-  and close it so nothing clears its mark, as a power loss would leave it;
-  unmount and remount with emubd counters. Check the stale mark, run
-  `lfs3_fs_mkconsistent`, then unmount and mount once more and read every
-  file back.
-- **Pass:** the stickynote commit carries the mark and every sync keeps
-  it; close clears it without an erase, programming at most two prog units
+  looking up the file's stickynote and `DIRTY` tag on disk after each step,
+  and count the progs and erases of the close. Reopen it, write, sync and
+  close. Write a second file with `lfs3_set`. Then write and sync a third
+  file, and desync and close it so nothing clears its mark, as a power loss
+  would leave it; unmount and remount with emubd counters. Check the stale
+  mark, run `lfs3_fs_mkconsistent`, check the wcompat flags, then unmount
+  and mount once more and read every file back.
+- **Pass:** the new file's stickynote is its mark, with no `DIRTY` tag,
+  its first sync carries a `DIRTY` tag and every later sync keeps it;
+  close clears it without an erase, programming at most two prog units
   after a sync; `lfs3_set` never marks; the mount after the abandoned
-  session erases (it settles the pair) and sets the `SETTLED` wcompat
-  flag; the stale mark stays until `lfs3_fs_mkconsistent` removes it; the
-  last mount programs and erases nothing; every file reads back.
+  session erases (it settles the pair) and leaves the wcompat flags alone;
+  the stale mark stays until `lfs3_fs_mkconsistent` removes it, and that
+  commit, compacting the settled mroot, sets `SETTLED`; the last mount
+  programs and erases nothing; every file reads back.
 - **Fail:** any other mark state, an erase at close, a write at a clean
   mount, or a settled filesystem without the flag.
 - **Extension:** none.
