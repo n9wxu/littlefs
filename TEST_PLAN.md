@@ -1038,7 +1038,7 @@ before every release.
 | J-CHECKS | `make test-compat-gbmap` (NEW-79), `make test-nomalloc` (NEW-90), `make test-progonce` (B-DEF with `CKPROGONCE`) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | emubd prog-once | PR | 191 s (three builds) and 14 s in Docker on 6 loaded CPUs; test-progonce as J-DEF |
 | J-TOOLS | `make test`, `make bench`, `test.py -j` on Linux and macOS (LFS3-CI-08) | A-64LE | – | smoke | – | PR | est. 5 min |
 | J-ARCH | B-DEF | A-32LE, A-32BE (mips, powerpc) | G-NOR | `-Pnone` on PR; `-Pnone -Plinear` nightly | – | PR, nightly | est. 22-90 min per target for the full run |
-| J-SAN | B-DEF and B-BIG | A-64LE | G-NOR | `-Pnone -Plinear` (ASan, UBSan, FORTIFY); `-Pnone` (LeakSanitizer, valgrind) | ASan + UBSan + LeakSanitizer, FORTIFY (GCC), valgrind | PR for B-DEF, nightly for B-BIG | 3,202 s for B-BIG ASan; est. 1-3 h valgrind |
+| J-SAN | B-DEF and B-BIG | A-64LE | G-NOR | `-Pnone -Plinear` (ASan, UBSan, FORTIFY); `-Pnone` (LeakSanitizer, valgrind) | ASan + UBSan + LeakSanitizer, FORTIFY (GCC), valgrind | PR for B-DEF, nightly for B-BIG | `make test-sanitize` in the CI image on 12 loaded CPUs: B-DEF 5,131 s, B-BIG 1,917 s (`-Pnone`) and 838 s (`-Plinear`); est. 15-35 min for each of the five B-DEF jobs on GitHub; valgrind (`test-valgrind`) 1,307 s |
 | J-PL | B-DEF and B-BIG | A-64LE | G-NOR | every reentrant case with `-Plinear` and behaviours 1, 2, 3; NEW-08 and the new reentrant cases with behaviour 4; `-P'permute(1)'` on every reentrant case | – | nightly | est. 15-40 min per behaviour; permute(1) est. as `-Plinear` |
 | J-GEO | B-DEF and B-BIG | A-64LE | G-ALL, `ERASE_VALUE=0xff` | `-Pnone -Plinear`, 0 | – | nightly | est. 6 × (263 + 1,181) s ≈ 2.4 h |
 | J-DEFINES | B-DEF | A-64LE | G-NOR | `-Pnone -Plinear` with the define matrices of ALLOC-06, CFG-10, CFG-11, CFG-12, FILE-26 on the affected suites | – | nightly | est. 30-60 min |
@@ -1628,7 +1628,7 @@ already written on the fork's branches are listed first.
 | NEW-51 | `gbmap::lookgbmap_thresh` | ALLOC-11 | new, internal | `LOOKGBMAP_THRESH` 0, 1, `BLOCK_COUNT/4`: a checkpoint repopulates when known equals the threshold, and when known is 0 with threshold 0 (or the header changes; record the decision) |
 | NEW-52 | `dirs::rm_many_2layers` | PL-27 | existing case | remove the `TEST_PLS && N==4` exclusion (`tests/test_dirs.toml:3442`) once the "did in the wrong mdir" bug is fixed; the case passes under `-Plinear` with PLB-TORN |
 | NEW-53 | build matrix (J-BUILD) | BUILD-01 to BUILD-11, BUILD-20, INT-05 | new job | every build of 5.1 and the combinations of BUILD-04, BUILD-05, BUILD-06 and BUILD-20 compile with `-Werror` under GCC and clang (and arm-none-eabi for BUILD-11); `ck::crc32c*` pass with each crc32c option; `nm` finds no undeclared external symbol (BUILD-10) |
-| NEW-54 | sanitizer job (J-SAN) | GEN-03, CI-04, CI-09 | new job | `make test-sanitize`: ASan and UBSan in B-DEF and B-BIG with `-Pnone -Plinear` and `UBSAN_OPTIONS=halt_on_error=1`, LeakSanitizer with `-Pnone` on Linux; valgrind with `-Pnone`, GCC FORTIFY: zero reports, test code included. Fix the zero-length arrays in `alloc::nospc_*` that B.3 found |
+| NEW-54 | sanitizer job (J-SAN) | GEN-03, CI-04, CI-09 | done (41165ec9) | `make test-sanitize`: ASan and UBSan in B-DEF and B-BIG with `-Pnone -Plinear` and `UBSAN_OPTIONS=halt_on_error=1`, LeakSanitizer with `-Pnone` on Linux; valgrind with `-Pnone`, GCC FORTIFY: zero reports, test code included. Fix the zero-length arrays in `alloc::nospc_*` that B.3 found |
 | NEW-130 | `badblocks::crystal_ioerror` | CFG-15 | new | `BLOCK_SIZE` 512; a file of 16-byte fragments, then an overwrite of its middle half that crystallizes data blocks, with the n-th read, prog or erase failing with `LFS3_ERR_IO`, for every n the write reaches; then sync (resync if refused), close and remount. `CKPROGONCE` true. No byte is programmed twice, the file is old data with a prefix of the write, and `lfs3_fs_ck(CKMETA \| CKDATA)` returns 0, in B-DEF, B-YGB and B-BIG |
 | NEW-131 | `attrs::fattr_zerofill` | ATTR-14 | new | `MUTSIZE` false and true; buffers of 256 bytes filled with 0xcc; a file with a 43-byte attribute 'a' and none of type 'b'; open read-write, then `lfs3_setattr` a 7-byte 'a', then another handle syncs a 3-byte 'a' | after each step the bytes of 'a' past its size are zero and 'b''s buffer is still 0xcc; after close and remount the stored 'a' and 'b' hold exactly those bytes, in B-DEF, B-YGB and B-BIG. With the valgrind job: no report in `attrs::*` |
 | NEW-132 | `make test-dbg` (`scripts/test_dbg.py`) | DOC-20 | new job | B-DEF and B-YGB runners write the image cases (`test.py -d`), including a B-tree file and an mroot chain; every dbg script must decode each with `-e`. Checksum-valid variants break one rule each: bit 7 in an alt, a leaf and a gcksumdelta, CKSUM phase and size, leb128 limits, a torn B-tree and mtree commit, a shrub null tag, VERSION bytes and incompatible versions, a one-block mptr, exact struct and magic tags | every variant is rejected (`-e` exits 2) or shown as the driver sees it; valid images decode as before |
@@ -1883,13 +1883,16 @@ python3 -W ignore ./scripts/test.py -R .local/b/runners/test_runner -j14 -k \
 # a geometry (J-GEO): override the inputs, not BLOCK_SIZE
 ... -DREAD_SIZE=16 -DPROG_SIZE=16 -DERASE_SIZE=512 -DERASE_VALUE=0xff
 
-# sanitizers (J-SAN): builds in BUILDDIR/sanitize, halts on any UBSan
-# report, checks leaks with -Pnone on Linux; SANITIZE_PLS picks the
-# schedules, and TESTFLAGS must come from the environment so the Makefile
-# can add -j
-TESTFLAGS=-k make -j14 test-sanitize BUILDDIR=.local/b CC=$PWD/.local/cc
-TESTFLAGS=-k make -j14 test-sanitize BUILDDIR=.local/big CC=$PWD/.local/cc \
+# sanitizers (J-SAN): runs the runner in BUILDDIR/sanitize (build it with
+# -j first, see 8.1), halts on any UBSan report, checks leaks with -Pnone
+# on Linux; SANITIZE_PLS picks the schedules. TESTFLAGS must come from the
+# environment, and macOS's make 3.81 passes test.py a bare -j, which needs
+# Linux, so give test.py its -j there
+TESTFLAGS="-k -j14" make test-sanitize BUILDDIR=.local/b CC=$PWD/.local/cc
+TESTFLAGS="-k -j14" make test-sanitize BUILDDIR=.local/big CC=$PWD/.local/cc \
     LFS3_BIGGEST=1 SANITIZE_PLS=none
+# on Linux (GNU make 4), as CI runs it
+TESTFLAGS=-k make -j test-sanitize
 
 # valgrind (no power loss)
 python3 -W ignore ./scripts/test.py -R .local/b/runners/test_runner -j14 -k \

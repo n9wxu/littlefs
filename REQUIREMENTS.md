@@ -485,8 +485,14 @@ suite.
 - **Verified by:** `make test-sanitize`, which also runs `-Plinear`: job
   `test-sanitize` in `.github/workflows/test.yml` for B-DEF, and job
   `test-sanitize-biggest` in `.github/workflows/nightly.yml` for B-BIG.
-- **Status:** Known defect (4-api R17, 1-meta 0.7c). Fixed on v3-fixes:
-  F-1, F-3. D-7 is fixed on `v3-integration` (82ab4f07, b5888089).
+- **Status:** Tested on `v3-integration` (41165ec9): `make test-sanitize`
+  reports nothing in the CI image (Ubuntu 24.04, GCC 13.3), in B-DEF with
+  `-Pnone` and LeakSanitizer (642,838 permutations) and `-Plinear`
+  (25,099), and in B-BIG with `-Pnone` and LeakSanitizer (1,101,749) and
+  `-Plinear` (32,633); with clang on macOS the whole B-DEF suite and B-BIG
+  `-Plinear` pass too. The jobs have not run on GitHub yet. 4-api R17
+  (fb675e5b), 1-meta 0.7c (7f689b8), F-1, F-3 and D-7 (82ab4f07,
+  b5888089) are fixed.
 - **When:** every CI run in B-DEF; nightly in B-BIG.
 
 #### LFS3-GEN-04
@@ -6337,8 +6343,11 @@ undefined-behaviour sanitizers.
 - **Fail:** any job missing or failing.
 - **Verified by:** `.github/workflows/test.yml`: jobs `test-valgrind` and
   `test-sanitize` (`make test-sanitize`).
-- **Status:** Known defect (2-files B19: the v2 job passes `-Gdefault`, which
-  v3 does not have).
+- **Status:** Tested on `v3-integration` (41165ec9) in the CI image
+  (Ubuntu 24.04, GCC 13.3): the `test-valgrind` command passes (2,433
+  permutations), and `make test-sanitize` passes in B-DEF with
+  LeakSanitizer (see LFS3-GEN-03). `test-valgrind` also passed on GitHub
+  at 8fc4d1d0; `test-sanitize` has not run on GitHub yet.
 - **When:** every CI run.
 
 #### LFS3-CI-05
@@ -6420,7 +6429,10 @@ behaviour.
   `tests/*.toml` code, leaks included.
 - **Fail:** any report.
 - **Verified by:** job `test-sanitize` (`make test-sanitize`).
-- **Status:** Known defect (F-4 to F-8; fixed on v3-fixes).
+- **Status:** Tested on `v3-integration` (41165ec9): no report in B-DEF
+  or B-BIG (see LFS3-GEN-03). F-4 to F-8 are fixed; LeakSanitizer found
+  cases in `test_rbyd`, `test_btree`, `test_kv`, `test_mount` and
+  `test_ck` that never freed what they allocated, fixed in 6fad1a62.
 - **When:** every CI run.
 
 #### LFS3-CI-10
@@ -7596,7 +7608,7 @@ new environment (9.2).
 |---|---|---|---|
 | LFS3-GEN-01 | Untested | every CI run | CI job: `make test` on thumb under qemu-arm |
 | LFS3-GEN-02 | Untested | every CI run | cross-endian image round trip, x86_64 and mips/powerpc |
-| LFS3-GEN-03 | Defect | every CI run | runner built with `-fsanitize=undefined,address`, `-Pnone`, B-DEF and B-BIG |
+| LFS3-GEN-03 | Tested | every CI run (B-DEF), nightly (B-BIG) | `make test-sanitize`, jobs `test-sanitize` and `test-sanitize-biggest` (41165ec9) |
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
 | LFS3-GEN-05 | Partly | every CI run | runner wrapper that checks every negative return value |
 | LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
@@ -7836,10 +7848,10 @@ new environment (9.2).
 | LFS3-CI-01 | Defect | every CI run | v3 workflow |
 | LFS3-CI-02 | Defect | every CI run | v3 workflow, cross architectures |
 | LFS3-CI-03 | Untested | every CI run | v3 workflow, feature builds |
-| LFS3-CI-04 | Defect | every CI run | v3 workflow, valgrind and sanitizers |
+| LFS3-CI-04 | Tested | every CI run | jobs `test-valgrind` and `test-sanitize` (41165ec9) |
 | LFS3-CI-06 | Defect | every CI run | v3 workflow, sizes |
 | LFS3-CI-07 | Defect | every CI run | v3 workflow, coverage |
-| LFS3-CI-09 | Defect | every CI run | sanitizer job (LFS3-CI-04) |
+| LFS3-CI-09 | Tested | every CI run | job `test-sanitize`, leaks included (6fad1a62, 41165ec9) |
 
 
 ## Appendix A. Defect register
