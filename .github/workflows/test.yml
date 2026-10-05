@@ -563,6 +563,53 @@ jobs:
               test_compat test_grow test_relocations" \
             make test
 
+  # run under AddressSanitizer and UndefinedBehaviorSanitizer, see
+  # make test-sanitize, -Pnone also checks for leaks, the nightly runs
+  # LFS3_BIGGEST
+  #
+  # split by schedule and suite to fit in an hour, est. 20-35 minutes
+  # each on 4 vCPUs from local runs, an except entry runs every suite it
+  # doesn't name, so new suites are never left out
+  test-sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pls: none
+            tests: test_fwrite
+          - pls: none
+            tests: test_badblocks test_exhaustion test_trvs test_rbyd
+          - pls: none
+            except: >-
+              test_fwrite test_badblocks test_exhaustion test_trvs
+              test_rbyd
+          - pls: linear
+            tests: test_powerloss
+          - pls: linear
+            except: test_powerloss
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-sanitize
+        run: |
+          tests="${{matrix.tests}}"
+          if [[ -n "${{matrix.except}}" ]]
+          then
+            tests=$(ls tests/*.toml | xargs -n1 basename | sed 's/\.toml$//' \
+              | grep -vxF -f <(tr ' ' '\n' <<< "${{matrix.except}}"))
+          fi
+          TESTFLAGS="$TESTFLAGS $(echo $tests)" \
+            make test-sanitize SANITIZE_PLS=${{matrix.pls}}
+
   # compile/run with Clang, mostly to check for Clang-specific warnings
   test-clang:
     runs-on: ubuntu-24.04

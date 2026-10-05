@@ -57,6 +57,12 @@ CROSS_CC ?= mips-linux-gnu-gcc --static
 CROSS_EXEC ?= qemu-mips
 BALANCE_DIR ?= $(BUILDDIR)/balance
 
+SANITIZE_DIR ?= $(BUILDDIR)/sanitize
+# power-loss schedules for test-sanitize, -Pnone also checks for leaks
+SANITIZE_PLS ?= none linear
+# LeakSanitizer only runs on Linux, elsewhere detect_leaks=1 aborts
+SANITIZE_LEAKS ?= $(if $(filter Linux,$(shell uname -s)),1,0)
+
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
 		$(SRC) \
@@ -133,6 +139,9 @@ CFLAGS += -fno-omit-frame-pointer
 endif
 ifdef PERFBDGEN
 CFLAGS += -fno-omit-frame-pointer
+endif
+ifdef SANITIZE
+CFLAGS += -fsanitize=address,undefined -fno-omit-frame-pointer
 endif
 
 # also forward all LFS3_* environment variables
@@ -722,6 +731,26 @@ test-balance:
 	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner $(TESTFLAGS) \
 		test_rbyd test_btree test_mtree
 
+## Run the tests under AddressSanitizer and UndefinedBehaviorSanitizer
+#
+# Runs once for each schedule in SANITIZE_PLS. halt_on_error makes a UBSan
+# report fail its case, as an ASan report does. Power loss longjmps out of
+# a test and leaks what it allocated, so LeakSanitizer only checks the
+# -Pnone run. The Linux runtimes default detect_stack_use_after_return to
+# 1, which makes some cases hundreds of times slower, so it is off, as on
+# macOS. Everything goes in SANITIZE_DIR.
+.PHONY: test-sanitize
+test-sanitize:
+	$(MAKE) BUILDDIR=$(SANITIZE_DIR) SANITIZE=1 test-runner
+	for p in $(SANITIZE_PLS) ; do \
+		l=0 ; [ $$p = none ] && l=$(SANITIZE_LEAKS) ; \
+		UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 \
+		ASAN_OPTIONS=detect_leaks=$$l:detect_stack_use_after_return=0 \
+			./scripts/test.py -R$(SANITIZE_DIR)/runners/test_runner \
+				-P$$p $(TESTFLAGS) \
+			|| exit 1 ; \
+	done
+
 ## List the tests
 .PHONY: test-list list-tests
 test-list list-tests: test-runner
@@ -1067,6 +1096,7 @@ clean:
 	rm -rf $(COMPAT_DIR)
 	rm -rf $(DBG_DIR)
 	rm -rf $(RELEASE_DIR)
+	rm -rf $(SANITIZE_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)
