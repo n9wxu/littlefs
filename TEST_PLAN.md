@@ -1414,16 +1414,18 @@ defines; procedure; pass and fail; extension needed.
   `test_powerloss_settle_newer`, internal. B-DEF, B-YGB and B-BIG.
 - **Covers:** DEG-14.
 - **Defines:** `MODE` 0 (default, a dirty file) and 1 (`LFS3_M_SETTLE`);
-  `FAILS` 1, 3 and 64.
+  `FAILS` 1, 3 and 64; `CK_RETRIES` 0 and 3.
 - **Procedure:** Sync a first version of a file, compact the mroot so its
   other block keeps it, sync a second version into the newer block, and
   for `MODE` 0 desync and close so the mark stays. Make the newer block's
   next `FAILS` reads fail (`lfs3_emubd_mktransient`) and mount; then clear
   the failures and mount again.
-- **Pass:** once the failures are used up, the file reads the second
-  version, at the first mount if they ran out during it, and always at
-  the second; `lfs3_fs_ck` returns 0.
-- **Fail:** the first version: the older block copied over the newer one.
+- **Pass:** the first mount returns 0 when `FAILS` is no more than
+  `CK_RETRIES`, and the file reads the second version, else
+  `LFS3_ERR_CORRUPT` (LFS3-INT-26); the second mount always finds the
+  second version; `lfs3_fs_ck` returns 0.
+- **Fail:** the first version: the older block taken for the latest, or
+  copied over the newer one.
 - **Extension:** none.
 
 #### NEW-138 `powerloss::settle_rderr`
@@ -1466,8 +1468,43 @@ defines; procedure; pass and fail; extension needed.
 - **Fail:** an mdir moved under an open file, a lost commit, or a bad
   block written again.
 - **Extension:** mtree inner nodes, once they move by a commit through
-  the mtree; a newer block that fails reads, once a fetch can tell a
-  failed read from the end of a log (issue #6).
+  the mtree.
+
+#### NEW-140 `mount::readerror`
+
+- **File and case:** `tests/test_mount.toml`, `test_mount_readerror`.
+  B-DEF, B-YGB and B-BIG.
+- **Covers:** ERR-05, INT-26.
+- **Defines:** `RDONLY` false and true; `N` 1 and 8 (the mroot only);
+  `ERR` `LFS3_ERR_IO` and `LFS3_ERR_CORRUPT`; `CK_RETRIES` 0 and 3.
+- **Procedure:** Make `N` directories and files, then mount once for
+  each read the mount makes, failing that read with `ERR`
+  (`lfs3_emubd_mkioerror`). After each mount that succeeds, read every
+  directory and file, run `lfs3_fs_ck`, and unmount.
+- **Pass:** each mount returns 0, or the injected error when the failing
+  read was reached; IO never mounts once reached; every mount that
+  succeeds finds everything as written and checks.
+- **Fail:** a mount that swallows IO, or that succeeds with a directory
+  or file missing or older: a metadata pair fell back on a failed read.
+- **Extension:** none.
+
+#### NEW-141 `mount::readerror_mounted`
+
+- **File and case:** `tests/test_mount.toml`,
+  `test_mount_readerror_mounted`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** INT-26.
+- **Defines:** `FAILS` 1, 3 and 64; `CK_RETRIES` 0 and 3.
+- **Procedure:** Write files until there is an mtree, sync a first
+  version of a file in an mtree mdir, compact the mdir so its older block
+  keeps it, then sync a second version into the newer block. While
+  mounted, make the newer block's next `FAILS` reads fail and look the
+  file up (`lfs3_get`, `lfs3_stat`). Clear the failures, read everything,
+  remount and read everything again.
+- **Pass:** the lookup returns the second version when `FAILS` is no more
+  than `CK_RETRIES`, else `LFS3_ERR_CORRUPT`; everything reads once the
+  block does, before and after the remount, and checks.
+- **Fail:** the first version: the fetch fell back to the older block.
+- **Extension:** none.
 
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
 
@@ -1951,7 +1988,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-126 | small-limit build | BUILD-18 | `LFS3_NAME_MAX=32`, `LFS3_FILE_MAX=65535`; `paths::*`, `fwrite::*fbig` | `LFS3_ERR_NAMETOOLONG` beyond 32, `LFS3_ERR_FBIG` beyond 65535 | – |
 | NEW-127 | SPEC reader cross-check | DOC-02 | a reader written from SPEC.md (an update of `scripts/dbglfs3.py`) decodes every image the suite writes (`-d`) | agreement with littlefs | – |
 | NEW-128 | README example job | DOC-03 | compile the README example in CI | compiles | – |
-| NEW-129 | `badblocks::transient_readerror` | DOC-12 | a revision-count read fails once during allocation or compaction, then succeeds | criterion L: no rollback. Decides whether the "read errors are persistent" assumption needs to be stated or removed | E-5 |
+| NEW-129 | `badblocks::transient_readerror` | DOC-12 | a revision-count read fails once during allocation or compaction, then succeeds | criterion L: no rollback. Decides whether the "read errors are persistent" assumption needs to be stated or removed. Fetches at mount and while mounted: NEW-140, NEW-141 (LFS3-INT-26); a failed read of the revision count no longer leaves an mdir with a lower revision than its other block | E-5 |
 
 ## 7. Entry and exit criteria
 

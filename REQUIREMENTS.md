@@ -1418,8 +1418,12 @@ flipped bits" of `lfs3.h`.
 - **Verified by:** as listed; `ck_readflip::spam` (NEW-62, in
   `tests/test_ck_readflip.toml`). An mdir in the mtree is fetched again on
   each lookup, and a fetch that reads a flipped bit falls back to the older
-  commit without an error. That is not a parity question; it belongs with
-  issue #6, and class 2 of the case counts it.
+  commit without an error. That is not a parity question, and not issue
+  #6 either: a read the block device fails is read again and never falls
+  back (LFS3-INT-26), but a flipped bit read without an error can't be
+  told from a commit a power loss interrupted, and reading again until it
+  reads whole would take a commit that comes and goes for a whole one
+  (LFS3-DEG-14). Class 2 of the case counts these.
 - **Status:** Tested on v3-integration (59b39cf6, 6a0d2e1c). D-5 is resolved
   by the restatement.
 - **When:** every CI run.
@@ -1536,7 +1540,8 @@ read (a metastable bit) can be missed, and so can a flip in a block that is
 not fetched again: the mroot while mounted, and the B-tree roots and cached
 leaves held in RAM. The repairing check of issue #19 (`ck_passes`) is the
 tool for those. An mdir in the mtree that falls back to an older commit when
-fetched is issue #6.
+fetched: a read that failed never makes it (LFS3-INT-26), a flipped bit
+can, see LFS3-INT-19.
 
 - **Source:** Proposal, decided on 2026-10-04 (issue #7, NEW-62): narrowed
   to what fetch checks do, `lfs3.h:283` ("Check block checksums before first
@@ -1555,6 +1560,59 @@ fetched is issue #6.
   tells a fetch by its read of the revision count, which lookups never read.
 - **Status:** Tested on v3-integration (6a0d2e1c). D-6 is resolved by the
   restatement.
+- **When:** every CI run.
+
+#### LFS3-INT-26
+
+littlefs shall never take the older block of a metadata pair for its latest
+state, or a shorter log for the whole one, because the block device failed
+a read: when a read of either revision count, or of the log of the block
+it fetches, fails, it shall read the pair again, up to `ck_retries` times,
+and then return `LFS3_ERR_CORRUPT` for the pair, at mount and while
+mounted.
+
+- **Source:** Proposal (issue #6; principles 1, 2 and 4; LFS3-ERR-05). A
+  read can fail while the supply is low and pass later, so a failed read
+  says nothing about which block is newer or where its log ends. At
+  `6f80e646` one `LFS3_ERR_CORRUPT` from the read callback, on the
+  revision count or the log of the newer block, made the fetch take the
+  older block or stop the log early. When the gcksum couldn't tell (the
+  mroot as the only mdir, or the mdir committed last) mount succeeded and
+  every commit since was lost, without an error; a lookup of an mdir in
+  the mtree, which fetches it again, returned the older state the same
+  way while mounted. A pair whose only readable block is the older one
+  is damaged: a read-only mount serves the rest of the filesystem
+  (LFS3-DEG-03), a read-write mount fails. Two exceptions keep what can
+  be kept: while mounted the mroot's newer block is known, so a read its
+  other block fails doesn't decide anything; and a read-only mount takes
+  what reads of an mroot, and says so (LFS3-DEG-03), since nothing past
+  the mroot could be served otherwise.
+- **Measure:** results of mount and of lookups while mounted, and what
+  they return, with each read of a mount failing in turn with
+  `LFS3_ERR_CORRUPT`, and with the newer block of an mdir in the mtree
+  failing its next 1, 3 or 64 reads while mounted, with `ck_retries` 0
+  and 3.
+- **Pass:** `mount::readerror` with `ERR` `LFS3_ERR_CORRUPT`: each mount
+  returns `LFS3_ERR_CORRUPT`, or 0 with every file and directory as
+  written and `lfs3_fs_ck` returning 0; `mount::readerror_mounted`:
+  `lfs3_get` returns the second version when no more reads fail than
+  `ck_retries`, else `LFS3_ERR_CORRUPT`, never the first version, and
+  everything reads once the block does; `powerloss::settle_newer`: a
+  read-write mount returns `LFS3_ERR_CORRUPT` while the newer block fails
+  more reads than `ck_retries`, and finds the second version once it
+  reads; `badblocks::mrootanchor_wear`, `badblocks::mrootanchor_stuck`
+  and `badblocks::grow` with READERROR: a read-write mount of an anchor
+  with a block that doesn't read returns `LFS3_ERR_CORRUPT`, a read-only
+  one mounts degraded, and writes go on while mounted after the mroot's
+  other block stops reading; in B-DEF, B-YGB and B-BIG.
+- **Fail:** an older state, or a shorter log, returned without an error.
+- **Verified by:** `mount::readerror` (NEW-140),
+  `mount::readerror_mounted` (NEW-141), `powerloss::settle_newer`
+  (NEW-137), `badblocks::mrootanchor_wear`,
+  `badblocks::mrootanchor_stuck`, `badblocks::grow`.
+- **Status:** Known defect at `6f80e646` (issue #6): every permutation of
+  `mount::readerror` with `LFS3_ERR_CORRUPT` and of
+  `mount::readerror_mounted` found the older state.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -7032,15 +7090,21 @@ the device reported bad.
   a remount, in B-DEF, B-BIG and B-YGB. The one documented exception:
   `lfs3_remove` and `lfs3_rename` return 0 when only the cleanup after
   their commit fails; the cleanup stays pending (`LFS3_I_MKCONSISTENT`) and
-  the next write retries it (Q26, decided). An injected CORRUPT
-  surfaces as CORRUPT or is handled by relocation (issue #6).
+  the next write retries it (Q26, decided). An injected CORRUPT from a
+  read surfaces as CORRUPT, is read again up to `ck_retries` times, or
+  degrades a read-only mount (LFS3-DEG-03), and never makes a metadata
+  pair fall back to its older block (LFS3-INT-26); `mount::readerror`
+  checks both codes.
 - **Fail:** IO turned into CORRUPT, an IO swallowed, or a read of another
-  copy, a relocation or a bad or suspect mark after an IO.
-- **Verified by:** `mount::readerror` and `errs::ioerror` (IO); the
-  CORRUPT half: issue #6.
+  copy, a relocation or a bad or suspect mark after an IO; a CORRUPT read
+  turned into another code, or into an older state.
+- **Verified by:** `mount::readerror` and `errs::ioerror` (IO);
+  `mount::readerror`, `mount::readerror_mounted` (CORRUPT, LFS3-INT-26).
 - **Status:** Partly tested. The IO half holds on `v3-integration` without
   a change to the code, tested by `errs::ioerror` (3c7a175e); the CORRUPT
-  half is issue #6.
+  half is issue #6 (LFS3-INT-26). At `6f80e646` a read error in a
+  configuration's name or file limit at mount returned
+  `LFS3_ERR_NOTSUP`, as if the limit were too large.
 - **When:** every CI run.
 
 #### LFS3-ERR-06
@@ -7317,8 +7381,9 @@ smallest repair that applies.
 - **Status:** Partly met. Not implemented at `b10efaa`; the repairing
   check is tested on `v3-integration` (f09acb9d); mdirs are settled
   instead of moved, tested on `v3-rc` (`e78b4263`), only when the other
-  block reads as older, since a fetch that can't read the newer block
-  falls back to the older one without an error (issue #6). mtree inner
+  block reads as older, since at `6f80e646` a fetch that couldn't read the
+  newer block fell back to the older one without an error (issue #6,
+  LFS3-INT-26). mtree inner
   nodes are not moved yet, that needs a commit through the mtree and the
   mroot, as gbmap nodes have; one that needed a retry stays listed as
   suspect. Rebuilding a damaged
@@ -7441,8 +7506,10 @@ newer one that failed only a read and reads whole when read again.
   NEW-11 and `dirs::rm_many_2layers` pass with power losses during the
   repairs themselves; `mtree::commit_too_big` passes, a full mroot can
   still be emptied. `powerloss::settle_newer` (NEW-137): a newer block
-  whose next 1, 3 or 64 reads fail as a mount settles its pair is settled
-  once it reads, or left as it is, never overwritten by the older block;
+  whose next 1, 3 or 64 reads fail as a mount settles its pair is read
+  again up to `ck_retries` (0 and 3) times, and the mount returns
+  `LFS3_ERR_CORRUPT` while it doesn't read (LFS3-INT-26), never
+  overwritten by the older block;
   `powerloss::settle_rderr` (NEW-138): an active block whose next 1 to 16
   reads fail during the repair loses no synced commit, at that mount or
   the next.
@@ -7831,6 +7898,7 @@ new environment (9.2).
 | LFS3-INT-19 | Partly | every CI run | enable `CKMETAPARITY` in `ck::spam_*` |
 | LFS3-INT-21 | Partly | every CI run | replace an mdir with an older copy after mount; `lfs3_fs_ck` must fail |
 | LFS3-INT-22 | Untested | every CI run | bit flips in gbmap nodes |
+| LFS3-INT-26 | Defect | every CI run | `mount::readerror` with `LFS3_ERR_CORRUPT`, `mount::readerror_mounted` (NEW-140, NEW-141) |
 | LFS3-FAIL-04 | Untested | every CI run | READERROR on a live mdir, file B-tree node and gbmap node |
 | LFS3-FAIL-07 | Untested | nightly | PROGNOOP/ERASENOOP without CKPROGS: no unsynced data returned |
 | LFS3-FAIL-12 | Untested | every CI run | after end of life, read-only remount reads every synced file |
