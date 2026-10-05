@@ -545,12 +545,16 @@ code = '''
             break;
         }
     }
+    // a good block taken as the second block of a new mdir pair is used
+    // again without an erase, it's erased when the pair first compacts
+    // into it
     if (ERASEFAIL) {
         assert(test_repair_erases[block] == 0);
         assert(test_repair_progs[block] == 0);
         assert(!test_repair_inuse(&lfs3, block));
     } else {
-        assert(test_repair_erases[block] > 0);
+        assert(test_repair_erases[block] > 0
+                || test_repair_inuse(&lfs3, block));
     }
 
     lfs3_unmount(&lfs3) => 0;

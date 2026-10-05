@@ -1156,6 +1156,124 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# Appends with several writes between syncs under powerloss
+#
+# Writes that flush a full file cache may leave part of a prog unit
+# cached, and appends that coalesce with the last fragment replace it in
+# one commit, after any powerloss the file must be exactly what its last
+# sync wrote
+#
+[cases.test_powerloss_append_unsynced_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.PROG_SIZE = [1, 16, 256]
+defines.FCACHE_SIZE = [16, 64]
+defines.CHUNK = [7, 22]
+defines.SYNC_EVERY = [1, 4]
+defines.SIZE = 'BLOCK_SIZE + BLOCK_SIZE/2'
+# no byte may be programmed twice without an erase
+defines.CKPROGONCE = true
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // the number of synced writes is committed with the file's data as
+    // a file-attached attribute
+    uint32_t step = 0;
+    lfs3_ssize_t step_size;
+    struct lfs3_attr attr = {
+        .type = 1,
+        .flags = LFS3_A_RDWR,
+        .buffer = &step,
+        .buffer_size = sizeof(uint32_t),
+        .size = &step_size,
+    };
+    struct lfs3_file_cfg filecfg = {
+        .attrs = &attr,
+        .attr_count = 1,
+    };
+    lfs3_file_t file;
+    lfs3_file_opencfg(&lfs3, &file, "log",
+            LFS3_O_RDWR | LFS3_O_CREAT | LFS3_O_APPEND,
+            &filecfg) => 0;
+    if (step_size == LFS3_ERR_NOATTR) {
+        step = 0;
+    } else {
+        assert(step_size == sizeof(uint32_t));
+    }
+
+    // the file is exactly its synced writes
+    lfs3_file_size(&lfs3, &file) => step*CHUNK;
+    uint32_t prng = 42;
+    uint8_t rbuf[CHUNK];
+    for (uint32_t i = 0; i < step; i++) {
+        lfs3_file_read(&lfs3, &file, rbuf, CHUNK) => CHUNK;
+        for (lfs3_size_t j = 0; j < CHUNK; j++) {
+            assert(rbuf[j] == 'a' + (TEST_PRNG(&prng) % 26));
+        }
+    }
+    lfs3_file_read(&lfs3, &file, rbuf, CHUNK) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // append, sync every few writes, repeat
+    uint32_t written = step;
+    while ((written+1)*CHUNK <= SIZE) {
+        uint8_t wbuf[CHUNK];
+        for (lfs3_size_t j = 0; j < CHUNK; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_write(&lfs3, &file, wbuf, CHUNK) => CHUNK;
+        written += 1;
+
+        if (written % SYNC_EVERY == 0 || (written+1)*CHUNK > SIZE) {
+            step = written;
+            step_size = sizeof(uint32_t);
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+    }
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        // check our file
+        uint32_t step_;
+        lfs3_getattr(&lfs3, "log", 1, &step_, sizeof(uint32_t))
+                => sizeof(uint32_t);
+        assert(step_ == SIZE/CHUNK);
+
+        lfs3_file_open(&lfs3, &file, "log", LFS3_O_RDONLY) => 0;
+        lfs3_file_size(&lfs3, &file) => step_*CHUNK;
+        prng = 42;
+        for (uint32_t i = 0; i < step_; i++) {
+            lfs3_file_read(&lfs3, &file, rbuf, CHUNK) => CHUNK;
+            for (lfs3_size_t j = 0; j < CHUNK; j++) {
+                assert(rbuf[j] == 'a' + (TEST_PRNG(&prng) % 26));
+            }
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # Truncate and fruncate under powerloss
 #
 # Each file's step is committed with its data as a file-attached

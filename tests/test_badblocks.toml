@@ -7070,7 +7070,7 @@ defines.BADBLOCK_BEHAVIOR = [
 ]
 # we need prog checking to detect silent prog errors
 defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_PROGNOOP'
-defines.PROG_SIZE = [1, 16]
+defines.PROG_SIZE = [1, 16, 256]
 defines.REOPEN = [false, true]
 defines.SIZE = 2000
 defines.APPEND = 64
@@ -7096,12 +7096,13 @@ code = '''
     lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
     lfs3_file_sync(&lfs3, &file) => 0;
 
-    // find the block holding our last byte and mark it bad, mark the
-    // first unwritten bit so flipping progs hit it
+    // find the block holding our last prog-aligned byte, anything after
+    // it is a fragment, and mark it bad, mark the first unwritten bit so
+    // flipping progs hit it
     lfs3_bid_t bid;
     lfs3_bid_t weight;
     lfs3_bptr_t bptr;
-    lfs3_file_lookupnext(&lfs3, &file, SIZE-1,
+    lfs3_file_lookupnext(&lfs3, &file, lfs3_aligndown(SIZE, PROG_SIZE)-1,
             &bid, &weight, &bptr) => 0;
     assert(lfs3_bptr_isbptr(&bptr));
     lfs3_block_t badblock = lfs3_bptr_block(&bptr);
