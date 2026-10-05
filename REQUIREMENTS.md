@@ -7292,7 +7292,13 @@ smallest repair that applies.
   `lfs3_fs_ck`, and the first two also by a mount with the matching check
   flag and by `lfs3_fs_gc`; the call returns 0; the old blocks are no longer referenced; every file
   reads back as written, also after a remount; a second check erases
-  nothing. `repair::data_lost`: a block whose every read fails makes the
+  nothing. `repair::mdir`, `repair::mdir_twice` (NEW-139): an mroot or
+  mtree mdir whose active block is suspect is settled into its other block
+  (LFS3-DEG-14) by `lfs3_fs_ck` and `lfs3_fs_gc`, not while an open file
+  holds it; every file reads back after a write and a remount; the
+  suspect block is written again by the next compaction, and marked bad
+  and left by a relocation if it needs settling off again.
+  `repair::data_lost`: a block whose every read fails makes the
   check return `LFS3_ERR_CORRUPT` and stays listed by
   `lfs3_fs_nextsuspect`, and the damaged file can still be removed
   (LFS3-DEG-02). On a read-only mount nothing is moved and nothing is
@@ -7302,11 +7308,16 @@ smallest repair that applies.
   pass their checksum, reports an error for damage it repaired, or a
   repairable block left unrepaired on a writable mount.
 - **Verified by:** `repair::data`, `repair::data_lost`, `repair::btree`,
-  `repair::gbmap`; `gbmap::rmmkgbmap`.
+  `repair::gbmap`, `repair::mdir`, `repair::mdir_twice`;
+  `gbmap::rmmkgbmap`.
 - **Status:** Partly met. Not implemented at `b10efaa`; the repairing
-  check is tested on `v3-integration` (f09acb9d). mdirs and mtree nodes
-  have no checksum in a parent to copy against, so they are not moved; one
-  that needed a retry stays listed as suspect. Rebuilding a damaged
+  check is tested on `v3-integration` (f09acb9d); settling mdirs instead
+  of moving them is not implemented at `6248c34d`; it applies only when
+  the other block reads as older, since a fetch that can't read the newer
+  block falls back to the older one without an error (issue #6). mtree
+  inner nodes are not moved yet, that needs a commit through the mtree and
+  the mroot, as gbmap nodes have; one that needed a retry stays listed as
+  suspect. Rebuilding a damaged
   directory needs the degraded mount of LFS3-DEG-03.
 - **When:** every CI run.
 
@@ -7398,10 +7409,16 @@ since the last mount that settled it, and every pair showing a power loss.
 
 littlefs shall rewrite a metadata pair only from bytes that pass the
 checksum of the commit they belong to, as read for the copy, and shall not
-append to a block whose state may not read the same twice.
+append to a block whose state may not read the same twice; and shall not
+take a read the block device fails for a power loss: a failed read shall
+not count as a commit that reads differently, and a repair shall never
+copy over a newer block it can't read, nor copy the older block over a
+newer one that reads whole when read again.
 
 - **Source:** Proposal (issue #1). A copy that checksums bytes it read
-  differently launders a flipped bit under a fresh checksum.
+  differently launders a flipped bit under a fresh checksum. A read can
+  fail while the supply is low and pass later (issue #19), and a repair
+  that takes it for an interrupted write drops synced commits.
 - **Measure:** the repair copy and the blocks littlefs appends to.
 - **Pass:** the repair copies the active block commit by commit, checking
   each commit's checksum on the bytes it copies, over several reads, and
@@ -7419,14 +7436,21 @@ append to a block whose state may not read the same twice.
   NEW-08, NEW-130, and the behaviour-4 permutations of NEW-05, NEW-06,
   NEW-11 and `dirs::rm_many_2layers` pass with power losses during the
   repairs themselves; `mtree::commit_too_big` passes, a full mroot can
-  still be emptied.
+  still be emptied. `powerloss::settle_newer` (NEW-137): a newer block
+  whose next 1, 3 or 64 reads fail as a mount settles its pair is settled
+  once it reads, or left as it is, never overwritten by the older block;
+  `powerloss::settle_rderr` (NEW-138): an active block whose next 1 to 16
+  reads fail during the repair loses no synced commit, at that mount or
+  the next.
 - **Fail:** a repair that commits bytes other than those checked, an
   append to a settled copy that could compact in place, to a tie's block
-  without a settled commit, or to a block whose newer partner failed, or
-  a write at mount that a full metadata pair can't take.
+  without a settled commit, or to a block whose newer partner failed, a
+  write at mount that a full metadata pair can't take, or a synced commit
+  lost to a read that failed.
 - **Verified by:** NEW-08, NEW-130, NEW-131, NEW-05, NEW-06, NEW-11,
-  `dirs::rm_many_2layers`, `mtree::commit_too_big`.
-- **Status:** Tested on `v3-rc` (`a12705da`).
+  `dirs::rm_many_2layers`, `mtree::commit_too_big`, NEW-137, NEW-138.
+- **Status:** Tested on `v3-rc` (`a12705da`); the failed-read clauses
+  are not implemented at `6248c34d`.
 - **When:** every CI run.
 
 #### LFS3-DEG-15

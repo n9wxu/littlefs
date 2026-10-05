@@ -1408,6 +1408,67 @@ defines; procedure; pass and fail; extension needed.
   block left unmarked after the checkpoint.
 - **Extension:** none.
 
+#### NEW-137 `powerloss::settle_newer`
+
+- **File and case:** `tests/test_powerloss.toml`,
+  `test_powerloss_settle_newer`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-14.
+- **Defines:** `MODE` 0 (default, a dirty file) and 1 (`LFS3_M_SETTLE`);
+  `FAILS` 1, 3 and 64.
+- **Procedure:** Sync a first version of a file, compact the mroot so its
+  other block keeps it, sync a second version into the newer block, and
+  for `MODE` 0 desync and close so the mark stays. Make the newer block's
+  next `FAILS` reads fail (`lfs3_emubd_mktransient`) and mount; then clear
+  the failures and mount again.
+- **Pass:** once the failures are used up, the file reads the second
+  version, at the first mount if they ran out during it, and always at
+  the second; `lfs3_fs_ck` returns 0.
+- **Fail:** the first version: the older block copied over the newer one.
+- **Extension:** none.
+
+#### NEW-138 `powerloss::settle_rderr`
+
+- **File and case:** `tests/test_powerloss.toml`,
+  `test_powerloss_settle_rderr`, internal. B-DEF, B-YGB and B-BIG.
+- **Covers:** DEG-14.
+- **Defines:** `FAILS` 1, 2, 3, 4, 8 and 16.
+- **Procedure:** Sync a first version of a file, compact the mroot, sync
+  two more versions into the active block, and desync and close so the
+  mark stays. Make the active block's next `FAILS` reads fail and settle
+  the mroot (`lfs3_mdir_settle`), then clear the failures and mount twice.
+- **Pass:** the file reads the last version at both mounts, and
+  `lfs3_fs_ck` returns 0, whether the settle copied the pair or left it.
+- **Fail:** an earlier version: a failed read taken for a commit that
+  comes and goes, or for an interrupted compaction.
+- **Extension:** none.
+
+#### NEW-139 `repair::mdir`, `repair::mdir_twice`
+
+- **File and case:** `tests/test_repair.toml`, `test_repair_mdir` and
+  `test_repair_mdir_twice`, internal. B-YGB and B-BIG.
+- **Covers:** DEG-10, BAD-17.
+- **Defines:** `METHOD` 0 (`lfs3_fs_ck`) and 2 (`lfs3_fs_gc`, with
+  `LFS3_GC`); `MTREE` false (the file is in the mroot) and true (in an
+  mtree mdir); `OPEN` false and true; `ck_retries` 3.
+- **Procedure:** Write a file, enough files first for an mtree with
+  `MTREE`, remount, and make the active block of the file's mdir suspect
+  (`lfs3_alloc_pushsuspect`, as a failed read does). With `OPEN`, run a
+  check with the file open, then close it. Run a check, then rewrite the
+  file and remount. `mdir_twice` rewrites the file so the next compaction
+  writes the suspect block again, checks again, then writes the file
+  `2*BLOCK_COUNT` times.
+- **Pass:** nothing moves while the file is open; then the mdir's blocks
+  swap, without an erase of the suspect block, which stays suspect and
+  not bad; the mroot in RAM follows; every file reads back after the
+  rewrite and the remount, and `lfs3_fs_ck` returns 0. In `mdir_twice`
+  the second check marks the block bad, the next write relocates the
+  pair, and the block is never erased or programmed again.
+- **Fail:** an mdir moved under an open file, a lost commit, or a bad
+  block written again.
+- **Extension:** mtree inner nodes, once they move by a commit through
+  the mtree; a newer block that fails reads, once a fetch can tell a
+  failed read from the end of a log (issue #6).
+
 #### NEW-09 `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz`
 
 - **File and case:** `tests/test_badblocks.toml`, two reentrant fuzz cases
