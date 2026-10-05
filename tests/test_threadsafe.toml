@@ -1,0 +1,334 @@
+# Test the lock littlefs takes around each public call with
+# LFS3_THREADSAFE, see make test-threadsafe
+#
+# In this build every suite runs with the runner's lock and unlock, see
+# runners/test_runner.h, which fail a case on a lock taken while held or
+# released unheld, and runners/test_errs.h checks that each public call
+# took the lock once. These cases call every public function, including
+# the ones littlefs builds on its other public functions, with block
+# device callbacks that fail outside the lock, then with lock failing and
+# with unlock failing.
+ifdef = 'LFS3_THREADSAFE'
+
+code = '''
+// block device operations only happen under the lock
+static int (*test_threadsafe_read_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        void *buffer, lfs3_size_t size);
+static int (*test_threadsafe_prog_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        const void *buffer, lfs3_size_t size);
+static int (*test_threadsafe_erase_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
+static int (*test_threadsafe_sync_)(const struct lfs3_cfg *cfg);
+
+static int test_threadsafe_read(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        void *buffer, lfs3_size_t size) {
+    assert(TEST_LOCK.locked);
+    return test_threadsafe_read_(cfg, block, off, buffer, size);
+}
+
+static int test_threadsafe_prog(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        const void *buffer, lfs3_size_t size) {
+    assert(TEST_LOCK.locked);
+    return test_threadsafe_prog_(cfg, block, off, buffer, size);
+}
+
+static int test_threadsafe_erase(const struct lfs3_cfg *cfg,
+        lfs3_block_t block) {
+    assert(TEST_LOCK.locked);
+    return test_threadsafe_erase_(cfg, block);
+}
+
+static int test_threadsafe_sync(const struct lfs3_cfg *cfg) {
+    assert(TEST_LOCK.locked);
+    return test_threadsafe_sync_(cfg);
+}
+
+static void test_threadsafe_watch(struct lfs3_cfg *cfg) {
+    test_threadsafe_read_ = cfg->read;
+    test_threadsafe_prog_ = cfg->prog;
+    test_threadsafe_erase_ = cfg->erase;
+    test_threadsafe_sync_ = cfg->sync;
+    cfg->read = test_threadsafe_read;
+    cfg->prog = test_threadsafe_prog;
+    cfg->erase = test_threadsafe_erase;
+    cfg->sync = test_threadsafe_sync;
+}
+
+// which callback fails
+enum test_threadsafe_fail {
+    TEST_THREADSAFE_NONE   = 0,
+    // each call runs once with lock failing first
+    TEST_THREADSAFE_LOCK   = 1,
+    // each call runs with unlock failing
+    TEST_THREADSAFE_UNLOCK = 2,
+};
+
+static enum test_threadsafe_fail test_threadsafe_fail;
+
+// everything the calls write to, which a call with lock failing must
+// leave as it was, byte for byte
+static struct test_threadsafe_state {
+    lfs3_t lfs3;
+    lfs3_file_t file;
+    lfs3_dir_t dir;
+    lfs3_trv_t trv;
+    struct lfs3_info info;
+    struct lfs3_fsinfo fsinfo;
+    struct lfs3_tinfo tinfo;
+    struct lfs3_health health;
+    uint32_t cksum;
+    uint8_t buffer[16];
+} test_threadsafe_state, test_threadsafe_state_;
+
+static uint64_t test_threadsafe_locks;
+static uint64_t test_threadsafe_unlocks;
+
+static void test_threadsafe_before(int lock_err, int unlock_err) {
+    memcpy(&test_threadsafe_state_, &test_threadsafe_state,
+            sizeof(test_threadsafe_state));
+    test_threadsafe_locks = TEST_LOCK.locks;
+    test_threadsafe_unlocks = TEST_LOCK.unlocks;
+    TEST_LOCK.lock_err = lock_err;
+    TEST_LOCK.unlock_err = unlock_err;
+}
+
+// with lock failing, the call returned its error and did nothing
+static void test_threadsafe_lockfailed(lfs3_ssize_t res) {
+    TEST_LOCK.lock_err = 0;
+    assert(res == TEST_ERR_LOCK);
+    assert(TEST_LOCK.locks == test_threadsafe_locks+1);
+    assert(TEST_LOCK.unlocks == test_threadsafe_unlocks);
+    assert(!TEST_LOCK.locked);
+    assert(memcmp(&test_threadsafe_state, &test_threadsafe_state_,
+            sizeof(test_threadsafe_state)) == 0);
+}
+
+// the call took the lock once, released it, and returned res_, any
+// result >= 0 for TEST_THREADSAFE_ANY, or with unlock failing, unlock's
+// error unless the call failed
+#define TEST_THREADSAFE_ANY 0x7fffffff
+
+static void test_threadsafe_unlocked(lfs3_ssize_t res, lfs3_ssize_t res_) {
+    TEST_LOCK.unlock_err = 0;
+    assert(TEST_LOCK.locks == test_threadsafe_locks+1);
+    assert(TEST_LOCK.unlocks == test_threadsafe_unlocks+1);
+    assert(!TEST_LOCK.locked);
+    if (test_threadsafe_fail == TEST_THREADSAFE_UNLOCK && res_ >= 0) {
+        assert(res == TEST_ERR_UNLOCK);
+    } else if (res_ == TEST_THREADSAFE_ANY) {
+        assert(res >= 0);
+    } else {
+        assert(res == res_);
+    }
+}
+
+#define TEST_THREADSAFE(call, res) ( \
+        (test_threadsafe_fail == TEST_THREADSAFE_LOCK) \
+            ? (test_threadsafe_before(TEST_ERR_LOCK, 0), \
+                test_threadsafe_lockfailed(call)) \
+            : (void)0, \
+        test_threadsafe_before(0, \
+            (test_threadsafe_fail == TEST_THREADSAFE_UNLOCK) \
+                ? TEST_ERR_UNLOCK \
+                : 0), \
+        test_threadsafe_unlocked((call), (res)))
+
+// every public function, on paths that succeed and paths that fail
+static void test_threadsafe_calls(const struct lfs3_cfg *cfg_) {
+    struct lfs3_cfg cfg = *cfg_;
+    test_threadsafe_watch(&cfg);
+    #ifdef LFS3_GC
+    // pre-erasing needs revperturb
+    cfg.gc_flags = LFS3_GC_MKCONSISTENT | LFS3_GC_CKMETA;
+    #endif
+    // a smaller filesystem to grow
+    struct lfs3_cfg small = cfg;
+    small.block_count = cfg.block_count/2;
+
+    struct test_threadsafe_state *s = &test_threadsafe_state;
+    memset(s, 0, sizeof(*s));
+    lfs3_t *lfs3 = &s->lfs3;
+    lfs3_file_t *file = &s->file;
+    lfs3_dir_t *dir = &s->dir;
+    lfs3_trv_t *trv = &s->trv;
+    const struct lfs3_file_cfg fcfg = {0};
+
+    // nothing to mount yet
+    TEST_THREADSAFE(lfs3_mount(lfs3, LFS3_M_RDWR, &cfg),
+            LFS3_ERR_CORRUPT);
+    // checks after format use lfs3_fs_ck
+    TEST_THREADSAFE(lfs3_format(lfs3,
+                LFS3_F_RDWR
+                    | LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, 0)
+                    | LFS3_F_CKMETA
+                    | LFS3_F_CKDATA,
+                &small),
+            0);
+    TEST_THREADSAFE(lfs3_mount(lfs3, LFS3_M_RDWR, &cfg), 0);
+    TEST_THREADSAFE(lfs3_fs_grow(lfs3, cfg.block_count+1),
+            LFS3_ERR_INVAL);
+    TEST_THREADSAFE(lfs3_fs_grow(lfs3, cfg.block_count), 0);
+
+    // the calls that write use lfs3_fs_mkconsistent
+    TEST_THREADSAFE(lfs3_mkdir(lfs3, "d"), 0);
+    TEST_THREADSAFE(lfs3_mkdir(lfs3, "d"), LFS3_ERR_EXIST);
+    // lfs3_set, lfs3_get and lfs3_size use the file functions
+    TEST_THREADSAFE(lfs3_set(lfs3, "kv", "hello", 5), 0);
+    TEST_THREADSAFE(lfs3_get(lfs3, "kv", s->buffer, sizeof(s->buffer)),
+            5);
+    TEST_THREADSAFE(lfs3_get(lfs3, "nope", s->buffer, sizeof(s->buffer)),
+            LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_size(lfs3, "kv"), 5);
+    TEST_THREADSAFE(lfs3_size(lfs3, "nope"), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_stat(lfs3, "kv", &s->info), 0);
+    TEST_THREADSAFE(lfs3_stat(lfs3, "nope", &s->info), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_setattr(lfs3, "kv", 'a', "attr", 4), 0);
+    TEST_THREADSAFE(lfs3_getattr(lfs3, "kv", 'a',
+                s->buffer, sizeof(s->buffer)),
+            4);
+    TEST_THREADSAFE(lfs3_sizeattr(lfs3, "kv", 'a'), 4);
+    TEST_THREADSAFE(lfs3_removeattr(lfs3, "kv", 'a'), 0);
+    TEST_THREADSAFE(lfs3_removeattr(lfs3, "kv", 'a'), LFS3_ERR_NOATTR);
+    TEST_THREADSAFE(lfs3_rename(lfs3, "kv", "d/kv"), 0);
+    TEST_THREADSAFE(lfs3_remove(lfs3, "d"), LFS3_ERR_NOTEMPTY);
+
+    // lfs3_file_open uses lfs3_file_opencfg
+    TEST_THREADSAFE(lfs3_file_open(lfs3, file, "nope", LFS3_O_RDONLY),
+            LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_file_open(lfs3, file, "f",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL),
+            0);
+    TEST_THREADSAFE(lfs3_file_write(lfs3, file, "abcdefgh", 8), 8);
+    TEST_THREADSAFE(lfs3_file_flush(lfs3, file), 0);
+    // lfs3_file_sync uses lfs3_file_flush
+    TEST_THREADSAFE(lfs3_file_sync(lfs3, file), 0);
+    TEST_THREADSAFE(lfs3_file_tell(lfs3, file), 8);
+    TEST_THREADSAFE(lfs3_file_size(lfs3, file), 8);
+    TEST_THREADSAFE(lfs3_file_seek(lfs3, file, -1, LFS3_SEEK_SET),
+            LFS3_ERR_INVAL);
+    TEST_THREADSAFE(lfs3_file_seek(lfs3, file, 0, LFS3_SEEK_SET), 0);
+    TEST_THREADSAFE(lfs3_file_rewind(lfs3, file), 0);
+    TEST_THREADSAFE(lfs3_file_truncate(lfs3, file, 16), 0);
+    TEST_THREADSAFE(lfs3_file_fruncate(lfs3, file, 8), 0);
+    TEST_THREADSAFE(lfs3_file_desync(lfs3, file), 0);
+    // drops the truncates
+    TEST_THREADSAFE(lfs3_file_resync(lfs3, file), 0);
+    TEST_THREADSAFE(lfs3_file_close(lfs3, file), 0);
+
+    // lfs3_file_read of unflushed data uses lfs3_file_flush
+    TEST_THREADSAFE(lfs3_file_opencfg(lfs3, file, "f", LFS3_O_RDWR, &fcfg),
+            0);
+    TEST_THREADSAFE(lfs3_file_write(lfs3, file, "ijkl", 4), 4);
+    TEST_THREADSAFE(lfs3_file_read(lfs3, file, s->buffer, 4), 4);
+    TEST_THREADSAFE(lfs3_file_ck(lfs3, file,
+                LFS3_CK_CKMETA | LFS3_CK_CKDATA),
+            0);
+    TEST_THREADSAFE(lfs3_file_close(lfs3, file), 0);
+    // checks on open use lfs3_file_ck
+    TEST_THREADSAFE(lfs3_file_open(lfs3, file, "f",
+                LFS3_O_RDONLY | LFS3_O_CKMETA | LFS3_O_CKDATA),
+            0);
+    // syncing a desynchronized read-only file uses lfs3_file_resync
+    TEST_THREADSAFE(lfs3_file_desync(lfs3, file), 0);
+    TEST_THREADSAFE(lfs3_file_sync(lfs3, file), 0);
+    TEST_THREADSAFE(lfs3_file_close(lfs3, file), 0);
+    // writes with LFS3_O_FLUSH and LFS3_O_SYNC use lfs3_file_flush and
+    // lfs3_file_sync
+    TEST_THREADSAFE(lfs3_file_open(lfs3, file, "f",
+                LFS3_O_WRONLY | LFS3_O_APPEND | LFS3_O_FLUSH | LFS3_O_SYNC),
+            0);
+    TEST_THREADSAFE(lfs3_file_write(lfs3, file, "mnop", 4), 4);
+    TEST_THREADSAFE(lfs3_file_close(lfs3, file), 0);
+
+    TEST_THREADSAFE(lfs3_dir_open(lfs3, dir, "nope"), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_dir_open(lfs3, dir, "/"), 0);
+    TEST_THREADSAFE(lfs3_dir_read(lfs3, dir, &s->info), 0);
+    TEST_THREADSAFE(lfs3_dir_read(lfs3, dir, &s->info), 0);
+    TEST_THREADSAFE(lfs3_dir_tell(lfs3, dir), 2);
+    TEST_THREADSAFE(lfs3_dir_read(lfs3, dir, &s->info), 0);
+    TEST_THREADSAFE(lfs3_dir_read(lfs3, dir, &s->info), 0);
+    TEST_THREADSAFE(lfs3_dir_read(lfs3, dir, &s->info), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_dir_seek(lfs3, dir, 2), 0);
+    TEST_THREADSAFE(lfs3_dir_rewind(lfs3, dir), 0);
+    TEST_THREADSAFE(lfs3_dir_close(lfs3, dir), 0);
+
+    TEST_THREADSAFE(lfs3_trv_open(lfs3, trv, LFS3_T_RDONLY), 0);
+    TEST_THREADSAFE(lfs3_trv_read(lfs3, trv, &s->tinfo), 0);
+    TEST_THREADSAFE(lfs3_trv_rewind(lfs3, trv), 0);
+    TEST_THREADSAFE(lfs3_trv_close(lfs3, trv), 0);
+
+    TEST_THREADSAFE(lfs3_fs_stat(lfs3, &s->fsinfo), 0);
+    TEST_THREADSAFE(lfs3_fs_usage(lfs3), TEST_THREADSAFE_ANY);
+    // with the gbmap, lfs3_fs_health uses lfs3_fs_nextbad
+    TEST_THREADSAFE(lfs3_fs_health(lfs3, &s->health), 0);
+    TEST_THREADSAFE(lfs3_fs_cksum(lfs3, &s->cksum), 0);
+    TEST_THREADSAFE(lfs3_fs_mkconsistent(lfs3), 0);
+    TEST_THREADSAFE(lfs3_fs_ck(lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA), 0);
+    TEST_THREADSAFE(lfs3_fs_unck(lfs3, LFS3_GC_CKMETA), 0);
+    #ifdef LFS3_GC
+    TEST_THREADSAFE(lfs3_fs_gc(lfs3), 0);
+    #endif
+    #ifdef LFS3_GBMAP
+    #ifndef LFS3_YES_GBMAP
+    TEST_THREADSAFE(lfs3_fs_mkgbmap(lfs3), LFS3_ERR_EXIST);
+    TEST_THREADSAFE(lfs3_fs_rmgbmap(lfs3), 0);
+    TEST_THREADSAFE(lfs3_fs_rmgbmap(lfs3), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_fs_mkgbmap(lfs3), 0);
+    #endif
+    TEST_THREADSAFE(lfs3_fs_mkbad(lfs3, 1), LFS3_ERR_INVAL);
+    TEST_THREADSAFE(lfs3_fs_mkgood(lfs3, cfg.block_count-1), 0);
+    TEST_THREADSAFE(lfs3_fs_nextbad(lfs3, 0), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_fs_nextsuspect(lfs3, 0), LFS3_ERR_NOENT);
+    #endif
+
+    TEST_THREADSAFE(lfs3_remove(lfs3, "d/kv"), 0);
+    TEST_THREADSAFE(lfs3_remove(lfs3, "d/kv"), LFS3_ERR_NOENT);
+    TEST_THREADSAFE(lfs3_unmount(lfs3), 0);
+    // checks on mount use lfs3_fs_ck
+    TEST_THREADSAFE(lfs3_mount(lfs3,
+                LFS3_M_RDONLY | LFS3_M_CKMETA | LFS3_M_CKDATA,
+                &cfg),
+            0);
+    TEST_THREADSAFE(lfs3_unmount(lfs3), 0);
+
+    // each call took effect once
+    lfs3_mount(lfs3, LFS3_M_RDONLY, &cfg) => 0;
+    lfs3_fs_stat(lfs3, &s->fsinfo) => 0;
+    assert(s->fsinfo.block_count == cfg.block_count);
+    lfs3_stat(lfs3, "d", &s->info) => 0;
+    assert(s->info.type == LFS3_TYPE_DIR);
+    lfs3_stat(lfs3, "d/kv", &s->info) => LFS3_ERR_NOENT;
+    lfs3_get(lfs3, "f", s->buffer, sizeof(s->buffer)) => 12;
+    assert(memcmp(s->buffer, "ijklefghmnop", 12) == 0);
+    lfs3_unmount(lfs3) => 0;
+}
+'''
+
+
+# each public call takes the lock once and releases it once, with every
+# block device operation under it
+[cases.test_threadsafe_locks]
+code = '''
+    test_threadsafe_fail = TEST_THREADSAFE_NONE;
+    test_threadsafe_calls(CFG);
+'''
+
+# with lock failing, each public call returns its error, before any
+# block device operation and with nothing changed
+[cases.test_threadsafe_lock_fails]
+code = '''
+    test_threadsafe_fail = TEST_THREADSAFE_LOCK;
+    test_threadsafe_calls(CFG);
+'''
+
+# with unlock failing, each public call that succeeds returns unlock's
+# error and takes effect, and one that fails returns its own error
+[cases.test_threadsafe_unlock_fails]
+code = '''
+    test_threadsafe_fail = TEST_THREADSAFE_UNLOCK;
+    test_threadsafe_calls(CFG);
+'''

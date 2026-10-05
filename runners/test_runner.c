@@ -635,6 +635,61 @@ static void test_malloc_reset(void) {
 }
 
 
+// lock checks, see runners/test_runner.h
+#ifdef LFS3_THREADSAFE
+test_lock_t TEST_LOCK;
+
+// public calls that returned to a test, each took the lock once, so
+// this keeps up with TEST_LOCK.locks
+static uint64_t test_lock_calls = 0;
+
+int test_lock(const struct lfs3_cfg *cfg) {
+    (void)cfg;
+    // taken while held? a non-recursive lock deadlocks here
+    assert(!TEST_LOCK.locked);
+    TEST_LOCK.locks += 1;
+    if (TEST_LOCK.lock_err) {
+        return TEST_LOCK.lock_err;
+    }
+
+    TEST_LOCK.locked = true;
+    return 0;
+}
+
+int test_unlock(const struct lfs3_cfg *cfg) {
+    (void)cfg;
+    // released unheld?
+    assert(TEST_LOCK.locked);
+    TEST_LOCK.unlocks += 1;
+    TEST_LOCK.locked = false;
+    return TEST_LOCK.unlock_err;
+}
+
+static void test_lock_returned(const char *func) {
+    test_lock_calls += 1;
+    if (TEST_LOCK.locked || TEST_LOCK.locks != test_lock_calls) {
+        printf("error: %s took the lock %"PRIu64" times%s\n",
+                func,
+                TEST_LOCK.locks - (test_lock_calls-1),
+                (TEST_LOCK.locked) ? " and returned holding it" : "");
+        fflush(NULL);
+        abort();
+    }
+}
+
+// a power loss frees the lock, and the call it interrupted never returns
+void test_lock_powerloss(void) {
+    TEST_LOCK.locked = false;
+    test_lock_calls = TEST_LOCK.locks;
+}
+
+static void test_lock_reset(void) {
+    memset(&TEST_LOCK, 0, sizeof(TEST_LOCK));
+    test_lock_calls = 0;
+}
+#endif
+
+
 // error recording, see runners/test_errs.h
 //
 // each line is "function error case", written whole and flushed, so
@@ -642,6 +697,10 @@ static void test_malloc_reset(void) {
 static const struct test_case *test_err_case = NULL;
 
 int test_err(const char *func, int err) {
+    #ifdef LFS3_THREADSAFE
+    test_lock_returned(func);
+    #endif
+
     if (err >= 0) {
         return err;
     }
@@ -2090,6 +2149,9 @@ static void run_powerloss_none(
 
 #ifndef TEST_KIWIBD
 static void powerloss_longjmp(void *c) {
+    #ifdef LFS3_THREADSAFE
+    test_lock_powerloss();
+    #endif
     jmp_buf *powerloss_jmp = c;
     longjmp(*powerloss_jmp, 1);
 }
@@ -2657,6 +2719,9 @@ void perm_run(
 
     // run the test, possibly under powerloss
     test_malloc_reset();
+    #ifdef LFS3_THREADSAFE
+    test_lock_reset();
+    #endif
     test_err_case = case_;
     powerloss->run(powerloss, suite, case_);
 }

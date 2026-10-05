@@ -210,6 +210,29 @@ jobs:
           cp lfs3.stack.csv sizes/${{matrix.arch}}-biggest.stack.csv
           cp lfs3.ctx.csv sizes/${{matrix.arch}}-biggest.ctx.csv
           cp lfs3.structs.csv sizes/${{matrix.arch}}-biggest.structs.csv
+      - name: sizes-threadsafe
+        run: |
+          make clean
+          CFLAGS="$CFLAGS \
+            -DLFS3_NO_LOG \
+            -DLFS3_NO_ASSERT \
+            -DLFS3_THREADSAFE" \
+            make lfs3.code.csv lfs3.data.csv lfs3.stack.csv lfs3.ctx.csv \
+              lfs3.structs.csv
+          ./scripts/structs.py -u lfs3.structs.csv
+          ./scripts/csv.py lfs3.code.csv lfs3.data.csv lfs3.stack.csv \
+              lfs3.ctx.csv \
+            -bfunction \
+            -fcode=code_size \
+            -fdata=data_size \
+            -fstack='max(stack_limit)' \
+            -fctx='max(ctx_size)'
+          mkdir -p sizes
+          cp lfs3.code.csv sizes/${{matrix.arch}}-threadsafe.code.csv
+          cp lfs3.data.csv sizes/${{matrix.arch}}-threadsafe.data.csv
+          cp lfs3.stack.csv sizes/${{matrix.arch}}-threadsafe.stack.csv
+          cp lfs3.ctx.csv sizes/${{matrix.arch}}-threadsafe.ctx.csv
+          cp lfs3.structs.csv sizes/${{matrix.arch}}-threadsafe.structs.csv
 
       # create size statuses
       - name: upload-sizes
@@ -343,6 +366,32 @@ jobs:
           path: errs
           retention-days: 1
 
+  # run with LFS3_THREADSAFE, where the runner's lock and unlock check
+  # that each public call takes the lock once, see make test-threadsafe
+  test-threadsafe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+      - name: test-threadsafe
+        run: |
+          mkdir -p errs
+          TEST_ERRS=$PWD/errs/threadsafe.txt make test-threadsafe
+      - name: upload-errs
+        if: ${{!cancelled()}}
+        uses: actions/upload-artifact@v6
+        with:
+          name: errs-threadsafe
+          path: errs
+          retention-days: 1
+
   # check the error codes the test jobs recorded against the codes each
   # function lists in lfs3.h, and that none is internal, see
   # scripts/ckerrs.py
@@ -351,7 +400,7 @@ jobs:
   test-errs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    needs: [test, test-biggest, test-yes-gbmap]
+    needs: [test, test-biggest, test-yes-gbmap, test-threadsafe]
     if: ${{!cancelled()}}
     steps:
       - uses: actions/checkout@v5
@@ -756,7 +805,7 @@ jobs:
           # sizes table
           i=0
           j=0
-          for c in "" rdonly gbmap biggest
+          for c in "" rdonly gbmap biggest threadsafe
           do
             # per-config results
             c_or_default=${c:-default}
@@ -812,7 +861,7 @@ jobs:
           # build the actual table
           echo "|   | Code | Stack | Ctx | Structs |   | Coverage |" >> table.txt
           echo "|:--|-----:|------:|----:|--------:|:--|---------:|" >> table.txt
-          for ((i=0; i<4; i++))
+          for ((i=0; i<5; i++))
           do
             echo -n "|" >> table.txt
             for ((j=0; j<7; j++))

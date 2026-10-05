@@ -9,6 +9,11 @@
 # can return. This script fails if a test saw a code its function doesn't
 # list, or a code that isn't a public error code at all.
 #
+# With LFS3_THREADSAFE every function also returns what the lock and
+# unlock callbacks return, so every "Returns" paragraph must name both,
+# and the codes the tests give the runner's callbacks, TEST_ERR_LOCK and
+# TEST_ERR_UNLOCK in the hook, are accepted from any function.
+#
 # Example:
 # TEST_ERRS=errs.txt ./scripts/test.py -j
 # ./scripts/ckerrs.py errs.txt
@@ -31,6 +36,12 @@ HOOK_PATH = 'runners/test_errs.h'
 
 # codes that exist but must never reach the application
 INTERNAL = {'LFS3_ERR_UNKNOWN', 'LFS3_ERR_RANGE'}
+
+# callbacks whose errors every function returns with LFS3_THREADSAFE, and
+# the hook's names for the codes the tests give them
+CALLBACKS = co.OrderedDict([
+    ('lock', 'TEST_ERR_LOCK'),
+    ('unlock', 'TEST_ERR_UNLOCK')])
 
 
 # find the error codes in lfs3.h
@@ -80,12 +91,28 @@ def parse_funcs(header):
                 i+1,
                 set(re.findall(r'LFS3_ERR_\w+', returns))
                     if returns is not None
+                    else None,
+                {cb for cb in CALLBACKS
+                    if re.search(r'\b%s\b' % cb, returns)}
+                    if returns is not None
                     else None)
     return funcs
 
 # find the functions our hook wraps
 def parse_hooks(hook):
     return set(re.findall(r'#define\s+(lfs3_\w+)\(\.\.\.\)', hook))
+
+# find the codes the tests give the lock and unlock callbacks
+def parse_callback_codes(hook):
+    codes = {}
+    for cb, name in CALLBACKS.items():
+        m = re.search(r'#define\s+%s\s+\(?(-?\w+)\)?' % name, hook)
+        if not m:
+            print('error: no %s in %s' % (name, HOOK_PATH),
+                    file=sys.stderr)
+            sys.exit(-1)
+        codes[int(m.group(1), 0)] = cb
+    return codes
 
 # read the pairs the runner recorded, "function error case" per line
 def parse_errs(paths):
@@ -127,6 +154,7 @@ def main(errs_paths, *,
     names = {v: k for k, v in codes.items()}
     funcs = parse_funcs(header)
     hooks = parse_hooks(hook)
+    callbacks = parse_callback_codes(hook)
     errs = parse_errs(errs_paths)
 
     failures = 0
@@ -136,11 +164,15 @@ def main(errs_paths, *,
         failures += 1
 
     # every function must say what it returns, and only public codes
-    for func, (lineno, documented) in funcs.items():
+    for func, (lineno, documented, cbs) in funcs.items():
         if documented is None:
             fail('%s:%d: %s documents no "Returns" paragraph' % (
                     header_path, lineno, func))
             continue
+        for cb in CALLBACKS:
+            if cb not in cbs:
+                fail('%s:%d: %s doesn\'t say it returns errors from %s' % (
+                        header_path, lineno, func, cb))
         for code in sorted(documented):
             if code not in codes:
                 fail('%s:%d: %s documents %s, which isn\'t in '
@@ -163,6 +195,13 @@ def main(errs_paths, *,
         if func not in funcs:
             fail('%s returned %d, but isn\'t in %s (%s)' % (
                     func, err, header_path, where))
+        elif err in callbacks:
+            if funcs[func][2] is not None \
+                    and callbacks[err] not in funcs[func][2]:
+                fail('%s returned %s\'s error, which %s:%d doesn\'t '
+                        'list (%s)' % (
+                            func, callbacks[err], header_path,
+                            funcs[func][0], where))
         elif err not in names:
             fail('%s returned %d, which isn\'t in enum lfs3_err (%s)' % (
                     func, err, where))
@@ -175,9 +214,9 @@ def main(errs_paths, *,
                     func, names[err], header_path, funcs[func][0], where))
 
     # show which documented codes no test saw
-    seen = {(func, names.get(err)) for func, err in errs}
+    seen = {(func, names.get(err, callbacks.get(err))) for func, err in errs}
     unseen = [(func, code)
-            for func, (_, documented) in funcs.items()
+            for func, (_, documented, _) in funcs.items()
             for code in sorted(documented or [])
             if (func, code) not in seen]
     if verbose:

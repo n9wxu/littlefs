@@ -18,6 +18,7 @@ code = '''
 
 // lose power by jumping back into our test
 static void test_badblocks_powerloss_longjmp(void *data) {
+    TEST_LOCK_POWERLOSS();
     longjmp(*(jmp_buf*)data, 1);
 }
 

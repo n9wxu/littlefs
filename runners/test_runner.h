@@ -174,6 +174,43 @@ extern size_t test_malloc_count;
 extern size_t test_malloc_live;
 extern size_t test_malloc_size;
 
+// with LFS3_THREADSAFE, the runner's configuration locks with test_lock
+// and test_unlock, which fail the case on a lock taken while held or
+// released unheld, and runners/test_errs.h checks after each public call
+// a test makes that the call took the lock once and released it
+//
+// - TEST_LOCK.locked is whether the lock is held
+// - TEST_LOCK.locks and TEST_LOCK.unlocks count calls to lock and
+//   unlock, failed calls included
+// - TEST_LOCK.lock_err and TEST_LOCK.unlock_err, while nonzero, are what
+//   lock and unlock return, a failed lock leaves the lock free, a failed
+//   unlock still frees it
+//
+// All reset for every permutation, and a power loss frees the lock.
+#ifdef LFS3_THREADSAFE
+typedef struct test_lock {
+    bool locked;
+    uint64_t locks;
+    uint64_t unlocks;
+    int lock_err;
+    int unlock_err;
+} test_lock_t;
+
+extern test_lock_t TEST_LOCK;
+
+int test_lock(const struct lfs3_cfg *cfg);
+int test_unlock(const struct lfs3_cfg *cfg);
+void test_lock_powerloss(void);
+#endif
+
+// a case whose own powerloss callback longjmps out of littlefs frees the
+// lock with this first, as the runner's callbacks do
+#ifdef LFS3_THREADSAFE
+#define TEST_LOCK_POWERLOSS() test_lock_powerloss()
+#else
+#define TEST_LOCK_POWERLOSS()
+#endif
+
 // without malloc, littlefs needs its caches given to it, test_buffer
 // lends the runner's cache buffers, at least size bytes, and
 // lfs3_file_open gives each file a cache of fcache_size bytes

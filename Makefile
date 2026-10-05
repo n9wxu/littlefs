@@ -51,6 +51,8 @@ DBG_DIR ?= $(BUILDDIR)/dbg
 
 RELEASE_DIR ?= $(BUILDDIR)/release
 
+THREADSAFE_DIR ?= $(BUILDDIR)/threadsafe
+
 ENDIAN_DIR ?= $(BUILDDIR)/endian
 # a compiler and emulator for a host of the other byte order
 CROSS_CC ?= mips-linux-gnu-gcc --static
@@ -583,6 +585,17 @@ test: test-runner
 test-release:
 	$(MAKE) BUILDDIR=$(RELEASE_DIR) LFS3_NO_ASSERT=1 test-runner
 	./scripts/test.py -R$(RELEASE_DIR)/runners/test_runner $(TESTFLAGS)
+
+## Run the tests with LFS3_THREADSAFE
+#
+# The runner's lock and unlock fail a case on a lock taken while held or
+# released unheld, and runners/test_errs.h checks that each public call
+# took the lock once and released it, so every suite checks the lock.
+# Everything goes in THREADSAFE_DIR.
+.PHONY: test-threadsafe
+test-threadsafe:
+	$(MAKE) BUILDDIR=$(THREADSAFE_DIR) LFS3_THREADSAFE=1 test-runner
+	./scripts/test.py -R$(THREADSAFE_DIR)/runners/test_runner $(TESTFLAGS)
 
 ## Run the tests with emubd's prog-once check
 .PHONY: test-progonce

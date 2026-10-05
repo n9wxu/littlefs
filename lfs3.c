@@ -9,6 +9,176 @@
 #include "lfs3_util.h"
 
 
+// with LFS3_THREADSAFE, each public function compiles under one of these
+// unlocked names, and the wrappers at the end of this file take the lock
+// around them, littlefs's own calls between public functions reach the
+// unlocked names, so the lock is never taken twice
+#ifdef LFS3_THREADSAFE
+#define lfs3_format          lfs3_format_unlocked
+#define lfs3_mount           lfs3_mount_unlocked
+#define lfs3_unmount         lfs3_unmount_unlocked
+#define lfs3_get             lfs3_get_unlocked
+#define lfs3_size            lfs3_size_unlocked
+#define lfs3_set             lfs3_set_unlocked
+#define lfs3_remove          lfs3_remove_unlocked
+#define lfs3_rename          lfs3_rename_unlocked
+#define lfs3_stat            lfs3_stat_unlocked
+#define lfs3_getattr         lfs3_getattr_unlocked
+#define lfs3_sizeattr        lfs3_sizeattr_unlocked
+#define lfs3_setattr         lfs3_setattr_unlocked
+#define lfs3_removeattr      lfs3_removeattr_unlocked
+#ifndef LFS3_NO_MALLOC
+#define lfs3_file_open       lfs3_file_open_unlocked
+#endif
+#define lfs3_file_opencfg    lfs3_file_opencfg_unlocked
+#define lfs3_file_close      lfs3_file_close_unlocked
+#define lfs3_file_sync       lfs3_file_sync_unlocked
+#define lfs3_file_flush      lfs3_file_flush_unlocked
+#define lfs3_file_desync     lfs3_file_desync_unlocked
+#define lfs3_file_resync     lfs3_file_resync_unlocked
+#define lfs3_file_read       lfs3_file_read_unlocked
+#define lfs3_file_write      lfs3_file_write_unlocked
+#define lfs3_file_seek       lfs3_file_seek_unlocked
+#define lfs3_file_truncate   lfs3_file_truncate_unlocked
+#define lfs3_file_fruncate   lfs3_file_fruncate_unlocked
+#define lfs3_file_tell       lfs3_file_tell_unlocked
+#define lfs3_file_rewind     lfs3_file_rewind_unlocked
+#define lfs3_file_size       lfs3_file_size_unlocked
+#define lfs3_file_ck         lfs3_file_ck_unlocked
+#define lfs3_mkdir           lfs3_mkdir_unlocked
+#define lfs3_dir_open        lfs3_dir_open_unlocked
+#define lfs3_dir_close       lfs3_dir_close_unlocked
+#define lfs3_dir_read        lfs3_dir_read_unlocked
+#define lfs3_dir_seek        lfs3_dir_seek_unlocked
+#define lfs3_dir_tell        lfs3_dir_tell_unlocked
+#define lfs3_dir_rewind      lfs3_dir_rewind_unlocked
+#define lfs3_trv_open        lfs3_trv_open_unlocked
+#define lfs3_trv_close       lfs3_trv_close_unlocked
+#define lfs3_trv_read        lfs3_trv_read_unlocked
+#define lfs3_trv_rewind      lfs3_trv_rewind_unlocked
+#define lfs3_fs_stat         lfs3_fs_stat_unlocked
+#define lfs3_fs_usage        lfs3_fs_usage_unlocked
+#define lfs3_fs_health       lfs3_fs_health_unlocked
+#define lfs3_fs_cksum        lfs3_fs_cksum_unlocked
+#define lfs3_fs_mkconsistent lfs3_fs_mkconsistent_unlocked
+#define lfs3_fs_ck           lfs3_fs_ck_unlocked
+#define lfs3_fs_gc           lfs3_fs_gc_unlocked
+#define lfs3_fs_unck         lfs3_fs_unck_unlocked
+#define lfs3_fs_grow         lfs3_fs_grow_unlocked
+#define lfs3_fs_mkgbmap      lfs3_fs_mkgbmap_unlocked
+#define lfs3_fs_rmgbmap      lfs3_fs_rmgbmap_unlocked
+#define lfs3_fs_mkbad        lfs3_fs_mkbad_unlocked
+#define lfs3_fs_mkgood       lfs3_fs_mkgood_unlocked
+#define lfs3_fs_nextbad      lfs3_fs_nextbad_unlocked
+#define lfs3_fs_nextsuspect  lfs3_fs_nextsuspect_unlocked
+
+// static, so a wrapper can inline what only it calls
+#ifndef LFS3_RDONLY
+static int lfs3_format_unlocked(lfs3_t *lfs3, uint32_t flags,
+        const struct lfs3_cfg *cfg);
+#endif
+static int lfs3_mount_unlocked(lfs3_t *lfs3, uint32_t flags,
+        const struct lfs3_cfg *cfg);
+static int lfs3_unmount_unlocked(lfs3_t *lfs3);
+static lfs3_ssize_t lfs3_get_unlocked(lfs3_t *lfs3, const char *path,
+        void *buffer, lfs3_size_t size);
+static lfs3_ssize_t lfs3_size_unlocked(lfs3_t *lfs3, const char *path);
+#ifndef LFS3_RDONLY
+static int lfs3_set_unlocked(lfs3_t *lfs3, const char *path, const void *buffer,
+        lfs3_size_t size);
+static int lfs3_remove_unlocked(lfs3_t *lfs3, const char *path);
+static int lfs3_rename_unlocked(lfs3_t *lfs3, const char *old_path,
+        const char *new_path);
+#endif
+static int lfs3_stat_unlocked(lfs3_t *lfs3, const char *path,
+        struct lfs3_info *info);
+static lfs3_ssize_t lfs3_getattr_unlocked(lfs3_t *lfs3, const char *path,
+        uint8_t type, void *buffer, lfs3_size_t size);
+static lfs3_ssize_t lfs3_sizeattr_unlocked(lfs3_t *lfs3, const char *path,
+        uint8_t type);
+#ifndef LFS3_RDONLY
+static int lfs3_setattr_unlocked(lfs3_t *lfs3, const char *path, uint8_t type,
+        const void *buffer, lfs3_size_t size);
+static int lfs3_removeattr_unlocked(lfs3_t *lfs3, const char *path,
+        uint8_t type);
+#endif
+#ifndef LFS3_NO_MALLOC
+static int lfs3_file_open_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        const char *path, uint32_t flags);
+#endif
+static int lfs3_file_opencfg_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        const char *path, uint32_t flags, const struct lfs3_file_cfg *cfg);
+static int lfs3_file_close_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_sync_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_flush_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_desync_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_resync_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static lfs3_ssize_t lfs3_file_read_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        void *buffer, lfs3_size_t size);
+#ifndef LFS3_RDONLY
+static lfs3_ssize_t lfs3_file_write_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        const void *buffer, lfs3_size_t size);
+#endif
+static lfs3_soff_t lfs3_file_seek_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        lfs3_soff_t off, uint32_t whence);
+#ifndef LFS3_RDONLY
+static int lfs3_file_truncate_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        lfs3_off_t size);
+static int lfs3_file_fruncate_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        lfs3_off_t size);
+#endif
+static lfs3_soff_t lfs3_file_tell_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_rewind_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static lfs3_soff_t lfs3_file_size_unlocked(lfs3_t *lfs3, lfs3_file_t *file);
+static int lfs3_file_ck_unlocked(lfs3_t *lfs3, lfs3_file_t *file,
+        uint32_t flags);
+#ifndef LFS3_RDONLY
+static int lfs3_mkdir_unlocked(lfs3_t *lfs3, const char *path);
+#endif
+static int lfs3_dir_open_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir,
+        const char *path);
+static int lfs3_dir_close_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir);
+static int lfs3_dir_read_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir,
+        struct lfs3_info *info);
+static int lfs3_dir_seek_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir,
+        lfs3_soff_t off);
+static lfs3_soff_t lfs3_dir_tell_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir);
+static int lfs3_dir_rewind_unlocked(lfs3_t *lfs3, lfs3_dir_t *dir);
+static int lfs3_trv_open_unlocked(lfs3_t *lfs3, lfs3_trv_t *trv,
+        uint32_t flags);
+static int lfs3_trv_close_unlocked(lfs3_t *lfs3, lfs3_trv_t *trv);
+static int lfs3_trv_read_unlocked(lfs3_t *lfs3, lfs3_trv_t *trv,
+        struct lfs3_tinfo *tinfo);
+static int lfs3_trv_rewind_unlocked(lfs3_t *lfs3, lfs3_trv_t *trv);
+static int lfs3_fs_stat_unlocked(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
+static lfs3_sblock_t lfs3_fs_usage_unlocked(lfs3_t *lfs3);
+static int lfs3_fs_health_unlocked(lfs3_t *lfs3, struct lfs3_health *health);
+static int lfs3_fs_cksum_unlocked(lfs3_t *lfs3, uint32_t *cksum);
+#ifndef LFS3_RDONLY
+static int lfs3_fs_mkconsistent_unlocked(lfs3_t *lfs3);
+#endif
+static int lfs3_fs_ck_unlocked(lfs3_t *lfs3, uint32_t flags);
+#ifdef LFS3_GC
+static int lfs3_fs_gc_unlocked(lfs3_t *lfs3);
+#endif
+static int lfs3_fs_unck_unlocked(lfs3_t *lfs3, uint32_t flags);
+#ifndef LFS3_RDONLY
+static int lfs3_fs_grow_unlocked(lfs3_t *lfs3, lfs3_size_t block_count);
+#endif
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+static int lfs3_fs_mkgbmap_unlocked(lfs3_t *lfs3);
+static int lfs3_fs_rmgbmap_unlocked(lfs3_t *lfs3);
+#endif
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static int lfs3_fs_mkbad_unlocked(lfs3_t *lfs3, lfs3_block_t block);
+static int lfs3_fs_mkgood_unlocked(lfs3_t *lfs3, lfs3_block_t block);
+static lfs3_sblock_t lfs3_fs_nextbad_unlocked(lfs3_t *lfs3, lfs3_block_t block);
+static lfs3_sblock_t lfs3_fs_nextsuspect_unlocked(lfs3_t *lfs3,
+        lfs3_block_t block);
+#endif
+#endif
+
+
 // TODO should lfs3_scmp_t/lfs3_sbool_t be moved to lfs3.h?
 // TODO should all typedefs be moved to lfs3.h?
 // TODO wait, should they actually go in lfs3_util.h?
@@ -21786,6 +21956,639 @@ int lfs3_trv_rewind(lfs3_t *lfs3, lfs3_trv_t *trv) {
     return lfs3_trv_rewind_(lfs3, trv);
 }
 
+
+
+/// Locking ///
+
+// each public function takes the lock once, around its unlocked version
+#ifdef LFS3_THREADSAFE
+#undef lfs3_format
+#undef lfs3_mount
+#undef lfs3_unmount
+#undef lfs3_get
+#undef lfs3_size
+#undef lfs3_set
+#undef lfs3_remove
+#undef lfs3_rename
+#undef lfs3_stat
+#undef lfs3_getattr
+#undef lfs3_sizeattr
+#undef lfs3_setattr
+#undef lfs3_removeattr
+#ifndef LFS3_NO_MALLOC
+#undef lfs3_file_open
+#endif
+#undef lfs3_file_opencfg
+#undef lfs3_file_close
+#undef lfs3_file_sync
+#undef lfs3_file_flush
+#undef lfs3_file_desync
+#undef lfs3_file_resync
+#undef lfs3_file_read
+#undef lfs3_file_write
+#undef lfs3_file_seek
+#undef lfs3_file_truncate
+#undef lfs3_file_fruncate
+#undef lfs3_file_tell
+#undef lfs3_file_rewind
+#undef lfs3_file_size
+#undef lfs3_file_ck
+#undef lfs3_mkdir
+#undef lfs3_dir_open
+#undef lfs3_dir_close
+#undef lfs3_dir_read
+#undef lfs3_dir_seek
+#undef lfs3_dir_tell
+#undef lfs3_dir_rewind
+#undef lfs3_trv_open
+#undef lfs3_trv_close
+#undef lfs3_trv_read
+#undef lfs3_trv_rewind
+#undef lfs3_fs_stat
+#undef lfs3_fs_usage
+#undef lfs3_fs_health
+#undef lfs3_fs_cksum
+#undef lfs3_fs_mkconsistent
+#undef lfs3_fs_ck
+#undef lfs3_fs_gc
+#undef lfs3_fs_unck
+#undef lfs3_fs_grow
+#undef lfs3_fs_mkgbmap
+#undef lfs3_fs_rmgbmap
+#undef lfs3_fs_mkbad
+#undef lfs3_fs_mkgood
+#undef lfs3_fs_nextbad
+#undef lfs3_fs_nextsuspect
+
+static inline int lfs3_lock(const struct lfs3_cfg *cfg) {
+    int err = cfg->lock(cfg);
+    LFS3_ASSERT(err <= 0);
+    return err;
+}
+
+// a failed call's error says what it left, so it wins over unlock's, and
+// unlock's after a success means the call took effect
+static inline lfs3_ssize_t lfs3_unlock(const struct lfs3_cfg *cfg,
+        lfs3_ssize_t res) {
+    int err = cfg->unlock(cfg);
+    LFS3_ASSERT(err <= 0);
+    return (res < 0 || !err) ? res : err;
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_format(lfs3_t *lfs3, uint32_t flags, const struct lfs3_cfg *cfg) {
+    int err = lfs3_lock(cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(cfg, lfs3_format_unlocked(lfs3, flags, cfg));
+}
+#endif
+
+int lfs3_mount(lfs3_t *lfs3, uint32_t flags, const struct lfs3_cfg *cfg) {
+    int err = lfs3_lock(cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(cfg, lfs3_mount_unlocked(lfs3, flags, cfg));
+}
+
+int lfs3_unmount(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_unmount_unlocked(lfs3));
+}
+
+lfs3_ssize_t lfs3_get(lfs3_t *lfs3, const char *path, void *buffer,
+        lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_get_unlocked(lfs3, path, buffer, size));
+}
+
+lfs3_ssize_t lfs3_size(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_size_unlocked(lfs3, path));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_set(lfs3_t *lfs3, const char *path, const void *buffer,
+        lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_set_unlocked(lfs3, path, buffer, size));
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_remove(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_remove_unlocked(lfs3, path));
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_rename(lfs3_t *lfs3, const char *old_path, const char *new_path) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_rename_unlocked(lfs3, old_path, new_path));
+}
+#endif
+
+int lfs3_stat(lfs3_t *lfs3, const char *path, struct lfs3_info *info) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_stat_unlocked(lfs3, path, info));
+}
+
+lfs3_ssize_t lfs3_getattr(lfs3_t *lfs3, const char *path, uint8_t type,
+        void *buffer, lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_getattr_unlocked(lfs3, path, type, buffer, size));
+}
+
+lfs3_ssize_t lfs3_sizeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_sizeattr_unlocked(lfs3, path, type));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_setattr(lfs3_t *lfs3, const char *path, uint8_t type,
+        const void *buffer, lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_setattr_unlocked(lfs3, path, type, buffer, size));
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_removeattr(lfs3_t *lfs3, const char *path, uint8_t type) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_removeattr_unlocked(lfs3, path, type));
+}
+#endif
+
+#ifndef LFS3_NO_MALLOC
+int lfs3_file_open(lfs3_t *lfs3, lfs3_file_t *file, const char *path,
+        uint32_t flags) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_open_unlocked(lfs3, file, path, flags));
+}
+#endif
+
+int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file, const char *path,
+        uint32_t flags, const struct lfs3_file_cfg *cfg) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_opencfg_unlocked(lfs3, file, path, flags, cfg));
+}
+
+int lfs3_file_close(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_close_unlocked(lfs3, file));
+}
+
+int lfs3_file_sync(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_sync_unlocked(lfs3, file));
+}
+
+int lfs3_file_flush(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_flush_unlocked(lfs3, file));
+}
+
+int lfs3_file_desync(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_desync_unlocked(lfs3, file));
+}
+
+int lfs3_file_resync(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_resync_unlocked(lfs3, file));
+}
+
+lfs3_ssize_t lfs3_file_read(lfs3_t *lfs3, lfs3_file_t *file, void *buffer,
+        lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_read_unlocked(lfs3, file, buffer, size));
+}
+
+#ifndef LFS3_RDONLY
+lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
+        const void *buffer, lfs3_size_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_write_unlocked(lfs3, file, buffer, size));
+}
+#endif
+
+lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file, lfs3_soff_t off,
+        uint32_t whence) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_seek_unlocked(lfs3, file, off, whence));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_truncate_unlocked(lfs3, file, size));
+}
+#endif
+
+#ifndef LFS3_RDONLY
+int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg,
+            lfs3_file_fruncate_unlocked(lfs3, file, size));
+}
+#endif
+
+lfs3_soff_t lfs3_file_tell(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_tell_unlocked(lfs3, file));
+}
+
+int lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_rewind_unlocked(lfs3, file));
+}
+
+lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_size_unlocked(lfs3, file));
+}
+
+int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_file_ck_unlocked(lfs3, file, flags));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_mkdir(lfs3_t *lfs3, const char *path) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_mkdir_unlocked(lfs3, path));
+}
+#endif
+
+int lfs3_dir_open(lfs3_t *lfs3, lfs3_dir_t *dir, const char *path) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_open_unlocked(lfs3, dir, path));
+}
+
+int lfs3_dir_close(lfs3_t *lfs3, lfs3_dir_t *dir) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_close_unlocked(lfs3, dir));
+}
+
+int lfs3_dir_read(lfs3_t *lfs3, lfs3_dir_t *dir, struct lfs3_info *info) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_read_unlocked(lfs3, dir, info));
+}
+
+int lfs3_dir_seek(lfs3_t *lfs3, lfs3_dir_t *dir, lfs3_soff_t off) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_seek_unlocked(lfs3, dir, off));
+}
+
+lfs3_soff_t lfs3_dir_tell(lfs3_t *lfs3, lfs3_dir_t *dir) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_tell_unlocked(lfs3, dir));
+}
+
+int lfs3_dir_rewind(lfs3_t *lfs3, lfs3_dir_t *dir) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_dir_rewind_unlocked(lfs3, dir));
+}
+
+int lfs3_trv_open(lfs3_t *lfs3, lfs3_trv_t *trv, uint32_t flags) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_trv_open_unlocked(lfs3, trv, flags));
+}
+
+int lfs3_trv_close(lfs3_t *lfs3, lfs3_trv_t *trv) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_trv_close_unlocked(lfs3, trv));
+}
+
+int lfs3_trv_read(lfs3_t *lfs3, lfs3_trv_t *trv, struct lfs3_tinfo *tinfo) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_trv_read_unlocked(lfs3, trv, tinfo));
+}
+
+int lfs3_trv_rewind(lfs3_t *lfs3, lfs3_trv_t *trv) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_trv_rewind_unlocked(lfs3, trv));
+}
+
+int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_stat_unlocked(lfs3, fsinfo));
+}
+
+lfs3_sblock_t lfs3_fs_usage(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_usage_unlocked(lfs3));
+}
+
+int lfs3_fs_health(lfs3_t *lfs3, struct lfs3_health *health) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_health_unlocked(lfs3, health));
+}
+
+int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_cksum_unlocked(lfs3, cksum));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_mkconsistent_unlocked(lfs3));
+}
+#endif
+
+int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_ck_unlocked(lfs3, flags));
+}
+
+#ifdef LFS3_GC
+int lfs3_fs_gc(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_gc_unlocked(lfs3));
+}
+#endif
+
+int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_unck_unlocked(lfs3, flags));
+}
+
+#ifndef LFS3_RDONLY
+int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_grow_unlocked(lfs3, block_count));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+int lfs3_fs_mkgbmap(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_mkgbmap_unlocked(lfs3));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_rmgbmap_unlocked(lfs3));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkbad(lfs3_t *lfs3, lfs3_block_t block) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_mkbad_unlocked(lfs3, block));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+int lfs3_fs_mkgood(lfs3_t *lfs3, lfs3_block_t block) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_mkgood_unlocked(lfs3, block));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_nextbad_unlocked(lfs3, block));
+}
+#endif
+
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+lfs3_sblock_t lfs3_fs_nextsuspect(lfs3_t *lfs3, lfs3_block_t block) {
+    int err = lfs3_lock(lfs3->cfg);
+    if (err) {
+        return err;
+    }
+
+    return lfs3_unlock(lfs3->cfg, lfs3_fs_nextsuspect_unlocked(lfs3, block));
+}
+#endif
+#endif
 
 
 // that's it! you've reached the end! go home!

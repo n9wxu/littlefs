@@ -48,6 +48,7 @@ Every error code maps to one of three actions:
 | `LFS3_ERR_NOENT`, `LFS3_ERR_EXIST`, `LFS3_ERR_NOTDIR`, `LFS3_ERR_ISDIR`, `LFS3_ERR_NOTEMPTY`, `LFS3_ERR_NAMETOOLONG`, `LFS3_ERR_NOATTR` | -2, -17, -20, -21, -39, -36, -61 | The namespace isn't what the call expects | Fail |
 | `LFS3_ERR_RANGE`, `LFS3_ERR_UNKNOWN` | -34, -1 | Internal, never returned | Fail |
 | Any other negative value | | Returned by the block device, passed through unchanged | The block device's |
+| The application's lock codes | | Returned by `lock` or `unlock` with `LFS3_THREADSAFE`, passed through unchanged | Retry or Fail, see [Codes from `lock` and `unlock`](#codes-from-lock-and-unlock) |
 
 ### `LFS3_ERR_IO`
 
@@ -233,11 +234,36 @@ These are used inside littlefs and are never returned. If one is,
 ### Codes from the block device
 
 The block device callbacks may return their own negative codes, which
-littlefs passes through unchanged from the call that ran the callback, as it
-does errors from the `lock` and `unlock` callbacks with `LFS3_THREADSAFE`.
+littlefs passes through unchanged from the call that ran the callback.
 Their meaning, and the action, is the block device's.
 
+### Codes from `lock` and `unlock`
+
+With `LFS3_THREADSAFE`, every public function calls `lock` once before
+anything else, and `unlock` once before it returns, and returns their
+errors unchanged. Their meaning is the application's. Give them codes
+outside `enum lfs3_err`, so they can't be taken for littlefs's.
+
+- An error from `lock` is returned before the call does anything: no
+  block device operation, and nothing changed on disk, in the `lfs3_t`,
+  in the handle or in the caller's buffers. **Retry** if the lock can
+  fail for a while, a timeout for example, otherwise **Fail**.
+- An error from `unlock` is returned only by a call that succeeded
+  otherwise. The call took effect, exactly as if it had returned success,
+  and only its result is lost: the bytes a read or write moved, a
+  position, a size, a block. Don't repeat the call, a write would write
+  twice; ask again for what was lost (`lfs3_file_tell`, `lfs3_file_size`,
+  `lfs3_stat`). A call that failed returns its own error whatever
+  `unlock` returns, with the state below. Whether the lock is still held
+  is for the application to know: **Fail**, unless it can repair its
+  lock.
+
 ## The state after an error
+
+This is the state after littlefs's own errors. With `LFS3_THREADSAFE`, an
+error from `lock` or `unlock` leaves the state of
+[Codes from `lock` and `unlock`](#codes-from-lock-and-unlock), and calls
+said below never to fail can return them.
 
 ### Reads
 
@@ -370,6 +396,9 @@ makes goes through `runners/test_errs.h`, which with `TEST_ERRS=<file>`
 records each error code a function returns, and `scripts/ckerrs.py` fails
 if any of them isn't listed with its function in `lfs3.h` (`make
 test-errs`). `test_errs_ioerror` fails every read, prog, erase and sync of
-32 calls in turn and checks the state each leaves behind. The requirements
-behind this are LFS3-ERR-01 to LFS3-ERR-07 in
-[REQUIREMENTS.md](REQUIREMENTS.md).
+32 calls in turn and checks the state each leaves behind. With
+`LFS3_THREADSAFE` (`make test-threadsafe`), every public call of every
+suite is checked to take the lock once, and `test_threadsafe_*` makes
+`lock` and `unlock` fail in every public function and checks the state
+above. The requirements behind this are LFS3-ERR-01 to LFS3-ERR-07 and
+LFS3-THR-01 and LFS3-THR-02 in [REQUIREMENTS.md](REQUIREMENTS.md).

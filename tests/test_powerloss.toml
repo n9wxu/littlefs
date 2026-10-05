@@ -23,6 +23,7 @@ code = '''
 // the linear runner does
 __attribute__((unused))
 static void test_powerloss_longjmp(void *data) {
+    TEST_LOCK_POWERLOSS();
     longjmp(*(jmp_buf*)data, 1);
 }
 

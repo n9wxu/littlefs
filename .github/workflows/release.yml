@@ -111,7 +111,7 @@ jobs:
           # sizes table
           i=0
           j=0
-          for c in "" rdonly gbmap biggest
+          for c in "" rdonly gbmap biggest threadsafe
           do
             # per-config results
             c_or_default=${c:-default}
@@ -167,7 +167,7 @@ jobs:
           # build the actual table
           echo "|   | Code | Stack | Ctx | Structs |   | Coverage |" >> table.txt
           echo "|:--|-----:|------:|----:|--------:|:--|---------:|" >> table.txt
-          for ((i=0; i<4; i++))
+          for ((i=0; i<5; i++))
           do
             echo -n "|" >> table.txt
             for ((j=0; j<7; j++))

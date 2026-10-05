@@ -72,6 +72,10 @@
         .shrub_size                     = SHRUB_SIZE,
         .fragment_size                  = FRAGMENT_SIZE,
         .crystal_thresh                 = CRYSTAL_THRESH,
+        #ifdef LFS3_THREADSAFE
+        .lock                           = test_lock,
+        .unlock                         = test_unlock,
+        #endif
         #ifdef LFS3_NO_MALLOC
         .rcache_buffer                  = test_buffer(0, RCACHE_SIZE),
         .pcache_buffer                  = test_buffer(1, PCACHE_SIZE),

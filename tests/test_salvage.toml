@@ -367,6 +367,7 @@ static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
 
 // lose power by jumping back into our test
 static void test_salvage_powerloss(void *data) {
+    TEST_LOCK_POWERLOSS();
     longjmp(*(jmp_buf*)data, 1);
 }
 '''

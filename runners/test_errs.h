@@ -15,10 +15,17 @@
 //
 // test_err returns err unchanged. With TEST_ERRS naming a file, it
 // appends each new (function, negative result) pair to it, see
-// scripts/ckerrs.py
+// scripts/ckerrs.py. With LFS3_THREADSAFE, it also checks that the call
+// took the lock once and released it, see TEST_LOCK.
 int test_err(const char *func, int err);
 
 #define TEST_ERR(func, ...) test_err(#func, func(__VA_ARGS__))
+
+// with LFS3_THREADSAFE, the codes tests give the runner's lock and unlock
+// to fail with, outside enum lfs3_err, scripts/ckerrs.py accepts them
+// from a function whose "Returns" paragraph names that callback
+#define TEST_ERR_LOCK   -1001
+#define TEST_ERR_UNLOCK -1002
 
 #define lfs3_format(...)         TEST_ERR(lfs3_format, __VA_ARGS__)
 #define lfs3_mount(...)          TEST_ERR(lfs3_mount, __VA_ARGS__)

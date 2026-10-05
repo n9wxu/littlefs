@@ -443,6 +443,10 @@ code = '''
         .prog           = lfs3_emubd_prog,
         .erase          = lfs3_emubd_erase,
         .sync           = lfs3_emubd_sync,
+        #ifdef LFS3_THREADSAFE
+        .lock           = test_lock,
+        .unlock         = test_unlock,
+        #endif
         .read_size      = READ_SIZE,
         .prog_size      = PROG_SIZE,
         .block_size     = BLOCK_SIZE,
