@@ -332,7 +332,7 @@ documentation requirement checked by review rather than by a test.
 | `LFS3_BIGGEST` | BUILD-02, BUILD-13 | none | BUILD-02 (K) → NEW-53; BUILD-13 (K) → J-BIG |
 | `LFS3_YES_FLUSH` | BUILD-12, BUILD-15, DOC-19 | none | BUILD-12 (U) → NEW-125; BUILD-15 (U) → J-YES; DOC-19 (N) → review |
 | `LFS3_YES_SYNC` | BUILD-12, BUILD-15, DOC-19 | none | BUILD-12 (U) → NEW-125; BUILD-15 (U) → J-YES; DOC-19 (N) → review |
-| `LFS3_THREADSAFE` | THR-01, THR-02, THR-03 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89; THR-03 (U) → NEW-124 |
+| `LFS3_THREADSAFE` | THR-01, THR-02, THR-03, THR-04 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89; THR-03 (U) → NEW-124; THR-04 (N) → NEW-118 |
 | `LFS3_NO_MALLOC` | RES-01, BAD-07, BUILD-04, BUILD-10 | `badblocks_gbmap::*` | RES-01 (U) → NEW-87; BAD-07 (N) → NEW-90; BUILD-04 (K) → NEW-53; BUILD-10 (K) → NEW-53 |
 | `LFS3_NO_STRINGH` | BUILD-09, BUILD-17 | none | BUILD-09 (K) → NEW-53; BUILD-17 (U) → J-NBNS |
 | `LFS3_NO_BUILTINS` | BUILD-01, BUILD-17 | none | BUILD-01 (P) → NEW-53; BUILD-17 (U) → J-NBNS |
@@ -398,7 +398,7 @@ documentation requirement checked by review rather than by a test.
 | configuration validation | CFG-01, CFG-02, CFG-03, CFG-04, CFG-05, CFG-06, CFG-07, CFG-08, CFG-09, CFG-10, CFG-11, CFG-12, CFG-13, CFG-14, CFG-15, CFG-16, CFG-17 | `files::*`, `fwrite::*`, `kv::*`, `fwrite::fuzz_unaligned`, `fsync::*`, `gc::lookahead_progress` and 3 more | CFG-01 (K) → NEW-48; CFG-02 (U) → NEW-115; CFG-03 (U) → NEW-115; CFG-04 (U) → NEW-115; CFG-05 (K) → NEW-49; CFG-06 (U) → NEW-115; CFG-07 (U) → NEW-86; CFG-08 (P) → NEW-116; CFG-09 (U) → NEW-117; CFG-10 (P) → J-DEFINES; CFG-11 (P) → J-DEFINES; CFG-12 (P) → J-DEFINES; CFG-13 (U) → J-GEO; CFG-15 (U) → NEW-12; CFG-16 (P) → J-BIG; CFG-17 (P) → J-BIG |
 | resource bounds | RES-01, RES-02, RES-03, RES-04, RES-05, RES-06, RES-07, RES-08 | none | RES-01 (U) → NEW-87; RES-02 (U) → NEW-118; RES-03 (U) → NEW-118; RES-04 (U) → NEW-118; RES-05 (U) → NEW-118; RES-06 (K) → NEW-50; RES-07 (U) → NEW-88; RES-08 (U) → NEW-87 |
 | performance | PERF-01, PERF-02, PERF-03, PERF-04, PERF-05, PERF-06, PERF-07, PERF-08, PERF-09, PERF-10, PERF-11, PERF-12, PERF-13, PERF-14 | none | PERF-01 (U) → NEW-119; PERF-02 (U) → NEW-119; PERF-03 (U) → NEW-119; PERF-04 (U) → NEW-119; PERF-05 (U) → NEW-119; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-08 (P) → NEW-121; PERF-09 (K) → NEW-121; PERF-10 (P) → NEW-121; PERF-11 (P) → NEW-120; PERF-12 (U) → NEW-122; PERF-13 (U) → NEW-123; PERF-14 (N) → review |
-| thread safety | THR-01, THR-02, THR-03 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89; THR-03 (U) → NEW-124 |
+| thread safety | THR-01, THR-02, THR-03, THR-04 | none | THR-01 (K) → NEW-89; THR-02 (K) → NEW-89; THR-03 (U) → NEW-124; THR-04 (N) → NEW-118 |
 | portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*` | GEN-01 (U) → J-ARCH; GEN-02 (U) → NEW-91; GEN-03 (K) → NEW-54; GEN-04 (U) → NEW-92; GEN-05 (P) → NEW-93; GEN-06 (K) → NEW-49; GEN-07 (U) → NEW-68; GEN-08 (K) → NEW-47 |
 | build configurations | BUILD-01, BUILD-02, BUILD-03, BUILD-04, BUILD-05, BUILD-06, BUILD-07, BUILD-08, BUILD-09, BUILD-10, BUILD-11, BUILD-12, BUILD-13, BUILD-14, BUILD-15, BUILD-16, BUILD-17, BUILD-18, BUILD-19, BUILD-20 | `ck::crc32c*`, `paths::*`, `fwrite::*fbig`, `files::*`, `dirs::*`, `attrs::*` | BUILD-01 (P) → NEW-53; BUILD-02 (K) → NEW-53; BUILD-03 (K) → NEW-53; BUILD-04 (K) → NEW-53; BUILD-05 (K) → NEW-53; BUILD-06 (K) → NEW-53; BUILD-07 (U) → NEW-53; BUILD-08 (K) → NEW-53; BUILD-09 (K) → NEW-53; BUILD-10 (K) → NEW-53; BUILD-11 (K) → NEW-53; BUILD-12 (U) → NEW-125; BUILD-13 (K) → J-BIG; BUILD-14 (U) → J-YGB; BUILD-15 (U) → J-YES; BUILD-16 (U) → J-NA; BUILD-17 (U) → J-NBNS; BUILD-18 (U) → NEW-126; BUILD-19 (U) → NEW-46; BUILD-20 (U) → NEW-53 |
 
@@ -1035,8 +1035,9 @@ before every release.
 | J-NA | B-NA | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | PR | est. 250 s |
 | J-BUILD | every build of 5.1, plus the combinations of LFS3-BUILD-04, BUILD-05, BUILD-06, BUILD-20 (NEW-53) | A-64LE, thumb | – | compile only, `-Werror` | – | PR | est. 5 min |
 | J-RO | B-RO and B-YES-RDONLY reading images written by B-DEF and B-YGB (NEW-46) | A-64LE | G-NOR | `-Pnone` | – | PR | est. 1 min |
-| J-SIZE | B-DEF, B-RO, B-YGB, B-BIG with `LFS3_NO_LOG -DLFS3_NO_ASSERT` (NEW-118) | thumb | – | – | – | PR | est. 2 min |
-| J-ERRS | the recordings of J-DEF, J-BIG and J-YGB (NEW-93) | A-64LE | – | – | `scripts/ckerrs.py` | PR | under 1 s after those jobs |
+| J-SIZE | B-DEF, B-RO, B-YGB, B-BIG, B-TS with `LFS3_NO_LOG -DLFS3_NO_ASSERT` (NEW-118); B-TS less B-DEF is the lock's cost | thumb | – | – | – | PR | est. 2 min |
+| J-TS | B-TS, `make test-threadsafe` (NEW-89) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | the runner's `lock` and `unlock` (E-12) | PR | est. as J-DEF |
+| J-ERRS | the recordings of J-DEF, J-BIG, J-YGB and J-TS (NEW-93) | A-64LE | – | – | `scripts/ckerrs.py` | PR | under 1 s after those jobs |
 | J-CHECKS | `make test-compat-gbmap` (NEW-79), `make test-nomalloc` (NEW-90), `make test-progonce` (B-DEF with `CKPROGONCE`) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | emubd prog-once | PR | 191 s (three builds) and 14 s in Docker on 6 loaded CPUs; test-progonce as J-DEF |
 | J-TOOLS | `make test`, `make bench`, `test.py -j` on Linux and macOS (LFS3-CI-08) | A-64LE | – | smoke | – | PR | est. 5 min |
 | J-ARCH | B-DEF | A-32LE, A-32BE (mips, powerpc) | G-NOR | `-Pnone` on PR; `-Pnone -Plinear` nightly | – | PR, nightly | est. 22-90 min per target for the full run |
@@ -1045,7 +1046,7 @@ before every release.
 | J-GEO | B-DEF and B-BIG | A-64LE | G-ALL, `ERASE_VALUE=0xff` | `-Pnone -Plinear`, 0 | – | nightly | est. 6 × (263 + 1,181) s ≈ 2.4 h |
 | J-DEFINES | B-DEF | A-64LE | G-NOR | `-Pnone -Plinear` with the define matrices of ALLOC-06, CFG-10, CFG-11, CFG-12, FILE-26 on the affected suites | – | nightly | est. 30-60 min |
 | J-YES | each B-YES-x except RDONLY (J-RO) and GBMAP (J-YGB) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | nightly | est. 10 × 300-1,200 s |
-| J-NBNS | B-NB, B-NS, B-NM (with the static-buffer runner of NEW-87), B-TS | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | nightly | est. 4 × 263 s |
+| J-NBNS | B-NB, B-NS, B-NM (with the static-buffer runner of NEW-87) | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | nightly | est. 3 × 263 s |
 | J-COV | B-DEF and B-BIG with `COVGEN=1`, reported separately | A-64LE, GCC | G-NOR | `-Pnone -Plinear` | – | nightly | est. 1.5 × J-DEF + 1.5 × J-BIG |
 | J-BENCH | `make bench` (NOR and NAND models), NEW-119 to NEW-123 | A-64LE | bench geometries, G-W25Q128 | – | – | nightly | est. 1-2 h (each wt/rt bench simulates 1 h) |
 | J-PL-DEEP | B-DEF and B-BIG | A-64LE | G-NOR | `-P'permute(2)'` on `test_dirs`, `test_relocations`, `test_powerloss` and the new reentrant cases; `-Plog` on every reentrant case; `-Pexhaustive` on cases with fewer than about 30 writes | – | release | est. hours; measure first, bound with `if` |
@@ -1053,7 +1054,7 @@ before every release.
 | J-ARCH-BIG | B-BIG | A-32LE, A-32BE | G-NOR | `-Pnone -Plinear` | – | release | est. 1.5-6 h per target |
 | J-COMPAT | B-DEF against each earlier v3-beta and v3 release linked as `LFSP` (LFS3-MOUNT-26, NEW-79) | A-64LE | G-NOR | `-Pnone` | – | release (from the first v3-beta) | est. 5 min |
 
-The PR tier has 11 jobs, the nightly tier 8 more (plus the full J-ARCH run),
+The PR tier has 12 jobs, the nightly tier 8 more (plus the full J-ARCH run),
 and the release tier 4 more. Every build appears in at least one job:
 J-BUILD compiles all 21, the suite runs in 18, and B-RO and B-YES-RDONLY are
 exercised through the image harness of J-RO. Every
@@ -2111,6 +2112,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | E-9 | **Sparse device.** A block device whose memory grows only with the blocks written, for `block_count` near 2^31 (emubd keeps an array of block pointers) | `bd/` | NEW-88 |
 | E-10 | **Error recording.** `runners/test_errs.h` wraps every public function in the code tests run; with `TEST_ERRS=<file>` the runner appends each new (function, error code, case) to the file. `scripts/ckerrs.py` checks them against the codes each function lists in `lfs3.h`. `scripts/test.py` includes the hook after any source it compiles, so internal (`in = 'lfs3.c'`) cases are recorded too | `runners/test_errs.h`, `runners/test_runner.c`, `scripts/test.py`, `scripts/ckerrs.py`, `Makefile` | NEW-93, NEW-131 |
 | E-11 | **Metastable query.** `lfs3_emubd_metastable(cfg, block)`: whether the block holds a metastable bit, so a case can tell which operation left it | `bd/lfs3_emubd.c` | NEW-08 |
+| E-12 | **Lock checks.** With `LFS3_THREADSAFE` the runner's configuration has `lock` and `unlock` callbacks that count their calls and fail the case on a lock taken while held or released unheld; a case can make either return a code of its own (`TEST_ERR_LOCK`, `TEST_ERR_UNLOCK`, outside `enum lfs3_err`). The hook of E-10 checks after each public call that it took the lock once and released it; a power loss releases it | `runners/test_runner.c`, `runners/test_defines.h`, `runners/test_errs.h`, `scripts/ckerrs.py`, `Makefile` | NEW-89, NEW-93 |
 
 ### 6.5 P1: remaining features and failure modes
 
@@ -2150,7 +2152,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-86 | `fwrite::fcache_zero` | CFG-07 | `FCACHE_SIZE=0` with an allocator whose `malloc(0)` returns NULL | `files::*` and `fwrite::*` workloads pass. Waits on open question Q15 | E-7 |
 | NEW-87 | `alloc::static_buffers` | RES-01, RES-08 | static `rcache_buffer`, `pcache_buffer`, `lookahead_buffer`, per-file `fcache_buffer`; an allocator that fails the test when called; then the same suites in B-NM | no allocation; one allocation of `fcache_size` per `lfs3_file_open` when buffers are not given | E-7 |
 | NEW-88 | `mount::max_blocks` | RES-07 | `block_count` 2^31 - 1, 512-byte blocks, sparse device; 1,000 files across the address range | format, mount, write, remount, read all succeed | E-9 |
-| NEW-89 | `threadsafe::locks` | THR-01, THR-02 | B-TS; counting `lock` and `unlock`; failing `lock` | one lock and unlock around each public call; a failing lock's error is returned with no bd operation. Waits on open question Q12 | – |
+| NEW-89 | `threadsafe::locks`, `threadsafe::lock_fails`, `threadsafe::unlock_fails` | THR-01, THR-02 | B-TS, through `make test-threadsafe`, with the runner's counting `lock` and `unlock` (E-12) and block device callbacks that fail the case outside the lock; every public function in turn, on paths that succeed and paths that fail, including those that use other public functions (`lfs3_get`, `lfs3_size`, `lfs3_set`, `lfs3_file_open`, a read of unflushed data, writes with `LFS3_O_FLUSH` and `LFS3_O_SYNC`, a sync of a desynchronized read-only file, opens and mounts with check flags, a format with check flags, `lfs3_fs_health`, the writing calls); then each call again with `lock` failing, before it runs, and with `unlock` failing | each call takes the lock once and releases it once, and every block device operation is under it; with `lock` failing, every call returns the lock's code, does no block device operation and leaves the `lfs3_t`, the handles and the buffers unchanged byte for byte; with `unlock` failing, a call that succeeds returns the unlock's code and takes effect, one that fails returns its own code; `scripts/ckerrs.py` accepts both codes from every function | E-12 |
 | NEW-90 | `badblocks_gbmap` suite, `make test-nomalloc` | BAD-01 to BAD-04, BAD-06 to BAD-16 | the cases on `v3-integration`, plus `badblocks_gbmap::suspect` (BAD-16), block 2 in `badblocks_gbmap::factory` (BAD-14), and the suite rebuilt with `LFS3_NO_MALLOC` and static buffers (BAD-07) | as the requirements | E-1 |
 | NEW-130 | `repair` suite | BAD-17, GC-17, GC-18, DEG-09, DEG-10 | B-YGB and B-BIG; a data block, a file B-tree node and a gbmap node made READFLIP (reads fail half the time), or MANUAL-flipped (every read fails); `lfs3_fs_ck` and a mount with the check flags, with `ck_retries` 0 and 16 and `ck_passes` 1 to 3, on writable and read-only mounts; then erase or prog failures on the old block, and a second failure of a repaired block | READFLIP blocks are moved and the call returns 0; MANUAL blocks return `LFS3_ERR_CORRUPT` and stay suspect; read-only mounts write nothing; a clean old block is reused, a failing or twice-repaired one is marked bad; `lfs3_fs_nextbad`, `lfs3_fs_nextsuspect` and `lfs3_fs_usage` report health exactly | – |
 | NEW-91 | `compat::endian_exchange` through `make test-compat-endian`, job `test-compat-endian` | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (mips and powerpc under qemu-user, `-d` disk files), each read on the other; the images must also be byte-identical | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
@@ -2163,7 +2165,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | ID | Case or job | Covers | Procedure | Pass | Ext |
 |---|---|---|---|---|---|
 | NEW-92 | `mount::two_fs` | GEN-04 | two filesystems on two emubd instances, interleaved fuzz | both match their models and pass `lfs3_fs_ck` | – |
-| NEW-93 | runner error-domain check, error-code check | GEN-05, ERR-01, ERR-06 | extension E-10 over `make test` in B-DEF, B-BIG and B-YGB (CI jobs test, test-biggest, test-yes-gbmap; `make test-errs` locally) | every recorded code is in `enum lfs3_err`, is not RANGE or UNKNOWN, and is listed by its function in `lfs3.h`; every function has a "Returns" paragraph | E-10 |
+| NEW-93 | runner error-domain check, error-code check | GEN-05, ERR-01, ERR-06, THR-02 | extension E-10 over `make test` in B-DEF, B-BIG and B-YGB and `make test-threadsafe` in B-TS (CI jobs test, test-biggest, test-yes-gbmap, test-threadsafe; `make test-errs` locally) | every recorded code is in `enum lfs3_err`, is not RANGE or UNKNOWN, and is listed by its function in `lfs3.h`, or is the code a test gave the runner's `lock` or `unlock` (E-12) and the function's paragraph names that callback; every function has a "Returns" paragraph that names `lock` and `unlock` | E-10, E-12 |
 | NEW-94 | `ck::cksum_changes` | INT-08 | record `lfs3_fs_cksum` after each model-changing call over 10,000 operations | no repeated consecutive value | – |
 | NEW-95 | estimate check build | META-17 | a debug option that asserts compacted size ≤ estimate, run over `mtree::*_fuzz` and `btree::*_fuzz` | the assertion holds | – |
 | NEW-96 | `fwrite::zero` | FILE-02 | write with size 0 | returns 0; size, position, sync state and prog count unchanged | – |
@@ -2188,7 +2190,7 @@ at `b10efaa` (REQUIREMENTS.md 5.10).
 | NEW-115 | configuration death tests | CFG-02, CFG-03, CFG-04, CFG-06 | invalid sizes, a too-small block size, `block_recycles` -2 and 1,048,575, unknown `gc_flags` | refused before any bd operation | E-6 |
 | NEW-116 | `fwrite::file_cache` | CFG-08 | per-file caches of 1, 16, 4096 bytes on `fwrite::fuzz_unaligned` | passes; no allocation with a supplied buffer | – |
 | NEW-117 | build check `LFS3_NAME_MAX=1023` | CFG-09 | compile | fails with a diagnostic | – |
-| NEW-118 | size report job (J-SIZE) | RES-02 to RES-05 | `make lfs3.code.csv lfs3.data.csv lfs3.stack.csv lfs3.ctx.csv lfs3.structs.csv` on thumb for B-DEF, B-RO, B-YGB, B-BIG | the difference is posted; every function has a finite stack | – |
+| NEW-118 | size report job (J-SIZE) | RES-02 to RES-05, THR-04 | `make lfs3.code.csv lfs3.data.csv lfs3.stack.csv lfs3.ctx.csv lfs3.structs.csv` on thumb for B-DEF, B-RO, B-YGB, B-BIG, B-TS | the difference is posted; every function has a finite stack | – |
 | NEW-119 | bench ratio checks | PERF-01 to PERF-05 | assertions over `bench_rbyd`, `bench_wt`, `bench_dir` and block-size sweeps | the ratios of REQUIREMENTS.md 6.18 | – |
 | NEW-120 | sync-cost bench | PERF-06, PERF-07, PERF-11 | 100 small appends and syncs at `prog_size` 1, 16, 256; count programmed bytes, erases and `cfg->sync` calls | the bounds of the three requirements | – |
 | NEW-121 | W-LOG bench: `bench_wlog_fresh`, `bench_wlog_narrow` (`benches/bench_wlog.toml`) | PERF-08, PERF-09, PERF-10, PERF-14 | the workload of REQUIREMENTS.md B.1 in `benches/`, built with `LFS3_BIGGEST`: `PROG_SIZE` 1, 16, 256, `RATE` 1 and 50, with and without `GBMAP` and `PREERASE`; `bench_wlog_narrow` remounts an image logged with a smaller `pcache_size`; v2.11.3 reference figures from B.1 | erases per minute ≤ v2 for every permutation; at most one erase per call with pre-erase; both asserted by `bench_wlog_fresh` | – |
@@ -2228,8 +2230,7 @@ following hold on that commit:
 1. **Tests exist.** Every P0 test of section 6 (54) and every P1 test (37)
    is in the tree, except:
    - P1 tests that wait on an open question in REQUIREMENTS.md section 8
-     while that question is open: NEW-68 (Q21), NEW-86 (Q15) and NEW-89
-     (Q12);
+     while that question is open: NEW-68 (Q21) and NEW-86 (Q15);
    - NEW-90 until bad-block tracking is merged. Once it is, NEW-90 is P0.
 
    P2 tests are not required, but every P2 test that exists must pass.
@@ -2352,6 +2353,9 @@ TESTFLAGS="-k -j14" make test-sanitize BUILDDIR=.local/big CC=$PWD/.local/cc \
     LFS3_BIGGEST=1 SANITIZE_PLS=none
 # on Linux (GNU make 4), as CI runs it
 TESTFLAGS=-k make -j test-sanitize
+
+# B-TS (J-TS): every suite with the runner's checking lock and unlock
+TESTFLAGS="-k -j14" make test-threadsafe BUILDDIR=.local/b CC=$PWD/.local/cc
 
 # valgrind (no power loss)
 python3 -W ignore ./scripts/test.py -R .local/b/runners/test_runner -j14 -k \

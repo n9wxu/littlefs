@@ -334,7 +334,7 @@ bugs that are fixed on v3-fixes (F-4, F-6).
 | B-NB | `LFS3_NO_BUILTINS` | C fallbacks for builtins |
 | B-NS | `LFS3_NO_STRINGH` | C fallbacks for `string.h` |
 | B-NM | `LFS3_NO_MALLOC` | `lfs3_malloc` returns NULL |
-| B-TS | `LFS3_THREADSAFE` | adds `lock`/`unlock` |
+| B-TS | `LFS3_THREADSAFE` | adds `lock`/`unlock`; `make test-threadsafe` runs every suite with the runner's checking callbacks |
 
 ### 5.3 Architectures
 
@@ -6041,32 +6041,73 @@ littlefs shall document, next to `prog_size` and `pcache_size` in
 
 #### LFS3-THR-01
 
-littlefs shall, when built with `LFS3_THREADSAFE`, call `cfg->lock` before
-and `cfg->unlock` after each public call that accesses the filesystem.
+littlefs shall, when built with `LFS3_THREADSAFE`, call `cfg->lock` once at
+the start of each public function and `cfg->unlock` once before it
+returns, on every path, errors included; shall run every block device
+operation of the call between the two; and shall never call `cfg->lock`
+while it holds the lock, including when one public function uses another.
 
-- **Source:** Stated: `lfs3.h:495-503` documents the callbacks. v2
-  implemented them. Whether v3 should implement or remove them is open
-  question Q12.
-- **Measure:** calls to the callbacks.
-- **Pass:** a NEW B-TS case with counting callbacks finds one lock and one
-  unlock around each public call of every suite, and never a nested lock.
-- **Fail:** any call without the pair.
-- **Verified by:** NEW.
+- **Source:** Stated: `lfs3.h:495-503` documents the callbacks, and v2
+  implemented them, with a wrapper around each public function. Q12 is
+  decided (2026-10-05): v3 keeps the option, as `lfs3.h` declares it. A
+  lock taken twice deadlocks with a non-recursive mutex, and one left
+  held deadlocks the next call, so each must be exactly once, on the
+  error paths too.
+- **Measure:** calls to the callbacks for each public call, and whether
+  the lock is held at each block device operation.
+- **Pass:** in B-TS, the test runner's `lock` fails a case that takes the
+  lock while it is held, its `unlock` one that releases it unheld, and
+  `runners/test_errs.h` checks after each public call of every suite
+  that the call took the lock once and released it (`make
+  test-threadsafe`); NEW-89 calls every public function, on paths that
+  succeed and paths that fail, and the uses of other public functions
+  inside `lfs3_get`, `lfs3_size`, `lfs3_set`, `lfs3_file_open`,
+  `lfs3_file_read`, `lfs3_file_write`, `lfs3_file_sync`,
+  `lfs3_fs_health`, the writing calls, and mounts and formats with check
+  flags, with block device callbacks that fail the case outside the
+  lock.
+- **Fail:** a public call that doesn't take the lock, takes it twice,
+  takes it while held or returns holding it, or a block device operation
+  outside it.
+- **Verified by:** NEW-89 (`threadsafe::*`), and every suite under `make
+  test-threadsafe`, job test-threadsafe.
 - **Status:** Known defect (4-api R19: `lfs3.c` never calls them).
 - **When:** every CI run.
 
 #### LFS3-THR-02
 
-littlefs shall return, without further work, an error that `cfg->lock`
-returns, and shall return an error that `cfg->unlock` returns.
+littlefs shall, when `cfg->lock` fails, return its error before any block
+device operation, with the filesystem, the `lfs3_t` and the call's handle
+and buffers unchanged; when `cfg->unlock` fails after a call that
+succeeded, return unlock's error, the call having taken effect; when the
+call fails, return the call's own error whatever unlock returns; and
+`lfs3.h` shall list both errors for every public function, and ERRORS.md
+shall give their action and the state after them.
 
 - **Source:** Stated: `lfs3.h:496-502` ("Negative error codes are
-  propagated to the user").
-- **Measure:** return values with failing callbacks.
-- **Pass:** a NEW B-TS case finds the callback's error returned, and no bd
-  operation after a failed lock.
+  propagated to the user"). Derived from principle 1 (every error a call
+  can return has a documented action and state after it): a lock that
+  fails, for example on a timeout, must leave nothing half done so the
+  call can be retried; a failed call's own error states what the
+  filesystem holds (ERRORS.md), which unlock's error would hide, so the
+  call's error is returned; an unlock error after a success says the
+  call took effect, and only its result, a count, a position or a size,
+  is lost.
+- **Measure:** return values, block device operations, and the bytes of
+  the `lfs3_t`, the handles and the buffers, with failing callbacks; the
+  "Returns" paragraph of each function in `lfs3.h`; ERRORS.md.
+- **Pass:** NEW-89 in B-TS: with `lock` failing, every public function
+  returns its error, with no block device operation and the `lfs3_t`,
+  the handles and the buffers unchanged byte for byte; with `unlock`
+  failing, every public function that succeeds returns unlock's error
+  and its effect is there for the calls after it, and one that fails
+  returns its own error; `scripts/ckerrs.py` finds lock and unlock
+  errors in every function's "Returns" paragraph, and over the B-TS
+  recordings accepts the test's lock and unlock codes from every
+  function; ERRORS.md gives the action and the state after each.
 - **Fail:** any other result.
-- **Verified by:** NEW.
+- **Verified by:** NEW-89; `scripts/ckerrs.py` over the recordings of job
+  test-threadsafe; review of ERRORS.md.
 - **Status:** Known defect (4-api R19).
 - **When:** every CI run.
 
@@ -6085,6 +6126,28 @@ to be used from different threads at the same time without
 - **Verified by:** NEW.
 - **Status:** Untested.
 - **When:** nightly.
+
+#### LFS3-THR-04
+
+littlefs shall compile, without `LFS3_THREADSAFE`, to the same code as if
+the lock were not implemented: the option shall cost a build that doesn't
+define it no code, stack or RAM.
+
+- **Source:** Derived: most targets run littlefs from one thread and
+  must not pay for a lock they don't use; the owner's direction for issue
+  #8 of the fork.
+- **Measure:** the `.text` of `lfs3.o` built with `-Os -DLFS3_NO_LOG
+  -DLFS3_NO_ASSERT`, by `arm-none-eabi-gcc -mthumb` and by the host's
+  clang, in B-DEF, B-RO, B-YGB, B-BIG, B-NM and with `LFS3_GBMAP` and
+  `LFS3_GC`.
+- **Pass:** byte for byte the `.text` of the commit before the lock was
+  implemented, and, from then on, no change in B-DEF's code size from a
+  commit that only changes the locking.
+- **Fail:** any difference.
+- **Verified by:** comparison at the commit that implements the lock;
+  J-SIZE reports the B-DEF and B-TS code sizes on every run.
+- **Status:** Not implemented at `b10efaa`, which has no lock.
+- **When:** every CI run.
 
 ### 6.20 Build configurations (BUILD)
 
@@ -6597,8 +6660,8 @@ schedule.
 
 littlefs shall run, on every push and pull request, each check that lives
 outside `make test`: `make test-rdonly`, `make test-compat-gbmap`,
-`make test-nomalloc`, `make test-progonce`, and the error-code check of
-LFS3-ERR-01.
+`make test-nomalloc`, `make test-progonce`, `make test-threadsafe`, and the
+error-code check of LFS3-ERR-01.
 
 - **Source:** Derived (issue #17): LFS3-BUILD-19, BAD-05, BAD-07, ERR-01,
   ERR-06 and the cases that need the prog-once check (TEST_PLAN.md E-1) are
@@ -6609,8 +6672,8 @@ LFS3-ERR-01.
 - **Measure:** jobs in `.github/workflows/test.yml`.
 - **Pass:** a job runs each target with `CFLAGS=-Werror` and GCC on x86_64
   and passes; the error-code job checks the recordings of the test,
-  test-biggest and test-yes-gbmap jobs; each job's commands pass in the
-  `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
+  test-biggest, test-yes-gbmap and test-threadsafe jobs; each job's
+  commands pass in the `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
 - **Fail:** a target without a job, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
 - **Status:** Untested at fd3157e3, where only `make test-rdonly` had a
@@ -6999,11 +7062,13 @@ code the function can return.
 - **Pass:** `scripts/ckerrs.py` finds a "Returns" paragraph for every
   function, a hook for every function, and every recorded code in its
   function's paragraph, over the recordings of `make test` in B-DEF, B-BIG
-  and B-YGB.
+  and B-YGB, and of `make test-threadsafe` in B-TS, where the paragraph
+  must also name the `lock` and `unlock` callbacks (LFS3-THR-02).
 - **Fail:** a function without the paragraph or the hook, or a recorded code
   its function doesn't list.
 - **Verified by:** `scripts/ckerrs.py` over the recordings of the CI jobs
-  test, test-biggest and test-yes-gbmap (`make test-errs` locally).
+  test, test-biggest, test-yes-gbmap and test-threadsafe (`make test-errs`
+  locally).
 - **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
   (14f90293, 9c9e8145): over the B-DEF, B-YGB and B-BIG suites the runner
   records 135 (function, code) pairs and every one is listed. Before the
@@ -8015,6 +8080,8 @@ planned, or superseded?
 **Q12. `LFS3_THREADSAFE`.** The header documents `lock` and `unlock`
 callbacks that `lfs3.c` never calls (LFS3-THR-01). Options: (a) implement
 them as in v2; (b) remove the option and leave locking to the application.
+Decided on 2026-10-05: (a), keep the option as `lfs3.h` declares it
+(LFS3-THR-01, LFS3-THR-02, LFS3-THR-04).
 
 **Q13. The scope of `lfs3_file_ck`.** It checks the file's B-tree and data
 blocks but not the file's own mdir entry or inline data (4-api R29). Options:
@@ -8330,8 +8397,8 @@ new environment (9.2).
 | LFS3-PERF-11 | Partly | every CI run | data-block erases per small synced append |
 | LFS3-PERF-12 | Untested | nightly | CI bench-diff job |
 | LFS3-PERF-13 | Untested | nightly | reads of the first allocation after mount, with the gbmap |
-| LFS3-THR-01 | Defect | every CI run | counting `lock`/`unlock` in B-TS |
-| LFS3-THR-02 | Defect | every CI run | failing `lock`/`unlock` in B-TS |
+| LFS3-THR-01 | Defect | every CI run | `threadsafe::locks` (NEW-89), and the runner's counting `lock`/`unlock` over every suite in B-TS (`make test-threadsafe`) |
+| LFS3-THR-02 | Defect | every CI run | failing `lock`/`unlock` in `threadsafe::*` (NEW-89); `scripts/ckerrs.py` over the B-TS recordings |
 | LFS3-THR-03 | Untested | nightly | two filesystems on two threads under ThreadSanitizer |
 | LFS3-BUILD-01 | Partly | every CI run | `-Werror` builds with GCC, clang and the cross compilers |
 | LFS3-BUILD-02 | Defect | every CI run | B-BIG build |
@@ -8989,7 +9056,7 @@ are mapped at the end of 6.4.
 | `LFS3_BIGGEST` | BUILD-02, BUILD-13 |
 | `LFS3_YES_FLUSH` | BUILD-12, BUILD-15, DOC-19 |
 | `LFS3_YES_SYNC` | BUILD-12, BUILD-15, DOC-19 |
-| `LFS3_THREADSAFE` | THR-01, THR-02, THR-03 |
+| `LFS3_THREADSAFE` | THR-01, THR-02, THR-03, THR-04 |
 | `LFS3_NO_MALLOC` | RES-01, BAD-07, BUILD-04, BUILD-10 |
 | `LFS3_NO_STRINGH` | BUILD-09, BUILD-17 |
 | `LFS3_NO_BUILTINS` | BUILD-01, BUILD-17 |
