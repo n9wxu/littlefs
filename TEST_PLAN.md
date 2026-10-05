@@ -1467,8 +1467,25 @@ defines; procedure; pass and fail; extension needed.
   pair, and the block is never erased or programmed again.
 - **Fail:** an mdir moved under an open file, a lost commit, or a bad
   block written again.
-- **Extension:** mtree inner nodes, once they move by a commit through
-  the mtree.
+- **Extension:** none, mtree nodes: NEW-145.
+
+#### NEW-145 `repair::mtree`
+
+- **File and case:** `tests/test_repair.toml`, `test_repair_mtree`,
+  internal. B-YGB and B-BIG.
+- **Covers:** DEG-10, BAD-17.
+- **Defines:** `WHICH` 0 (the mtree's root) and 1 (a node below it);
+  `FAILS` 1 and 3; `ck_retries` 3; `BLOCK_SIZE` 512.
+- **Procedure:** Write small files until the mtree has a node below its
+  root, remount, make the target node's next `FAILS` reads return a
+  flipped bit, and run `lfs3_fs_ck` with `LFS3_CK_CKMETA`. Read every
+  file, check, remount and read again, then check once more.
+- **Pass:** the check returns 0; the node moved, so the old block is
+  suspect, not bad, and no longer in use; every file reads back before
+  and after the remount; the checks return 0 and the last one erases
+  nothing.
+- **Fail:** a node left on the suspect block, a lost file, or an error.
+- **Extension:** none.
 
 #### NEW-140 `mount::readerror`
 

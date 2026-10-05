@@ -7453,6 +7453,12 @@ smallest repair that applies.
   holds it; every file reads back after a write and a remount; the
   suspect block is written again by the next compaction, and marked bad
   and left by a relocation if it needs settling off again.
+  `repair::mtree` (NEW-145): the mtree's root, or a node below it, whose
+  next 1 or 3 reads return a flipped bit is moved to a new block by
+  `lfs3_fs_ck` with `ck_retries` 3, by a commit through the mtree and a
+  commit of the new mtree to the mroot; the old block is no longer
+  referenced, every file reads back, also after a remount, and a second
+  check erases nothing.
   `repair::data_lost`: a block whose every read fails makes the
   check return `LFS3_ERR_CORRUPT` and stays listed by
   `lfs3_fs_nextsuspect`, and the damaged file can still be removed
@@ -7463,17 +7469,16 @@ smallest repair that applies.
   pass their checksum, reports an error for damage it repaired, or a
   repairable block left unrepaired on a writable mount.
 - **Verified by:** `repair::data`, `repair::data_lost`, `repair::btree`,
-  `repair::gbmap`, `repair::mdir`, `repair::mdir_twice`;
-  `gbmap::rmmkgbmap`.
+  `repair::gbmap`, `repair::mdir`, `repair::mdir_twice`,
+  `repair::mtree`; `gbmap::rmmkgbmap`.
 - **Status:** Partly met. Not implemented at `b10efaa`; the repairing
   check is tested on `v3-integration` (f09acb9d); mdirs are settled
   instead of moved, tested on `v3-rc` (`e78b4263`), only when the other
   block reads as older, since at `6f80e646` a fetch that couldn't read the
   newer block fell back to the older one without an error (issue #6,
-  LFS3-INT-26). mtree inner
-  nodes are not moved yet, that needs a commit through the mtree and the
-  mroot, as gbmap nodes have; one that needed a retry stays listed as
-  suspect. Rebuilding a damaged
+  LFS3-INT-26). mtree nodes were not moved at `6f80e646`, that needed a
+  commit through the mtree and the mroot, as gbmap nodes have; one that
+  needed a retry stayed listed as suspect. Rebuilding a damaged
   directory needs the degraded mount of LFS3-DEG-03.
 - **When:** every CI run.
 
