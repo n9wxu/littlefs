@@ -12845,7 +12845,11 @@ static inline int lfs3_alloc_ckpoint(lfs3_t *lfs3) {
         int err = lfs3_alloc_lookgbmap(lfs3);
         // no room for a new gbmap? fall back to the lookahead buffer,
         // a full disk must not prevent removes from freeing blocks
-        if (err && err != LFS3_ERR_NOSPC) {
+        //
+        // something we can't read? it may reference any block the gbmap
+        // doesn't know is free, so keep allocating from those, and leave
+        // the damage for the next scan, or a check, to report
+        if (err && err != LFS3_ERR_NOSPC && err != LFS3_ERR_CORRUPT) {
             return err;
         }
         // the failed repopulation may leave a partial commit in the
