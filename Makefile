@@ -37,12 +37,25 @@ TEST_GCDA  := $(TEST_A:%.t.a.c=%.t.a.gcda)
 TEST_PERF  := $(TEST_RUNNER:%=%.perf)
 TEST_TRACE := $(TEST_RUNNER:%=%.trace)
 TEST_CSV   := $(TEST_RUNNER:%=%.csv)
+TEST_ERRLOG := $(TEST_RUNNER:%=%.errs)
 
 RDONLY_RUNNER ?= $(BUILDDIR)/runners/rdonly_runner
 RDONLY_DIR ?= $(BUILDDIR)/rdonly
 RDONLY_IMAGES ?= test_files_image test_dirs_image test_attrs_image
 
 COMPAT_DIR ?= $(BUILDDIR)/compat
+NOMALLOC_DIR ?= $(BUILDDIR)/nomalloc
+NOMALLOC_TESTS ?= tests/test_badblocks_gbmap.toml tests/test_repair.toml
+
+DBG_DIR ?= $(BUILDDIR)/dbg
+
+RELEASE_DIR ?= $(BUILDDIR)/release
+
+ENDIAN_DIR ?= $(BUILDDIR)/endian
+# a compiler and emulator for a host of the other byte order
+CROSS_CC ?= mips-linux-gnu-gcc --static
+CROSS_EXEC ?= qemu-mips
+BALANCE_DIR ?= $(BUILDDIR)/balance
 
 BENCHES ?= $(wildcard benches/*.toml)
 BENCH_SRC ?= \
@@ -74,6 +87,14 @@ VALGRIND      ?= valgrind
 GDB           ?= gdb
 PERF          ?= perf
 PRETTYASSERTS ?= ./scripts/prettyasserts.py
+
+# prettyasserts rewrites asserts so failures show their operands, but
+# with LFS3_NO_ASSERT littlefs's own asserts must compile out, as in a
+# release build, so leave LFS3_ASSERT in our sources to the preprocessor,
+# the rest of the test harness keeps its asserts
+PRETTYASSERTSFLAGS = $(if $(and \
+		$(filter -DLFS3_NO_ASSERT%,$(CFLAGS)), \
+		$(filter $(SRC:%.c=%),$(basename $(basename $*)))),,-Plfs3_)
 
 # some flags are gcc-only, so find out if we're actually clang (cc may
 # be either)
@@ -545,6 +566,15 @@ rdonly-runner: $(RDONLY_RUNNER)
 test: test-runner
 	./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
 
+## Run the tests in a release build, with LFS3_NO_ASSERT
+#
+# littlefs's asserts compile out, the test harness keeps its own, see
+# PRETTYASSERTSFLAGS, everything goes in RELEASE_DIR
+.PHONY: test-release
+test-release:
+	$(MAKE) BUILDDIR=$(RELEASE_DIR) LFS3_NO_ASSERT=1 test-runner
+	./scripts/test.py -R$(RELEASE_DIR)/runners/test_runner $(TESTFLAGS)
+
 ## Run the tests with emubd's prog-once check
 .PHONY: test-progonce
 test-progonce: test-runner
@@ -607,6 +637,90 @@ test-compat-gbmap:
 				|| exit 1 ; \
 		done ; \
 	done
+
+## Run the bad-block suites without malloc
+#
+# Builds a runner with LFS3_NO_MALLOC and LFS3_GBMAP, so any lfs3_malloc
+# fails, gives littlefs static caches and each file its own cache, and
+# runs test_badblocks_gbmap and test_repair in it. Everything goes in
+# NOMALLOC_DIR.
+.PHONY: test-nomalloc
+test-nomalloc:
+	$(MAKE) BUILDDIR=$(NOMALLOC_DIR) LFS3_NO_MALLOC=1 LFS3_GBMAP=1 \
+		TESTS="$(NOMALLOC_TESTS)" test-runner
+	./scripts/test.py -R$(NOMALLOC_DIR)/runners/test_runner $(TESTFLAGS) \
+		$(notdir $(NOMALLOC_TESTS:.toml=))
+
+## Check that the debug scripts decode what littlefs writes and reject
+## what littlefs rejects, with and without the gbmap
+.PHONY: test-dbg
+test-dbg:
+	$(MAKE) BUILDDIR=$(DBG_DIR)/def test-runner
+	$(MAKE) BUILDDIR=$(DBG_DIR)/ygb LFS3_YES_GBMAP=1 test-runner
+	./scripts/test_dbg.py \
+		-R$(DBG_DIR)/def/runners/test_runner \
+		-R$(DBG_DIR)/ygb/runners/test_runner
+
+## Check the error codes the tests see against lfs3.h
+#
+# Runs the tests with TEST_ERRS set, so the runner records each error code
+# a public function returns, see runners/test_errs.h, then checks that
+# lfs3.h lists every one with its function, see scripts/ckerrs.py.
+.PHONY: test-errs
+test-errs: test-runner
+	rm -f $(TEST_ERRLOG)
+	TEST_ERRS=$(abspath $(TEST_ERRLOG)) \
+		./scripts/test.py -R$(TEST_RUNNER) $(TESTFLAGS)
+	./scripts/ckerrs.py $(TEST_ERRLOG)
+
+## Check that images move between hosts of either byte order
+#
+# A native build and a CROSS_CC build run under CROSS_EXEC each write an
+# image with test_compat_endian_exchange, the images must be identical,
+# and every build must read every image and find the same lfs3_fs_cksum.
+# Everything goes in ENDIAN_DIR.
+.PHONY: test-compat-endian
+test-compat-endian:
+	$(MAKE) BUILDDIR=$(ENDIAN_DIR)/native test-runner
+	$(MAKE) BUILDDIR=$(ENDIAN_DIR)/cross CC="$(CROSS_CC)" test-runner
+	rm -f $(ENDIAN_DIR)/*.disk $(ENDIAN_DIR)/*.cksum
+	for b in native cross ; do \
+		x= ; [ $$b = cross ] && x="$(CROSS_EXEC)" ; \
+		TEST_COMPAT_ENDIAN_CKSUM=$(ENDIAN_DIR)/$$b.disk.cksum \
+			./scripts/test.py -R$(ENDIAN_DIR)/$$b/runners/test_runner \
+				$${x:+--exec="$$x"} \
+				-Pnone -d $(ENDIAN_DIR)/$$b.disk \
+				test_compat_endian_exchange -DROLE=1 \
+			|| exit 1 ; \
+	done
+	cmp $(ENDIAN_DIR)/native.disk $(ENDIAN_DIR)/cross.disk
+	for b in native cross ; do \
+		x= ; [ $$b = cross ] && x="$(CROSS_EXEC)" ; \
+		for d in native cross ; do \
+			TEST_COMPAT_ENDIAN_IMAGE=$(ENDIAN_DIR)/$$d.disk \
+			TEST_COMPAT_ENDIAN_CKSUM=$(ENDIAN_DIR)/$$d.disk.cksum \
+				./scripts/test.py \
+					-R$(ENDIAN_DIR)/$$b/runners/test_runner \
+					$${x:+--exec="$$x"} \
+					-Pnone test_compat_endian_exchange -DROLE=2 \
+				|| exit 1 ; \
+		done ; \
+	done
+	for d in native cross ; do \
+		[ $$(sort -u $(ENDIAN_DIR)/$$d.disk.cksum | wc -l) -eq 1 ] \
+			|| { cat $(ENDIAN_DIR)/$$d.disk.cksum ; exit 1 ; } ; \
+	done
+	cmp $(ENDIAN_DIR)/native.disk.cksum $(ENDIAN_DIR)/cross.disk.cksum
+
+## Run the rbyd, btree and mtree tests with the rbyd balance check
+#
+# LFS3_DBGRBYDBALANCE asserts every fetched rbyd is balanced. Everything
+# goes in BALANCE_DIR.
+.PHONY: test-balance
+test-balance:
+	$(MAKE) BUILDDIR=$(BALANCE_DIR) LFS3_DBGRBYDBALANCE=1 test-runner
+	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner $(TESTFLAGS) \
+		test_rbyd test_btree test_mtree
 
 ## List the tests
 .PHONY: test-list list-tests
@@ -897,10 +1011,10 @@ $(BUILDDIR)/%.s: $(BUILDDIR)/%.c
 	$(CC) -S $(CFLAGS) $< -o$@
 
 $(BUILDDIR)/%.a.c: %.c
-	$(PRETTYASSERTS) -Plfs3_ $< -o$@
+	$(PRETTYASSERTS) $(PRETTYASSERTSFLAGS) $< -o$@
 
 $(BUILDDIR)/%.a.c: $(BUILDDIR)/%.c
-	$(PRETTYASSERTS) -Plfs3_ $< -o$@
+	$(PRETTYASSERTS) $(PRETTYASSERTSFLAGS) $< -o$@
 
 $(BUILDDIR)/%.t.c: %.toml
 	./scripts/test.py -c $< $(TESTCFLAGS) -o$@
@@ -946,10 +1060,13 @@ clean:
 	rm -f $(TEST_PERF)
 	rm -f $(TEST_TRACE)
 	rm -f $(TEST_CSV)
+	rm -f $(TEST_ERRLOG)
 	rm -f $(RDONLY_RUNNER)
 	rm -f $(BUILDDIR)/runners/rdonly_runner.o
 	rm -rf $(RDONLY_DIR)
 	rm -rf $(COMPAT_DIR)
+	rm -rf $(DBG_DIR)
+	rm -rf $(RELEASE_DIR)
 	rm -f $(BENCH_RUNNER)
 	rm -f $(BENCH_A)
 	rm -f $(BENCH_C)

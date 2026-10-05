@@ -13,6 +13,7 @@ code = '''
 // that never returns fails instead of hanging
 static lfs3_size_t test_gc_work = 0;
 static lfs3_size_t test_gc_work_limit = -1;
+static lfs3_size_t test_gc_erases = 0;
 
 static void test_gc_work_add(lfs3_size_t size) {
     test_gc_work += size;
@@ -37,6 +38,7 @@ static int test_gc_work_prog(const struct lfs3_cfg *cfg,
 static int test_gc_work_erase(const struct lfs3_cfg *cfg,
         lfs3_block_t block) {
     test_gc_work_add(cfg->block_size);
+    test_gc_erases += 1;
     return lfs3_emubd_erase(cfg, block);
 }
 '''
@@ -3770,10 +3772,6 @@ defines.SEED = 42
 if = [
     'LFS3_IFDEF_PREERASE(true, !PREERASE)',
     'GBMAP || !PREERASE',
-    # with the gbmap, pre-erasing, and lookahead, a nearly full disk can
-    # make each gbmap repopulation and sync ask for another, see the note
-    # on gc_steps in lfs3.h
-    '!(GBMAP && PREERASE && LOOKAHEAD)',
 ]
 ifdef = 'LFS3_GC'
 code = '''
@@ -3799,7 +3797,8 @@ code = '''
                     : 0),
             &cfg) => 0;
 
-    // gc, failing if a call does too much work
+    // gc, failing if a call does too much work, or leaves work another
+    // call could do
     lfs3_size_t work_max = 0;
     #define TEST_GC_STEPS_GC() do { \
         test_gc_work = 0; \
@@ -3808,6 +3807,9 @@ code = '''
         assert(!err_ || err_ == LFS3_ERR_NOSPC); \
         work_max = lfs3_max(work_max, test_gc_work); \
         test_gc_work_limit = -1; \
+        struct lfs3_fsinfo fsinfo_; \
+        assert(lfs3_fs_stat(&lfs3, &fsinfo_) == 0); \
+        assert(err_ || !(fsinfo_.flags & GC_FLAGS)); \
     } while (0)
 
     // files map to the seed of their contents, 0 if removed
@@ -3917,6 +3919,114 @@ code = '''
             lfs3_file_close(&lfs3, &file) => 0;
         }
 
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that compaction stops when an mdir can't be compacted below
+# gc_compact_thresh, here an mdir holding one large attribute
+[cases.test_gc_compact_unshrinkable]
+# METHOD=0 => lfs3_fs_ck
+# METHOD=1 => lfs3_fs_gc, gc_steps=-1
+# METHOD=2 => lfs3_fs_gc, gc_steps=1, until the flag clears
+# METHOD=3 => lfs3_mount
+defines.METHOD = [0, 1, 2, 3]
+defines.GC_FLAGS = 'LFS3_GC_COMPACT'
+defines.GC_STEPS = '(METHOD == 2) ? 1 : -1'
+defines.GC_COMPACT_THRESH = 'BLOCK_SIZE/2'
+# compacts to a bit more than gc_compact_thresh
+defines.ASIZE = 'BLOCK_SIZE/2 + BLOCK_SIZE/32'
+defines.WORK_LIMIT = '10*BLOCK_COUNT*BLOCK_SIZE'
+if = '(METHOD != 1 && METHOD != 2) || LFS3_IFDEF_GC(true, false)'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    cfg.read = test_gc_work_read;
+    cfg.prog = test_gc_work_prog;
+    cfg.erase = test_gc_work_erase;
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // one file with a large attribute, no split can get below it
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "spider",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    uint8_t abuf[ASIZE];
+    memset(abuf, 'a', ASIZE);
+    lfs3_setattr(&lfs3, "spider", 'a', abuf, ASIZE) => 0;
+
+    // and some garbage, so compaction has something to reclaim
+    for (lfs3_size_t i = 0; i < 64; i++) {
+        uint8_t b = i;
+        lfs3_setattr(&lfs3, "spider", 'b', &b, 1) => 0;
+    }
+
+    // expect dirty initial state or else our test doesn't work
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_COMPACT);
+    if (METHOD == 3) {
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // compact, failing if this does too much work
+    test_gc_work = 0;
+    test_gc_erases = 0;
+    test_gc_work_limit = WORK_LIMIT;
+    if (METHOD == 0) {
+        lfs3_fs_ck(&lfs3, LFS3_CK_COMPACT) => 0;
+    } else if (METHOD == 1 || METHOD == 2) {
+        #ifdef LFS3_GC
+        while (true) {
+            lfs3_fs_gc(&lfs3) => 0;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            if (!(fsinfo.flags & LFS3_I_COMPACT)) {
+                break;
+            }
+            assert(METHOD == 2);
+        }
+        #endif
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_COMPACT, &cfg) => 0;
+    }
+    test_gc_work_limit = -1;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_COMPACT));
+    // compacting at most once costs a few erases at most, splitting
+    // relocates
+    assert(test_gc_erases > 0);
+    assert(test_gc_erases <= 6);
+
+    // asking again should find nothing it can do
+    lfs3_fs_unck(&lfs3, LFS3_GC_COMPACT) => 0;
+    test_gc_erases = 0;
+    test_gc_work_limit = WORK_LIMIT;
+    lfs3_fs_ck(&lfs3, LFS3_CK_COMPACT) => 0;
+    test_gc_work_limit = -1;
+    assert(test_gc_erases == 0);
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_COMPACT));
+
+    // check our attributes survived
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        }
+
+        uint8_t rbuf[ASIZE];
+        lfs3_getattr(&lfs3, "spider", 'a', rbuf, ASIZE) => ASIZE;
+        assert(memcmp(rbuf, abuf, ASIZE) == 0);
+        uint8_t b;
+        lfs3_getattr(&lfs3, "spider", 'b', &b, 1) => 1;
+        assert(b == 63);
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     }
 

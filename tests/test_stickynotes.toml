@@ -8533,46 +8533,10 @@ if = [
 ]
 in = 'lfs3.c'
 code = '''
-    lfs3_t lfs3;
-    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
-    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
-
     // long names fill mdirs quickly
     #define TEST_CLEANUP_DROP_NAME(name, c, i) \
         sprintf(name, "%c%03x%s", c, i, \
                 "______________________________________")
-
-    // bookend files sort before and after our orphans
-    for (lfs3_size_t i = 0; i < BOOKENDS; i++) {
-        for (int k = 0; k < 2; k++) {
-            char name[256];
-            TEST_CLEANUP_DROP_NAME(name, (k == 0) ? 'a' : 'z', i);
-            lfs3_file_t file;
-            lfs3_file_open(&lfs3, &file, name,
-                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-            lfs3_file_write(&lfs3, &file, name, 4) => 4;
-            lfs3_file_close(&lfs3, &file) => 0;
-        }
-    }
-
-    // create orphans between them, closing a not-yet-created desync file
-    // leaves an orphan, but only after all opens
-    lfs3_size_t count = N*BOOKENDS;
-    lfs3_file_t *files = malloc(count*sizeof(lfs3_file_t));
-    assert(files);
-    for (lfs3_size_t i = 0; i < count; i++) {
-        char name[256];
-        TEST_CLEANUP_DROP_NAME(name, 'm', i);
-        lfs3_file_open(&lfs3, &files[i], name,
-                LFS3_O_WRONLY
-                    | LFS3_O_CREAT
-                    | LFS3_O_EXCL
-                    | LFS3_O_DESYNC) => 0;
-    }
-    for (lfs3_size_t i = 0; i < count; i++) {
-        lfs3_file_close(&lfs3, &files[i]) => 0;
-    }
-    free(files);
 
     // count mdirs with only orphans, and the longest run of them
     #define TEST_CLEANUP_DROP_SCAN(orphans_, run_) do { \
@@ -8606,15 +8570,60 @@ code = '''
         } \
     } while (0)
 
+    // with enough orphans, several consecutive mdirs hold nothing else,
+    // but how many fit an mdir depends on the build (the gbmap's gstate
+    // takes room), so double the orphans until they do
+    bool several = (N*BOOKENDS >= 64 || BLOCK_SIZE == 512);
+    lfs3_t lfs3;
+    lfs3_size_t count = N*BOOKENDS;
     lfs3_size_t orphans;
     lfs3_size_t run;
-    TEST_CLEANUP_DROP_SCAN(orphans, run);
-    // closing only queues grms in RAM, the stickynotes stay on disk
-    assert(orphans == count);
-    assert(lfs3.flags & LFS3_I_MKCONSISTENT);
-    // with enough orphans, several consecutive mdirs hold nothing else
-    if (count >= 64 || BLOCK_SIZE == 512) {
-        assert(run >= 2);
+    while (true) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        // bookend files sort before and after our orphans
+        for (lfs3_size_t i = 0; i < BOOKENDS; i++) {
+            for (int k = 0; k < 2; k++) {
+                char name[256];
+                TEST_CLEANUP_DROP_NAME(name, (k == 0) ? 'a' : 'z', i);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name,
+                        LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+                lfs3_file_write(&lfs3, &file, name, 4) => 4;
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        }
+
+        // create orphans between them, closing a not-yet-created desync
+        // file leaves an orphan, but only after all opens
+        lfs3_file_t *files = malloc(count*sizeof(lfs3_file_t));
+        assert(files);
+        for (lfs3_size_t i = 0; i < count; i++) {
+            char name[256];
+            TEST_CLEANUP_DROP_NAME(name, 'm', i);
+            lfs3_file_open(&lfs3, &files[i], name,
+                    LFS3_O_WRONLY
+                        | LFS3_O_CREAT
+                        | LFS3_O_EXCL
+                        | LFS3_O_DESYNC) => 0;
+        }
+        for (lfs3_size_t i = 0; i < count; i++) {
+            lfs3_file_close(&lfs3, &files[i]) => 0;
+        }
+        free(files);
+
+        TEST_CLEANUP_DROP_SCAN(orphans, run);
+        // closing only queues grms in RAM, the stickynotes stay on disk
+        assert(orphans == count);
+        assert(lfs3.flags & LFS3_I_MKCONSISTENT);
+        if (!several || run >= 2) {
+            break;
+        }
+
+        lfs3_unmount(&lfs3) => 0;
+        count *= 2;
+        assert(count <= 8*N*BOOKENDS);
     }
 
     // remount? the grm queue is lost, those orphans are found with the

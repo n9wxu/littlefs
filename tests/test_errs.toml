@@ -1,0 +1,806 @@
+# Test the state littlefs leaves after an error, see ERRORS.md
+after = ['test_badblocks']
+
+# Test both with and without the gbmap if available
+defines.GBMAP = [false, true]
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+
+code = '''
+// watch the block device, counting operations after the first that
+// fails, and progs and erases
+static int (*test_errs_read_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        void *buffer, lfs3_size_t size);
+static int (*test_errs_prog_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        const void *buffer, lfs3_size_t size);
+static int (*test_errs_erase_)(const struct lfs3_cfg *cfg,
+        lfs3_block_t block);
+static int (*test_errs_sync_)(const struct lfs3_cfg *cfg);
+
+static bool test_errs_failed;
+static lfs3_size_t test_errs_after;
+static lfs3_size_t test_errs_writes;
+
+static int test_errs_read(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        void *buffer, lfs3_size_t size) {
+    test_errs_after += test_errs_failed;
+    int err = test_errs_read_(cfg, block, off, buffer, size);
+    test_errs_failed = test_errs_failed || err;
+    return err;
+}
+
+static int test_errs_prog(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, lfs3_off_t off,
+        const void *buffer, lfs3_size_t size) {
+    test_errs_after += test_errs_failed;
+    test_errs_writes += 1;
+    int err = test_errs_prog_(cfg, block, off, buffer, size);
+    test_errs_failed = test_errs_failed || err;
+    return err;
+}
+
+static int test_errs_erase(const struct lfs3_cfg *cfg,
+        lfs3_block_t block) {
+    test_errs_after += test_errs_failed;
+    test_errs_writes += 1;
+    int err = test_errs_erase_(cfg, block);
+    test_errs_failed = test_errs_failed || err;
+    return err;
+}
+
+static int test_errs_sync(const struct lfs3_cfg *cfg) {
+    int err = test_errs_sync_(cfg);
+    test_errs_failed = test_errs_failed || err;
+    return err;
+}
+
+static void test_errs_watch(struct lfs3_cfg *cfg) {
+    test_errs_read_ = cfg->read;
+    test_errs_prog_ = cfg->prog;
+    test_errs_erase_ = cfg->erase;
+    test_errs_sync_ = cfg->sync;
+    cfg->read = test_errs_read;
+    cfg->prog = test_errs_prog;
+    cfg->erase = test_errs_erase;
+    cfg->sync = test_errs_sync;
+}
+
+static void test_errs_reset(void) {
+    test_errs_failed = false;
+    test_errs_after = 0;
+    test_errs_writes = 0;
+}
+
+// the calls we fail, one class of call after another
+enum test_errs_call {
+    // format and mount
+    TEST_ERRS_FORMAT,
+    TEST_ERRS_MOUNT,
+    TEST_ERRS_MOUNT_RDONLY,
+    // reads
+    TEST_ERRS_STAT,
+    TEST_ERRS_GET,
+    TEST_ERRS_GETATTR,
+    TEST_ERRS_FILE_READ,
+    TEST_ERRS_DIR_READ,
+    TEST_ERRS_TRV_READ,
+    TEST_ERRS_USAGE,
+    // metadata operations
+    TEST_ERRS_MKDIR,
+    TEST_ERRS_REMOVE,
+    TEST_ERRS_REMOVE_DIR,
+    TEST_ERRS_RENAME,
+    TEST_ERRS_SETATTR,
+    TEST_ERRS_REMOVEATTR,
+    TEST_ERRS_SET,
+    TEST_ERRS_CREAT,
+    // file writes
+    TEST_ERRS_WRITE,
+    TEST_ERRS_FLUSH,
+    TEST_ERRS_SYNC,
+    TEST_ERRS_TRUNCATE,
+    TEST_ERRS_FRUNCATE,
+    // janitorial calls
+    TEST_ERRS_CK,
+    TEST_ERRS_CK_GC,
+    TEST_ERRS_MKCONSISTENT,
+    TEST_ERRS_GC,
+    TEST_ERRS_GROW,
+    // gbmap calls
+    TEST_ERRS_MKGBMAP,
+    TEST_ERRS_RMGBMAP,
+    TEST_ERRS_MKBAD,
+    TEST_ERRS_MKGOOD,
+    TEST_ERRS_COUNT,
+};
+
+// is this call in this build?
+static bool test_errs_hascall(int call, bool gbmap) {
+    (void)gbmap;
+    switch (call) {
+    case TEST_ERRS_GC:;
+        return LFS3_IFDEF_GC(true, false);
+    case TEST_ERRS_MKGBMAP:;
+    case TEST_ERRS_RMGBMAP:;
+        #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+        return true;
+        #else
+        return false;
+        #endif
+    case TEST_ERRS_MKBAD:;
+    case TEST_ERRS_MKGOOD:;
+        return LFS3_IFDEF_GBMAP(gbmap, false);
+    default:;
+        return true;
+    }
+}
+
+// the contents we start with, and how much flush and sync rewrite
+#define TEST_ERRS_FSIZE (2*BLOCK_SIZE)
+#define TEST_ERRS_WSIZE (BLOCK_SIZE/2)
+
+static uint8_t test_errs_data(lfs3_size_t i, bool new) {
+    return ((new) ? 'A' : 'a') + (i % 26);
+}
+
+// the block we mark bad or good
+#if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+static lfs3_block_t test_errs_badblock;
+#endif
+
+// format and fill a filesystem, with the gbmap for gbmap calls that
+// need one, and a smaller block count to grow
+static void test_errs_setup(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
+        int call, bool gbmap) {
+    struct lfs3_cfg cfg_ = *cfg;
+    if (call == TEST_ERRS_GROW) {
+        cfg_.block_count = cfg->block_count/2;
+    }
+    if (call == TEST_ERRS_MKGBMAP) {
+        gbmap = false;
+    }
+    if (call == TEST_ERRS_RMGBMAP) {
+        gbmap = true;
+    }
+    (void)gbmap;
+    lfs3_format(lfs3,
+            LFS3_F_RDWR
+                | ((gbmap) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg_) => 0;
+    lfs3_mount(lfs3, LFS3_M_RDWR, cfg) => 0;
+
+    lfs3_mkdir(lfs3, "d") => 0;
+    lfs3_mkdir(lfs3, "e") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(lfs3, &file, "d/f",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    for (lfs3_size_t i = 0; i < TEST_ERRS_FSIZE; i++) {
+        uint8_t c = test_errs_data(i, false);
+        lfs3_file_write(lfs3, &file, &c, 1) => 1;
+    }
+    lfs3_file_close(lfs3, &file) => 0;
+    lfs3_file_open(lfs3, &file, "s",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(lfs3, &file, "small", 5) => 5;
+    lfs3_file_close(lfs3, &file) => 0;
+    lfs3_setattr(lfs3, "s", 'a', "attr", 4) => 0;
+    lfs3_set(lfs3, "k", "value", 5) => 0;
+
+    // pick a block to mark bad or good, the last one not in use
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    if (call == TEST_ERRS_MKBAD || call == TEST_ERRS_MKGOOD) {
+        test_errs_badblock = cfg->block_count-1;
+        while (true) {
+            int err = lfs3_fs_mkbad(lfs3, test_errs_badblock);
+            assert(!err || err == LFS3_ERR_BUSY);
+            if (!err) {
+                break;
+            }
+            test_errs_badblock -= 1;
+        }
+        if (call == TEST_ERRS_MKBAD) {
+            lfs3_fs_mkgood(lfs3, test_errs_badblock) => 0;
+        }
+    }
+    #endif
+
+    // start the call on a fresh mount, with nothing cached
+    lfs3_unmount(lfs3) => 0;
+    if (call != TEST_ERRS_MOUNT && call != TEST_ERRS_MOUNT_RDONLY) {
+        lfs3_mount(lfs3, LFS3_M_RDWR, cfg) => 0;
+    }
+}
+
+// check d/f, its first n bytes rewritten or not
+static void test_errs_checkfile(lfs3_t *lfs3, lfs3_size_t n) {
+    lfs3_file_t file;
+    lfs3_file_open(lfs3, &file, "d/f", LFS3_O_RDONLY) => 0;
+    lfs3_file_size(lfs3, &file) => TEST_ERRS_FSIZE;
+    for (lfs3_size_t i = 0; i < TEST_ERRS_FSIZE; i++) {
+        uint8_t c;
+        lfs3_file_read(lfs3, &file, &c, 1) => 1;
+        assert(c == test_errs_data(i, i < n));
+    }
+    lfs3_file_close(lfs3, &file) => 0;
+}
+
+// did the call's change happen?
+static bool test_errs_isdone(lfs3_t *lfs3, int call) {
+    struct lfs3_info info;
+    uint8_t buf[16];
+    switch (call) {
+    case TEST_ERRS_MKDIR:;
+        return lfs3_stat(lfs3, "m", &info) == 0;
+    case TEST_ERRS_REMOVE:;
+        return lfs3_stat(lfs3, "s", &info) == LFS3_ERR_NOENT;
+    case TEST_ERRS_REMOVE_DIR:;
+        return lfs3_stat(lfs3, "e", &info) == LFS3_ERR_NOENT;
+    case TEST_ERRS_RENAME:;
+        return lfs3_stat(lfs3, "t", &info) == 0;
+    case TEST_ERRS_SETATTR:;
+        return lfs3_getattr(lfs3, "s", 'b', buf, sizeof(buf)) >= 0;
+    case TEST_ERRS_REMOVEATTR:;
+        return lfs3_getattr(lfs3, "s", 'a', buf, sizeof(buf))
+                == LFS3_ERR_NOATTR;
+    case TEST_ERRS_SET:;
+        return lfs3_get(lfs3, "k2", buf, sizeof(buf)) >= 0;
+    case TEST_ERRS_CREAT:;
+        return lfs3_stat(lfs3, "c", &info) == 0;
+    case TEST_ERRS_SYNC:;
+        lfs3_get(lfs3, "d/f", buf, 1) => 1;
+        return buf[0] == test_errs_data(0, true);
+    case TEST_ERRS_GROW:;
+    {
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(lfs3, &fsinfo) => 0;
+        return fsinfo.block_count == BLOCK_COUNT;
+    }
+    #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+    case TEST_ERRS_MKGBMAP:;
+    case TEST_ERRS_RMGBMAP:;
+    {
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(lfs3, &fsinfo) => 0;
+        return !(fsinfo.flags & LFS3_I_GBMAP)
+                == (call == TEST_ERRS_RMGBMAP);
+    }
+    #endif
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    case TEST_ERRS_MKBAD:;
+    case TEST_ERRS_MKGOOD:;
+        return (lfs3_fs_nextbad(lfs3, 0) == LFS3_ERR_NOENT)
+                == (call == TEST_ERRS_MKGOOD);
+    #endif
+    default:;
+        return false;
+    }
+}
+
+// check everything we wrote, with or without the call done
+static void test_errs_check(lfs3_t *lfs3, int call, bool done) {
+    struct lfs3_info info;
+    uint8_t buf[16];
+
+    // d/f, see the file writes for what they change
+    lfs3_stat(lfs3, "d/f", &info) => 0;
+    assert(info.type == LFS3_TYPE_REG);
+    assert(info.size == TEST_ERRS_FSIZE);
+    test_errs_checkfile(lfs3,
+            (call == TEST_ERRS_SYNC && done) ? TEST_ERRS_WSIZE : 0);
+
+    // s or t
+    bool renamed = (call == TEST_ERRS_RENAME && done);
+    bool removed = (call == TEST_ERRS_REMOVE && done);
+    lfs3_stat(lfs3, "s", &info)
+            => (renamed || removed) ? LFS3_ERR_NOENT : 0;
+    lfs3_stat(lfs3, "t", &info) => (renamed) ? 0 : LFS3_ERR_NOENT;
+    if (!removed) {
+        const char *path = (renamed) ? "t" : "s";
+        lfs3_get(lfs3, path, buf, sizeof(buf)) => 5;
+        assert(memcmp(buf, "small", 5) == 0);
+        if (call == TEST_ERRS_REMOVEATTR && done) {
+            lfs3_getattr(lfs3, path, 'a', buf, sizeof(buf))
+                    => LFS3_ERR_NOATTR;
+        } else {
+            lfs3_getattr(lfs3, path, 'a', buf, sizeof(buf)) => 4;
+            assert(memcmp(buf, "attr", 4) == 0);
+        }
+        if (call == TEST_ERRS_SETATTR && done) {
+            lfs3_getattr(lfs3, path, 'b', buf, sizeof(buf)) => 5;
+            assert(memcmp(buf, "battr", 5) == 0);
+        } else {
+            lfs3_getattr(lfs3, path, 'b', buf, sizeof(buf))
+                    => LFS3_ERR_NOATTR;
+        }
+    }
+
+    // the other entries
+    lfs3_get(lfs3, "k", buf, sizeof(buf)) => 5;
+    assert(memcmp(buf, "value", 5) == 0);
+    if (call == TEST_ERRS_SET && done) {
+        lfs3_get(lfs3, "k2", buf, sizeof(buf)) => 6;
+        assert(memcmp(buf, "value2", 6) == 0);
+    } else {
+        lfs3_get(lfs3, "k2", buf, sizeof(buf)) => LFS3_ERR_NOENT;
+    }
+    lfs3_stat(lfs3, "e", &info)
+            => (call == TEST_ERRS_REMOVE_DIR && done) ? LFS3_ERR_NOENT : 0;
+    lfs3_stat(lfs3, "m", &info)
+            => (call == TEST_ERRS_MKDIR && done) ? 0 : LFS3_ERR_NOENT;
+    if (call == TEST_ERRS_CREAT && done) {
+        lfs3_get(lfs3, "c", buf, sizeof(buf)) => 3;
+        assert(memcmp(buf, "new", 3) == 0);
+    } else {
+        lfs3_stat(lfs3, "c", &info) => LFS3_ERR_NOENT;
+    }
+
+    // and the filesystem itself
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == ((call == TEST_ERRS_GROW && !done)
+            ? BLOCK_COUNT/2
+            : BLOCK_COUNT));
+    #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+    if (call == TEST_ERRS_MKGBMAP || call == TEST_ERRS_RMGBMAP) {
+        assert(!(fsinfo.flags & LFS3_I_GBMAP)
+                == ((call == TEST_ERRS_MKGBMAP) != done));
+    }
+    #endif
+
+    // only blocks we marked are bad, and nothing is suspect
+    #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+    if (call == TEST_ERRS_MKBAD || call == TEST_ERRS_MKGOOD) {
+        if ((call == TEST_ERRS_MKBAD) == done) {
+            lfs3_fs_nextbad(lfs3, 0) => test_errs_badblock;
+            lfs3_fs_nextbad(lfs3, test_errs_badblock+1)
+                    => LFS3_ERR_NOENT;
+        } else {
+            lfs3_fs_nextbad(lfs3, 0) => LFS3_ERR_NOENT;
+        }
+    } else {
+        lfs3_fs_nextbad(lfs3, 0) => LFS3_ERR_NOENT;
+    }
+    lfs3_fs_nextsuspect(lfs3, 0) => LFS3_ERR_NOENT;
+    #endif
+}
+'''
+
+# fail each read, prog, erase and sync of each class of call in turn
+# with LFS3_ERR_IO
+#
+# the error must reach us unchanged, without littlefs reading anything
+# else, relocating, or marking anything bad or suspect, and the state
+# afterwards must be the one ERRORS.md describes
+[cases.test_errs_ioerror]
+defines.CALL = 'range(32)'
+defines.OP = [
+    'LFS3_EMUBD_OP_READ',
+    'LFS3_EMUBD_OP_PROG',
+    'LFS3_EMUBD_OP_ERASE',
+    'LFS3_EMUBD_OP_SYNC',
+]
+# let flush and sync write whole blocks from the file's cache
+defines.FCACHE_SIZE = 'BLOCK_SIZE'
+# all gc work, except pre-erasing, which needs revision perturbation
+defines.GC_FLAGS = '''
+    LFS3_GC_MKCONSISTENT
+        | LFS3_GC_LOOKAHEAD
+        | LFS3_GC_COMPACT
+        | LFS3_GC_CKMETA
+        | LFS3_GC_CKDATA
+'''
+# lfs3_fs_gc does all of it in one call
+defines.GC_STEPS = -1
+# the lowest compaction threshold littlefs accepts
+defines.GC_COMPACT_THRESH = 'BLOCK_SIZE/2'
+if = 'test_errs_hascall(CALL, GBMAP)'
+code = '''
+    struct lfs3_cfg cfg = *CFG;
+    test_errs_watch(&cfg);
+
+    lfs3_size_t fired = 0;
+    for (uint32_t n = 1;; n++) {
+        lfs3_t lfs3;
+        if (CALL != TEST_ERRS_FORMAT) {
+            test_errs_setup(&lfs3, &cfg, CALL, GBMAP);
+        }
+
+        // set up the call's handles before failing anything
+        lfs3_file_t file;
+        lfs3_dir_t dir;
+        lfs3_trv_t trv;
+        struct lfs3_info info;
+        struct lfs3_tinfo tinfo;
+        uint8_t buf[TEST_ERRS_FSIZE];
+        lfs3_size_t count = 0;
+        if (CALL == TEST_ERRS_FILE_READ) {
+            lfs3_file_open(&lfs3, &file, "d/f", LFS3_O_RDONLY) => 0;
+        } else if (CALL == TEST_ERRS_DIR_READ) {
+            lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        } else if (CALL == TEST_ERRS_TRV_READ) {
+            lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+        } else if (CALL == TEST_ERRS_CREAT) {
+            lfs3_file_open(&lfs3, &file, "c",
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            lfs3_file_write(&lfs3, &file, "new", 3) => 3;
+        } else if (CALL >= TEST_ERRS_WRITE && CALL <= TEST_ERRS_FRUNCATE) {
+            lfs3_file_open(&lfs3, &file, "d/f", LFS3_O_RDWR) => 0;
+            for (lfs3_size_t i = 0; i < TEST_ERRS_FSIZE; i++) {
+                buf[i] = test_errs_data(i, true);
+            }
+            if (CALL == TEST_ERRS_FLUSH || CALL == TEST_ERRS_SYNC) {
+                lfs3_file_write(&lfs3, &file, buf, TEST_ERRS_WSIZE)
+                        => TEST_ERRS_WSIZE;
+            }
+        }
+
+        // fail the n-th op
+        lfs3_emubd_mkioerror(CFG, OP, n, 0) => 0;
+        test_errs_reset();
+
+        int err;
+        switch (CALL) {
+        case TEST_ERRS_FORMAT:;
+            err = lfs3_format(&lfs3,
+                    LFS3_F_RDWR
+                        | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                    &cfg);
+            break;
+        case TEST_ERRS_MOUNT:;
+        case TEST_ERRS_MOUNT_RDONLY:;
+            err = lfs3_mount(&lfs3,
+                    (CALL == TEST_ERRS_MOUNT) ? LFS3_M_RDWR : LFS3_M_RDONLY,
+                    &cfg);
+            break;
+        case TEST_ERRS_STAT:;
+            err = lfs3_stat(&lfs3, "d/f", &info);
+            break;
+        case TEST_ERRS_GET:;
+            err = lfs3_get(&lfs3, "k", buf, sizeof(buf));
+            break;
+        case TEST_ERRS_GETATTR:;
+            err = lfs3_getattr(&lfs3, "s", 'a', buf, sizeof(buf));
+            break;
+        case TEST_ERRS_FILE_READ:;
+            err = lfs3_file_read(&lfs3, &file, buf, sizeof(buf));
+            break;
+        case TEST_ERRS_DIR_READ:;
+            while (true) {
+                err = lfs3_dir_read(&lfs3, &dir, &info);
+                if (err) {
+                    break;
+                }
+                count += 1;
+            }
+            break;
+        case TEST_ERRS_TRV_READ:;
+            while (true) {
+                err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                if (err) {
+                    break;
+                }
+                count += 1;
+            }
+            break;
+        case TEST_ERRS_USAGE:;
+            err = lfs3_fs_usage(&lfs3);
+            break;
+        case TEST_ERRS_MKDIR:;
+            err = lfs3_mkdir(&lfs3, "m");
+            break;
+        case TEST_ERRS_REMOVE:;
+            err = lfs3_remove(&lfs3, "s");
+            break;
+        case TEST_ERRS_REMOVE_DIR:;
+            err = lfs3_remove(&lfs3, "e");
+            break;
+        case TEST_ERRS_RENAME:;
+            err = lfs3_rename(&lfs3, "s", "t");
+            break;
+        case TEST_ERRS_SETATTR:;
+            err = lfs3_setattr(&lfs3, "s", 'b', "battr", 5);
+            break;
+        case TEST_ERRS_REMOVEATTR:;
+            err = lfs3_removeattr(&lfs3, "s", 'a');
+            break;
+        case TEST_ERRS_SET:;
+            err = lfs3_set(&lfs3, "k2", "value2", 6);
+            break;
+        case TEST_ERRS_CREAT:;
+            err = lfs3_file_sync(&lfs3, &file);
+            break;
+        case TEST_ERRS_WRITE:;
+            err = lfs3_file_write(&lfs3, &file, buf, TEST_ERRS_FSIZE);
+            break;
+        case TEST_ERRS_FLUSH:;
+            err = lfs3_file_flush(&lfs3, &file);
+            break;
+        case TEST_ERRS_SYNC:;
+            err = lfs3_file_sync(&lfs3, &file);
+            break;
+        case TEST_ERRS_TRUNCATE:;
+            err = lfs3_file_truncate(&lfs3, &file, BLOCK_SIZE/2);
+            break;
+        case TEST_ERRS_FRUNCATE:;
+            err = lfs3_file_fruncate(&lfs3, &file, BLOCK_SIZE/2);
+            break;
+        case TEST_ERRS_CK:;
+            err = lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA);
+            break;
+        case TEST_ERRS_CK_GC:;
+            err = lfs3_fs_ck(&lfs3, GC_FLAGS);
+            break;
+        case TEST_ERRS_MKCONSISTENT:;
+            err = lfs3_fs_mkconsistent(&lfs3);
+            break;
+        #ifdef LFS3_GC
+        case TEST_ERRS_GC:;
+            err = lfs3_fs_gc(&lfs3);
+            break;
+        #endif
+        case TEST_ERRS_GROW:;
+            err = lfs3_fs_grow(&lfs3, BLOCK_COUNT);
+            break;
+        #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+        case TEST_ERRS_MKGBMAP:;
+            err = lfs3_fs_mkgbmap(&lfs3);
+            break;
+        case TEST_ERRS_RMGBMAP:;
+            err = lfs3_fs_rmgbmap(&lfs3);
+            break;
+        #endif
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        case TEST_ERRS_MKBAD:;
+            err = lfs3_fs_mkbad(&lfs3, test_errs_badblock);
+            break;
+        case TEST_ERRS_MKGOOD:;
+            err = lfs3_fs_mkgood(&lfs3, test_errs_badblock);
+            break;
+        #endif
+        default:;
+            LFS3_UNREACHABLE();
+        }
+        bool failed = test_errs_failed;
+        lfs3_size_t after = test_errs_after;
+        lfs3_size_t writes = test_errs_writes;
+
+        // did our error fire?
+        bool firing = (lfs3_emubd_ioerror(CFG, OP) == 0);
+        lfs3_emubd_mkioerror(CFG, OP, 0, 0) => 0;
+        test_errs_reset();
+        if (!firing) {
+            assert(!failed);
+            assert(err >= 0
+                    || ((CALL == TEST_ERRS_DIR_READ
+                            || CALL == TEST_ERRS_TRV_READ)
+                        && err == LFS3_ERR_NOENT));
+            if (CALL == TEST_ERRS_FILE_READ
+                    || CALL == TEST_ERRS_CREAT
+                    || (CALL >= TEST_ERRS_WRITE
+                        && CALL <= TEST_ERRS_FRUNCATE)) {
+                lfs3_file_close(&lfs3, &file) => 0;
+            } else if (CALL == TEST_ERRS_DIR_READ) {
+                lfs3_dir_close(&lfs3, &dir) => 0;
+            } else if (CALL == TEST_ERRS_TRV_READ) {
+                lfs3_trv_close(&lfs3, &trv) => 0;
+            }
+            if (CALL != TEST_ERRS_FORMAT) {
+                lfs3_unmount(&lfs3) => 0;
+            }
+            break;
+        }
+        assert(failed);
+        fired += 1;
+
+        // the error should reach us unchanged, except that remove and
+        // rename only log errors from their grm cleanup, after their
+        // commit
+        assert(err == LFS3_ERR_IO
+                || (!err
+                    && (CALL == TEST_ERRS_REMOVE_DIR
+                        || CALL == TEST_ERRS_RENAME)));
+
+        // and nothing else should happen after a failed read, prog or
+        // erase, no reading another copy, no relocating
+        if (OP != LFS3_EMUBD_OP_SYNC) {
+            assert(after == 0);
+        }
+
+        // remove and rename leave their cleanup pending
+        if (!err) {
+            struct lfs3_fsinfo fsinfo;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(fsinfo.flags & LFS3_I_MKCONSISTENT);
+        }
+
+        // check the call's own state
+        if (CALL == TEST_ERRS_FORMAT) {
+            // we can always format again
+            lfs3_format(&lfs3,
+                    LFS3_F_RDWR
+                        | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                    &cfg) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+            lfs3_unmount(&lfs3) => 0;
+            continue;
+
+        } else if (CALL == TEST_ERRS_MOUNT
+                || CALL == TEST_ERRS_MOUNT_RDONLY) {
+            // a failed mount writes nothing, and mounts later
+            assert(writes == 0);
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+        } else if (CALL == TEST_ERRS_STAT
+                || CALL == TEST_ERRS_GET
+                || CALL == TEST_ERRS_GETATTR
+                || CALL == TEST_ERRS_USAGE) {
+            // reads write nothing, and read the same again
+            assert(writes == 0);
+            if (CALL == TEST_ERRS_STAT) {
+                lfs3_stat(&lfs3, "d/f", &info) => 0;
+                assert(info.size == TEST_ERRS_FSIZE);
+            } else if (CALL == TEST_ERRS_GET) {
+                lfs3_get(&lfs3, "k", buf, sizeof(buf)) => 5;
+                assert(memcmp(buf, "value", 5) == 0);
+            } else if (CALL == TEST_ERRS_GETATTR) {
+                lfs3_getattr(&lfs3, "s", 'a', buf, sizeof(buf)) => 4;
+                assert(memcmp(buf, "attr", 4) == 0);
+            } else {
+                assert(lfs3_fs_usage(&lfs3) > 0);
+            }
+
+        } else if (CALL == TEST_ERRS_FILE_READ) {
+            // the position doesn't move, so reading again works
+            assert(writes == 0);
+            lfs3_file_tell(&lfs3, &file) => 0;
+            lfs3_file_read(&lfs3, &file, buf, sizeof(buf))
+                    => TEST_ERRS_FSIZE;
+            for (lfs3_size_t i = 0; i < TEST_ERRS_FSIZE; i++) {
+                assert(buf[i] == test_errs_data(i, false));
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+
+        } else if (CALL == TEST_ERRS_DIR_READ) {
+            // the position doesn't move, so reading again finds every
+            // entry, ., .., d, e, k and s
+            assert(writes == 0);
+            lfs3_dir_tell(&lfs3, &dir) => count;
+            while (true) {
+                int err = lfs3_dir_read(&lfs3, &dir, &info);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err) {
+                    break;
+                }
+                count += 1;
+            }
+            assert(count == 6);
+            lfs3_dir_close(&lfs3, &dir) => 0;
+
+        } else if (CALL == TEST_ERRS_TRV_READ) {
+            // a traversal starts again after a rewind
+            assert(writes == 0);
+            lfs3_trv_rewind(&lfs3, &trv) => 0;
+            count = 0;
+            while (true) {
+                int err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+                assert(!err || err == LFS3_ERR_NOENT);
+                if (err) {
+                    break;
+                }
+                count += 1;
+            }
+            assert(count > 0);
+            lfs3_trv_close(&lfs3, &trv) => 0;
+
+        } else if (CALL == TEST_ERRS_CREAT
+                || (CALL >= TEST_ERRS_WRITE
+                    && CALL <= TEST_ERRS_FRUNCATE)) {
+            // a failed file write desyncs the handle, so close writes
+            // nothing
+            assert(file.b.h.flags & LFS3_O_DESYNC);
+            uint32_t progs = lfs3_emubd_progs(CFG);
+            uint32_t erases = lfs3_emubd_erases(CFG);
+            lfs3_file_close(&lfs3, &file) => 0;
+            assert(lfs3_emubd_progs(CFG) == progs);
+            assert(lfs3_emubd_erases(CFG) == erases);
+        }
+
+        // the call did or did not happen, both in RAM and on disk, it
+        // happened only if a failed sync followed its commit, or if
+        // remove or rename returned 0
+        //
+        // mkbad and mkgood are the exception, they update the gbmap in
+        // RAM before committing it, and the next commit writes it
+        bool done = test_errs_isdone(&lfs3, CALL);
+        bool pending = (CALL == TEST_ERRS_MKBAD
+                || CALL == TEST_ERRS_MKGOOD);
+        assert(!done || OP == LFS3_EMUBD_OP_SYNC || !err || pending);
+        assert(done || err);
+        test_errs_check(&lfs3, CALL, done);
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        bool done_ = test_errs_isdone(&lfs3, CALL);
+        assert(done_ == done || (pending && !done_));
+        done = done_;
+        assert(!done || OP == LFS3_EMUBD_OP_SYNC || !err);
+        test_errs_check(&lfs3, CALL, done);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(!(fsinfo.flags & LFS3_I_MKCONSISTENT));
+
+        // calling again finishes the job, or finds it done
+        if (CALL == TEST_ERRS_MKDIR) {
+            err = lfs3_mkdir(&lfs3, "m");
+            assert(err == ((done) ? LFS3_ERR_EXIST : 0));
+            done = true;
+        } else if (CALL == TEST_ERRS_REMOVE
+                || CALL == TEST_ERRS_REMOVE_DIR) {
+            err = lfs3_remove(&lfs3,
+                    (CALL == TEST_ERRS_REMOVE) ? "s" : "e");
+            assert(err == ((done) ? LFS3_ERR_NOENT : 0));
+            done = true;
+        } else if (CALL == TEST_ERRS_RENAME) {
+            err = lfs3_rename(&lfs3, "s", "t");
+            assert(err == ((done) ? LFS3_ERR_NOENT : 0));
+            done = true;
+        } else if (CALL == TEST_ERRS_SETATTR) {
+            lfs3_setattr(&lfs3, "s", 'b', "battr", 5) => 0;
+            done = true;
+        } else if (CALL == TEST_ERRS_REMOVEATTR) {
+            err = lfs3_removeattr(&lfs3, "s", 'a');
+            assert(err == ((done) ? LFS3_ERR_NOATTR : 0));
+            done = true;
+        } else if (CALL == TEST_ERRS_SET) {
+            lfs3_set(&lfs3, "k2", "value2", 6) => 0;
+            done = true;
+        } else if (CALL == TEST_ERRS_CK_GC || CALL == TEST_ERRS_GC) {
+            #ifdef LFS3_GC
+            if (CALL == TEST_ERRS_GC) {
+                lfs3_fs_gc(&lfs3) => 0;
+            } else
+            #endif
+            {
+                lfs3_fs_ck(&lfs3, GC_FLAGS) => 0;
+            }
+            struct lfs3_fsinfo fsinfo;
+            lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+            assert(!(fsinfo.flags & (LFS3_I_MKCONSISTENT
+                    | LFS3_I_LOOKAHEAD
+                    | LFS3_I_COMPACT
+                    | LFS3_I_CKMETA
+                    | LFS3_I_CKDATA)));
+        } else if (CALL == TEST_ERRS_GROW) {
+            lfs3_fs_grow(&lfs3, BLOCK_COUNT) => 0;
+            done = true;
+        #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+        } else if (CALL == TEST_ERRS_MKGBMAP) {
+            err = lfs3_fs_mkgbmap(&lfs3);
+            assert(err == ((done) ? LFS3_ERR_EXIST : 0));
+            done = true;
+        } else if (CALL == TEST_ERRS_RMGBMAP) {
+            err = lfs3_fs_rmgbmap(&lfs3);
+            assert(err == ((done) ? LFS3_ERR_NOENT : 0));
+            done = true;
+        #endif
+        #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
+        } else if (CALL == TEST_ERRS_MKBAD) {
+            lfs3_fs_mkbad(&lfs3, test_errs_badblock) => 0;
+            done = true;
+        } else if (CALL == TEST_ERRS_MKGOOD) {
+            lfs3_fs_mkgood(&lfs3, test_errs_badblock) => 0;
+            done = true;
+        #endif
+        }
+        test_errs_check(&lfs3, CALL, done);
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // every call reads something, so we failed something
+    printf("fired: %d\n", fired);
+    assert(fired > 0 || OP != LFS3_EMUBD_OP_READ);
+'''

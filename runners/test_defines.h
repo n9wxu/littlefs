@@ -26,6 +26,8 @@
     TEST_DEFINE(FRAGMENT_SIZE,          LFS3_MIN(BLOCK_SIZE/16, 512)        )
     TEST_DEFINE(CRYSTAL_THRESH,         BLOCK_SIZE/16                       )
     TEST_DEFINE(LOOKGBMAP_THRESH,       BLOCK_COUNT/4                       )
+    TEST_DEFINE(CK_RETRIES,             0                                   )
+    TEST_DEFINE(CK_PASSES,              0                                   )
     TEST_DEFINE(ERASE_VALUE,            0xff                                )
     #ifndef TEST_KIWIBD
     TEST_DEFINE(ERASE_CYCLES,           0                                   )
@@ -55,6 +57,8 @@
         #ifdef LFS3_GBMAP
         .gc_lookgbmap_thresh            = GC_LOOKGBMAP_THRESH,
         .lookgbmap_thresh               = LOOKGBMAP_THRESH,
+        .ck_retries                     = CK_RETRIES,
+        .ck_passes                      = CK_PASSES,
         #endif
         #ifdef LFS3_PREERASE
         .gc_preerase_count              = GC_PREERASE_COUNT,
@@ -68,6 +72,11 @@
         .shrub_size                     = SHRUB_SIZE,
         .fragment_size                  = FRAGMENT_SIZE,
         .crystal_thresh                 = CRYSTAL_THRESH,
+        #ifdef LFS3_NO_MALLOC
+        .rcache_buffer                  = test_buffer(0, RCACHE_SIZE),
+        .pcache_buffer                  = test_buffer(1, PCACHE_SIZE),
+        .lookahead_buffer               = test_buffer(2, LOOKAHEAD_SIZE),
+        #endif
     };
     struct lfs3_cfg *TEST_CFG = &_cfg;
 #endif

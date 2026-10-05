@@ -321,7 +321,9 @@ Tag fields:
 
 5. **Reserved (1-bit)** - Bit 7 is reserved for a future extension of the
    subtype (the plan is to turn it into a leb128 continuation bit). Writers
-   must write 0. The driver does not check it on read.
+   must write 0. The driver reads a tag with bit 7 set as an unknown tag,
+   and never copies one into a new commit: an operation that would fails
+   with `LFS3_ERR_CORRUPT`.
 
 6. **Subtype (7-bits)** - The specific type within the suptype.
 
@@ -1912,8 +1914,7 @@ survives if the gbmap is disabled and re-enabled.
 ## The global block map (gbmap)
 
 The gbmap is an optional on-disk map of the state of every block, used to
-speed up block allocation, track pre-erased blocks, and, in the future,
-bad blocks. Without it, the driver finds free blocks by traversing the
+speed up block allocation, track pre-erased blocks, and track bad blocks. Without it, the driver finds free blocks by traversing the
 filesystem into a RAM bitmap, the lookahead buffer, as in v2.
 
 The gbmap is a [B-tree](#b-trees) whose bids are block addresses. Each
@@ -1925,14 +1926,28 @@ the length of the range, and the entry's tag the state:
 | `0x0440` | `BMFREE`   | none             | free, must be erased before use |
 | `0x0441` | `BMINUSE`  | none             | in use, or assumed in use      |
 | `0x0442` | `BMERASED` | optional ecksum  | free and already erased        |
-| `0x0443` | `BMBAD`    | none             | bad, reserved                  |
+| `0x0443` | `BMBAD`    | none             | bad                            |
 
 The two low bits of these tags are the state: bit 0 means in use, bit 1
-means erased, and in use + erased means bad. The driver marks a block
-`BMBAD` after an erase, a prog or a `LFS3_M_CKPROGS` read-back of it
-fails, even while a metadata pair or file still references it, and
-treats it like `BMINUSE` that never becomes free: rebuilding the gbmap
-keeps it, and it is never erased, programmed or allocated again.
+means erased, and in use + erased means bad.
+
+A `BMBAD` range holds blocks that must never be erased or programmed. The
+driver writes one for a block whose erase or prog failed, or whose
+read-back failed with `LFS3_M_CKPROGS`, whether or not a committed block
+pointer still references it, and for blocks given to `lfs3_fs_mkbad`. A
+referenced bad block's data stays readable, and its mark outlives the
+reference. Unlike the other states, `BMBAD` is trusted outside the window:
+a writer must keep `BMBAD` blocks out of use however it allocates,
+including when it allocates from a traversal of the filesystem instead of
+from the gbmap, where a bad block no longer referenced looks free, and
+must keep `BMBAD` ranges when it repopulates the gbmap, even for a block
+it finds still referenced. A writer may clear one (`lfs3_fs_mkgood`).
+
+Marks are advisory: a lost mark only costs another failed erase or prog,
+so `BMBAD` comes with no compat flag. gbmap drivers older than the bad-block
+tracking on `v3-integration` (4f6d5ef8) treat `BMBAD` as in use in the
+gbmap, but may allocate a `BMBAD` block from a traversal, which costs them
+what an unmarked bad block would.
 
 A `BMERASED` range may carry an erased-state checksum, the same encoding as
 an [`ECKSUM`](#0x3200-lfs3_tag_ecksum), the CRC-32C of the first `cksize`
@@ -1962,9 +1977,11 @@ Blocks that become free are not marked free right away. The driver
 repopulates the gbmap from time to time by traversing the filesystem, at
 which point the window covers the whole disk again.
 
-When a filesystem is formatted with a gbmap, block 2 holds the initial
-gbmap root, with blocks 0-2 in use and everything else free, `window` is 3,
-and `known` is the block count.
+When a filesystem is formatted with a gbmap, the first block from 2 on
+that erases and programs holds the initial gbmap root, usually block 2.
+Blocks 0 and 1 and the root are in use, any blocks skipped before the
+root are bad, everything after it is free, `window` is the block after the
+root, and `known` is the block count.
 
 The gbmap only matters to writers. A reader can ignore it, but a writer
 that doesn't understand it would allocate blocks without updating it,
@@ -2188,8 +2205,9 @@ with other drivers, and notes where the v0.0 driver differs.
 12. **Reserved bits** - Writers must write bit 7 of every tag as 0, must
     not write the `10` tag mode, and must write struct tags with the exact
     values listed here, including their low "redundancy" bits. The v0.0
-    driver does not check bit 7 when reading, and treats a struct tag with
-    different low bits as a different, unknown tag.
+    driver reads a tag with bit 7 set as an unknown tag but never copies
+    one into a commit, and treats a struct tag with different low bits as a
+    different, unknown tag.
 
 13. **Preserving unknown tags** - When the driver compacts an rbyd, it
     copies every tag in the tree, in order, including tags it doesn't
@@ -2783,10 +2801,9 @@ The checksum applies to each block in the range: the CRC-32C of its first
 
 bits: `v--- -1-- +1-- --11`
 
-A range of bad blocks, which a writer must never erase, program or
-allocate. A bad block may still be referenced, its data stays readable,
-and its mark outlives the reference. A driver without bad-block tracking
-treats it as in use.
+A range of bad blocks, which a writer must never erase or program, see
+[the gbmap](#the-global-block-map-gbmap). It has no data. A bad block may
+still be referenced.
 
 ---
 #### `0x0500` LFS3_TAG_DIRTY
@@ -2996,11 +3013,13 @@ open.
    be told apart on disk. The maintainer has said the format may still
    change before release, and that the released driver will reject v0.0.
 
-2. **Planned features.** Bad-block tracking (`BMBAD` is reserved but never
-   written), metadata redundancy, data redundancy and deduplication, and
-   16-bit and 64-bit variants are planned or being considered. Bad-block
-   tracking is the one the maintainer lists as a release blocker. Any of
-   these may change the format.
+2. **Planned features.** Metadata redundancy, data redundancy and
+   deduplication, and 16-bit and 64-bit variants are planned or being
+   considered. Any of these may change the format. Bad-block tracking,
+   which the maintainer lists as a release blocker, uses `BMBAD` without a
+   format change. Blocks that only fail reads are kept in RAM as suspect
+   and not written to disk; keeping them across mounts would need a new
+   gbmap state and a wcompat flag.
 
 3. **Redundancy bits.** The two low bits of `MAGIC`, `GBMAPDELTA`, and
    most struct tags are reserved for redundancy (`lfs3_tag_redund` exists in
@@ -3057,8 +3076,9 @@ open.
     unit before the end of the block gets an `ECKSUM` that is rejected
     later. This is harmless, but one of the two should probably change.
 
-13. **gbmap at format.** Format always places the initial gbmap root in
-    block 2, with a TODO about trying other blocks if block 2 is bad.
+13. **gbmap at format.** Format places the initial gbmap root in the first
+    block from 2 on that erases and programs, marking any it skips bad. A
+    block device can refuse to erase a block it knows is bad.
 
 14. **Empty `BMERASED`.** An empty `BMERASED` payload is defined as
     "erased, checksum unknown", but the driver never writes one.

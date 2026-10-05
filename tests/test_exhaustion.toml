@@ -1849,10 +1849,12 @@ code = '''
     lfs3_t lfs3;
     int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
     if (err) {
-        // interrupted formats would otherwise wear out the mroot anchor
-        // before our workload starts
+        // interrupted formats would otherwise wear out the blocks format
+        // writes before our workload starts, the mroot anchor and, with
+        // the gbmap, the gbmap root in block 2
         lfs3_emubd_setwear(CFG, 0, 0) => 0;
         lfs3_emubd_setwear(CFG, 1, 0) => 0;
+        lfs3_emubd_setwear(CFG, 2, 0) => 0;
         lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
         lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     }

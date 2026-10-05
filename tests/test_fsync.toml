@@ -1036,7 +1036,7 @@ code = '''
 # erased state of the same block, so the prog-once check catches a
 # handle programming bytes the other already programmed
 [cases.test_fsync_append_alternate]
-defines.PROG_SIZE = [1, 16]
+defines.PROG_SIZE = [1, 16, 256]
 defines.CKPROGONCE = true
 defines.CHUNK = 16
 defines.N = ['2*BLOCK_SIZE/CHUNK', '8*BLOCK_SIZE/CHUNK']

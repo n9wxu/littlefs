@@ -1,0 +1,968 @@
+# More tests under powerloss, P1 of TEST_PLAN.md
+#
+# These belong with test_powerloss, they live here to keep merges with
+# test_powerloss clean
+after = ['test_powerloss']
+
+
+# lfs3_set under powerloss
+#
+# After any powerloss each key holds the value of its last completed set,
+# or of the set in flight, in full. Each value starts with the op that
+# wrote it and the rest is a pure function of that op, and the op in
+# flight is kept in a static that survives the powerloss
+[cases.test_powerloss_p1_kv_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.N = [1, 4]
+# values up to SIZE bytes, FRAGMENT_SIZE keeps every set to one commit,
+# larger values need data blocks and more than one commit
+defines.SIZE = ['FRAGMENT_SIZE', '2*BLOCK_SIZE']
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // the op in flight, this survives powerloss
+    static uint32_t inflight;
+    if (TEST_PLS == 0) {
+        inflight = 0;
+    }
+
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // op k sets key x to a value of size bytes
+    #define TEST_KV_PL_OP(k, x, size) do { \
+        uint32_t prng_ = SEED + (k); \
+        TEST_PRNG(&prng_); \
+        (x) = TEST_PRNG(&prng_) % N; \
+        (size) = 8 + (TEST_PRNG(&prng_) % (SIZE-8+1)); \
+    } while (0)
+    #define TEST_KV_PL_VALUE(k, buffer, size) do { \
+        lfs3_tole32((k), (buffer)); \
+        uint32_t prng_ = (SEED << 16) ^ (k); \
+        for (lfs3_size_t j_ = 4; j_ < (size); j_++) { \
+            (buffer)[j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+    } while (0)
+
+    // what each key held before and after the op in flight
+    int32_t before[N];
+    int32_t after[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        before[x] = -1;
+    }
+    for (uint32_t k = 0; k < inflight; k++) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(k, x, size);
+        (void)size;
+        before[x] = k;
+    }
+    memcpy(after, before, sizeof(before));
+    if (inflight < OPS) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(inflight, x, size);
+        (void)size;
+        after[x] = inflight;
+    }
+
+    // each key holds one of them, in full, and which one tells us if
+    // the op in flight completed
+    uint8_t vbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    bool done = true;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "key%03x", x);
+        lfs3_ssize_t d = lfs3_get(&lfs3, name, rbuf, SIZE+1);
+        assert(d >= 0 || d == LFS3_ERR_NOENT);
+        int32_t k = (d == LFS3_ERR_NOENT) ? -1 : (int32_t)lfs3_fromle32(rbuf);
+        assert(k == before[x] || k == after[x]);
+        if (before[x] != after[x] && k == before[x]) {
+            done = false;
+        }
+
+        if (k >= 0) {
+            lfs3_size_t x_;
+            lfs3_size_t size;
+            TEST_KV_PL_OP(k, x_, size);
+            assert(x_ == x);
+            assert(d == (lfs3_ssize_t)size);
+            lfs3_size(&lfs3, name) => size;
+            TEST_KV_PL_VALUE(k, vbuf, size);
+            assert(memcmp(rbuf, vbuf, size) == 0);
+        }
+    }
+    if (done && inflight < OPS) {
+        memcpy(before, after, sizeof(before));
+        inflight += 1;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // continue setting values
+    for (; inflight < OPS; inflight++) {
+        lfs3_size_t x;
+        lfs3_size_t size;
+        TEST_KV_PL_OP(inflight, x, size);
+        TEST_KV_PL_VALUE(inflight, vbuf, size);
+        char name[256];
+        sprintf(name, "key%03x", x);
+        lfs3_set(&lfs3, name, vbuf, size) => 0;
+        before[x] = inflight;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "key%03x", x);
+            if (before[x] < 0) {
+                lfs3_get(&lfs3, name, rbuf, SIZE+1) => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_size_t x_;
+            lfs3_size_t size;
+            TEST_KV_PL_OP(before[x], x_, size);
+            assert(x_ == x);
+            TEST_KV_PL_VALUE(before[x], vbuf, size);
+            lfs3_get(&lfs3, name, rbuf, SIZE+1) => size;
+            assert(memcmp(rbuf, vbuf, size) == 0);
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_KV_PL_OP
+    #undef TEST_KV_PL_VALUE
+'''
+
+# several handles writing one file under powerloss, with desyncs,
+# resyncs and syncs
+#
+# After any powerloss the file is as of the last sync that completed,
+# whichever handle did it. Each step starts by copying the file to a
+# base file, then runs a fixed sequence of ops on M handles, each sync
+# committing (step, sync) as an attribute with the file. After a
+# powerloss we replay the step from the base up to the sync in the
+# attribute, check the file, reopen the handles as the model has them,
+# and carry on
+[cases.test_powerloss_p1_fsync_pl_fuzz]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+defines.M = [2, 3]
+defines.SIZE = ['2*FCACHE_SIZE', 'BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.CHUNK = 'SIZE/4'
+defines.STEPS = 4
+defines.OPS = 16
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // format once per test
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+
+    // read a file into a buffer, or nothing if it doesn't exist
+    uint8_t rbuf[SIZE+1];
+    #define TEST_FSYNC_PL_READ(name, buffer, size) do { \
+        lfs3_file_t file_; \
+        int err_ = lfs3_file_open(&lfs3, &file_, (name), LFS3_O_RDONLY); \
+        assert(!err_ || err_ == LFS3_ERR_NOENT); \
+        (size) = 0; \
+        if (!err_) { \
+            lfs3_ssize_t d_ = lfs3_file_read(&lfs3, &file_, \
+                    (buffer), SIZE+1); \
+            assert(d_ >= 0 && d_ <= SIZE); \
+            (size) = d_; \
+            err_ = lfs3_file_close(&lfs3, &file_); \
+            assert(!err_); \
+        } \
+    } while (0)
+
+    // where did we get to?
+    uint32_t base_step;
+    lfs3_ssize_t d = lfs3_getattr(&lfs3, "base", 'k', &base_step, 4);
+    assert(d == 4 || d == LFS3_ERR_NOENT);
+    int32_t k_b = (d == LFS3_ERR_NOENT) ? -1 : (int32_t)base_step;
+    uint32_t sync_step;
+    d = lfs3_getattr(&lfs3, "f", 's', &sync_step, 4);
+    assert(d == 4 || d == LFS3_ERR_NOENT);
+    int32_t k_f = (d == LFS3_ERR_NOENT) ? -1 : (int32_t)(sync_step >> 8);
+    assert(k_f <= k_b);
+    // syncs of the base's step that completed
+    uint32_t j_done = (k_b >= 0 && k_f == k_b) ? (sync_step & 0xff) : 0;
+
+    // our model, D is the file on disk, V[h] what handle h sees
+    uint8_t D[SIZE];
+    lfs3_size_t D_size;
+    uint8_t V[M][SIZE];
+    lfs3_size_t V_size[M];
+    bool dirty[M];
+    bool desynced[M];
+    lfs3_file_t files[M];
+    uint32_t attr_bufs[M];
+    struct lfs3_attr attrs[M];
+    struct lfs3_file_cfg filecfgs[M];
+    TEST_FSYNC_PL_READ("f", D, D_size);
+    for (int32_t k = (k_b < 0) ? 0 : k_b; k < STEPS; k++) {
+        // a new step? copy our file to the base
+        if (k != k_b) {
+            TEST_FSYNC_PL_READ("f", D, D_size);
+            uint32_t k_ = k;
+            struct lfs3_attr base_attr = {
+                .type = 'k',
+                .flags = LFS3_A_WRONLY,
+                .buffer = &k_,
+                .buffer_size = 4,
+            };
+            struct lfs3_file_cfg base_cfg = {
+                .attrs = &base_attr,
+                .attr_count = 1,
+            };
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, "base",
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_TRUNC,
+                    &base_cfg) => 0;
+            lfs3_file_write(&lfs3, &file, D, D_size) => D_size;
+            lfs3_file_close(&lfs3, &file) => 0;
+            j_done = 0;
+        } else {
+            TEST_FSYNC_PL_READ("base", D, D_size);
+        }
+
+        for (lfs3_size_t h = 0; h < M; h++) {
+            memcpy(V[h], D, D_size);
+            V_size[h] = D_size;
+            dirty[h] = false;
+            desynced[h] = false;
+        }
+
+        uint32_t prng = (SEED << 16) ^ k;
+        uint32_t j = 0;
+        bool live = false;
+        for (lfs3_size_t i = 0;; i++) {
+            // caught up with disk? the file is as of the last sync, open
+            // our handles and give them what the model has
+            if (!live && j == j_done) {
+                uint8_t f[SIZE];
+                lfs3_size_t f_size;
+                TEST_FSYNC_PL_READ("f", f, f_size);
+                assert(f_size == D_size);
+                assert(memcmp(f, D, D_size) == 0);
+                lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+                for (lfs3_size_t h = 0; h < M; h++) {
+                    attrs[h] = (struct lfs3_attr){
+                        .type = 's',
+                        .flags = LFS3_A_WRONLY,
+                        .buffer = &attr_bufs[h],
+                        .buffer_size = 4,
+                    };
+                    filecfgs[h] = (struct lfs3_file_cfg){
+                        .attrs = &attrs[h],
+                        .attr_count = 1,
+                    };
+                    lfs3_file_opencfg(&lfs3, &files[h], "f",
+                            LFS3_O_RDWR | LFS3_O_CREAT,
+                            &filecfgs[h]) => 0;
+                }
+                for (lfs3_size_t h = 0; h < M; h++) {
+                    if (dirty[h] || desynced[h]) {
+                        lfs3_file_truncate(&lfs3, &files[h], 0) => 0;
+                        lfs3_file_write(&lfs3, &files[h], V[h], V_size[h])
+                                => V_size[h];
+                    }
+                    if (desynced[h]) {
+                        lfs3_file_desync(&lfs3, &files[h]) => 0;
+                    }
+                }
+                live = true;
+            }
+
+            if (i == OPS) {
+                break;
+            }
+
+            lfs3_size_t h = TEST_PRNG(&prng) % M;
+            uint8_t op = TEST_PRNG(&prng) % 8;
+
+            // write?
+            if (op <= 3) {
+                lfs3_off_t off = TEST_PRNG(&prng) % (SIZE-CHUNK+1);
+                lfs3_size_t chunk = 1 + (TEST_PRNG(&prng) % CHUNK);
+                if (off > V_size[h]) {
+                    memset(&V[h][V_size[h]], 0, off - V_size[h]);
+                }
+                for (lfs3_size_t j_ = 0; j_ < chunk; j_++) {
+                    V[h][off+j_] = 'a' + (TEST_PRNG(&prng) % 26);
+                }
+                V_size[h] = lfs3_max(V_size[h], off+chunk);
+                dirty[h] = true;
+                if (live) {
+                    lfs3_file_seek(&lfs3, &files[h], off, LFS3_SEEK_SET)
+                            => off;
+                    lfs3_file_write(&lfs3, &files[h], &V[h][off], chunk)
+                            => chunk;
+                }
+
+            // desync?
+            } else if (op == 4) {
+                desynced[h] = true;
+                if (live) {
+                    lfs3_file_desync(&lfs3, &files[h]) => 0;
+                }
+
+            // resync?
+            } else if (op == 5) {
+                memcpy(V[h], D, D_size);
+                V_size[h] = D_size;
+                dirty[h] = false;
+                desynced[h] = false;
+                if (live) {
+                    lfs3_file_resync(&lfs3, &files[h]) => 0;
+                }
+
+            // sync?
+            } else {
+                // desync other dirty handles first, so only handles
+                // that match the disk receive our sync
+                for (lfs3_size_t g = 0; g < M; g++) {
+                    if (g != h && dirty[g] && !desynced[g]) {
+                        desynced[g] = true;
+                        if (live) {
+                            lfs3_file_desync(&lfs3, &files[g]) => 0;
+                        }
+                    }
+                }
+
+                j += 1;
+                memcpy(D, V[h], V_size[h]);
+                D_size = V_size[h];
+                dirty[h] = false;
+                desynced[h] = false;
+                for (lfs3_size_t g = 0; g < M; g++) {
+                    if (g != h && !desynced[g]) {
+                        memcpy(V[g], D, D_size);
+                        V_size[g] = D_size;
+                    }
+                }
+                if (live) {
+                    attr_bufs[h] = (k << 8) | j;
+                    lfs3_file_sync(&lfs3, &files[h]) => 0;
+                }
+            }
+
+            // the handle sees what we expect
+            if (live) {
+                lfs3_file_seek(&lfs3, &files[h], 0, LFS3_SEEK_SET) => 0;
+                lfs3_file_read(&lfs3, &files[h], rbuf, SIZE+1)
+                        => V_size[h];
+                assert(memcmp(rbuf, V[h], V_size[h]) == 0);
+            }
+        }
+
+        // desync everything so close doesn't sync
+        for (lfs3_size_t h = 0; h < M; h++) {
+            lfs3_file_desync(&lfs3, &files[h]) => 0;
+            lfs3_file_close(&lfs3, &files[h]) => 0;
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        uint8_t f[SIZE];
+        lfs3_size_t f_size;
+        TEST_FSYNC_PL_READ("f", f, f_size);
+        assert(f_size == D_size);
+        assert(memcmp(f, D, D_size) == 0);
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_FSYNC_PL_READ
+'''
+
+# writes on handles that sync on every write under powerloss
+#
+# With LFS3_O_SYNC, or a mount with LFS3_M_SYNC, a write is durable once
+# it returns. We count the writes that returned in a static that
+# survives powerloss, after any powerloss every file holds every write
+# that returned, and maybe the write in flight
+[cases.test_powerloss_p1_osync_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+# SYNCMODE=0 => handles opened with LFS3_O_SYNC
+# SYNCMODE=1 => a mount with LFS3_M_SYNC
+defines.SYNCMODE = [0, 1]
+defines.N = [1, 2]
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.CHUNK = 'SIZE/8'
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // writes that returned, this survives powerloss
+    static uint32_t returned;
+    if (TEST_PLS == 0) {
+        returned = 0;
+    }
+
+    // format once per test
+    uint32_t mflags = LFS3_M_RDWR | ((SYNCMODE == 1) ? LFS3_M_SYNC : 0);
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, mflags, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, mflags, CFG) => 0;
+    }
+
+    // op k writes chunk bytes to file x at off
+    #define TEST_OSYNC_PL_OP(k, x, off, chunk, sims, sim_sizes) do { \
+        uint32_t prng_ = (SEED << 16) ^ (k); \
+        TEST_PRNG(&prng_); \
+        (x) = TEST_PRNG(&prng_) % N; \
+        (off) = TEST_PRNG(&prng_) % (SIZE-CHUNK+1); \
+        (chunk) = 1 + (TEST_PRNG(&prng_) % CHUNK); \
+        if ((off) > (sim_sizes)[(x)]) { \
+            memset(&(sims)[(x)][(sim_sizes)[(x)]], 0, \
+                    (off) - (sim_sizes)[(x)]); \
+        } \
+        for (lfs3_size_t j_ = 0; j_ < (chunk); j_++) { \
+            (sims)[(x)][(off)+j_] = 'a' + (TEST_PRNG(&prng_) % 26); \
+        } \
+        (sim_sizes)[(x)] = lfs3_max((sim_sizes)[(x)], (off)+(chunk)); \
+    } while (0)
+
+    // our files as of the writes that returned, and with the write in
+    // flight
+    uint8_t before[N][SIZE];
+    lfs3_size_t before_sizes[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        before_sizes[x] = 0;
+    }
+    for (uint32_t k = 0; k < returned; k++) {
+        lfs3_size_t x;
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        TEST_OSYNC_PL_OP(k, x, off, chunk, before, before_sizes);
+    }
+    uint8_t after[N][SIZE];
+    lfs3_size_t after_sizes[N];
+    memcpy(after, before, sizeof(before));
+    memcpy(after_sizes, before_sizes, sizeof(before_sizes));
+    if (returned < OPS) {
+        lfs3_size_t x;
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        TEST_OSYNC_PL_OP(returned, x, off, chunk, after, after_sizes);
+    }
+
+    // every file holds what returned, or that and the write in flight
+    #define TEST_OSYNC_PL_READ(x, buffer, size) do { \
+        char name_[256]; \
+        sprintf(name_, "file%03x", (x)); \
+        lfs3_file_t file_; \
+        int err_ = lfs3_file_open(&lfs3, &file_, name_, LFS3_O_RDONLY); \
+        assert(!err_ || err_ == LFS3_ERR_NOENT); \
+        (size) = 0; \
+        if (!err_) { \
+            lfs3_ssize_t d_ = lfs3_file_read(&lfs3, &file_, \
+                    (buffer), SIZE+1); \
+            assert(d_ >= 0 && d_ <= SIZE); \
+            (size) = d_; \
+            err_ = lfs3_file_close(&lfs3, &file_); \
+            assert(!err_); \
+        } \
+    } while (0)
+    uint8_t rbuf[SIZE+1];
+    bool landed = false;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        lfs3_size_t size;
+        TEST_OSYNC_PL_READ(x, rbuf, size);
+        if (size == before_sizes[x]
+                && memcmp(rbuf, before[x], size) == 0) {
+            continue;
+        }
+        assert(size == after_sizes[x]);
+        assert(memcmp(rbuf, after[x], size) == 0);
+        landed = true;
+    }
+    if (landed) {
+        memcpy(before, after, sizeof(before));
+        memcpy(before_sizes, after_sizes, sizeof(before_sizes));
+        returned += 1;
+    }
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+    // keep writing, and never sync
+    lfs3_file_t files[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        lfs3_file_open(&lfs3, &files[x], name,
+                LFS3_O_RDWR | LFS3_O_CREAT
+                    | ((SYNCMODE == 0) ? LFS3_O_SYNC : 0)) => 0;
+    }
+    for (; returned < OPS;) {
+        lfs3_size_t x;
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        TEST_OSYNC_PL_OP(returned, x, off, chunk, before, before_sizes);
+        lfs3_file_seek(&lfs3, &files[x], off, LFS3_SEEK_SET) => off;
+        lfs3_file_write(&lfs3, &files[x], &before[x][off], chunk) => chunk;
+        returned += 1;
+
+        // and it's on disk
+        lfs3_size_t size;
+        TEST_OSYNC_PL_READ(x, rbuf, size);
+        assert(size == before_sizes[x]);
+        assert(memcmp(rbuf, before[x], size) == 0);
+    }
+    for (lfs3_size_t x = 0; x < N; x++) {
+        lfs3_file_close(&lfs3, &files[x]) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, mflags, CFG) => 0;
+        }
+
+        for (lfs3_size_t x = 0; x < N; x++) {
+            lfs3_size_t size;
+            TEST_OSYNC_PL_READ(x, rbuf, size);
+            assert(size == before_sizes[x]);
+            assert(memcmp(rbuf, before[x], size) == 0);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    #undef TEST_OSYNC_PL_OP
+    #undef TEST_OSYNC_PL_READ
+'''
+
+# writes and flushes without syncs under powerloss
+#
+# A flush programs data but commits no metadata, so after any powerloss
+# a file is as of its last sync. Each step writes one file with flushes,
+# then either syncs, committing the step as an attribute with the file,
+# or desyncs and closes the file, discarding the step
+[cases.test_powerloss_p1_flush_pl]
+defines.POWERLOSS_BEHAVIOR = [
+    'LFS3_EMUBD_POWERLOSS_ATOMIC',
+    'LFS3_EMUBD_POWERLOSS_SOMEBITS',
+    'LFS3_EMUBD_POWERLOSS_MOSTBITS',
+    'LFS3_EMUBD_POWERLOSS_OOO',
+    'LFS3_EMUBD_POWERLOSS_TORNTAIL',
+]
+# FLUSH=0 => lfs3_file_flush
+# FLUSH=1 => files opened with LFS3_O_FLUSH
+# FLUSH=2 => a mount with LFS3_M_FLUSH
+defines.FLUSH = [0, 1, 2]
+defines.N = [1, 2]
+defines.SIZE = ['BLOCK_SIZE/2', '2*BLOCK_SIZE']
+defines.CHUNK = 'SIZE/4'
+# writes per step
+defines.W = 4
+defines.STEPS = 16
+defines.SEED = 'range(10)'
+# files of several blocks have many more powerloss points, -DNIGHTLY=1
+# runs these
+defines.NIGHTLY = false
+if = 'SIZE <= BLOCK_SIZE/2 || NIGHTLY'
+fuzz = 'SEED'
+reentrant = true
+code = '''
+    // format once per test
+    uint32_t mflags = LFS3_M_RDWR | ((FLUSH == 2) ? LFS3_M_FLUSH : 0);
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, mflags, CFG);
+    if (err) {
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, mflags, CFG) => 0;
+    }
+
+    // where did we get to? each file knows the step it last synced
+    int32_t synced[N];
+    int32_t k_ = -1;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        uint32_t step;
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 's', &step, 4);
+        assert(d == 4 || d == LFS3_ERR_NOENT);
+        synced[x] = (d == LFS3_ERR_NOENT) ? -1 : (int32_t)step;
+        k_ = lfs3_smax(k_, synced[x]);
+    }
+
+    // replay our steps, then carry on after the last sync on disk
+    uint8_t sims[N][SIZE];
+    lfs3_size_t sim_sizes[N];
+    int32_t sim_synced[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        sim_sizes[x] = 0;
+        sim_synced[x] = -1;
+    }
+    uint8_t wbuf[SIZE];
+    uint8_t rbuf[SIZE+1];
+    for (int32_t k = 0;; k++) {
+        // caught up with disk? every file is as of its last sync
+        if (k == k_+1) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(synced[x] == sim_synced[x]);
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                err = lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY);
+                assert(!err || (err == LFS3_ERR_NOENT && synced[x] < 0));
+                if (err) {
+                    continue;
+                }
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+                assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        if (k == STEPS) {
+            break;
+        }
+
+        // choose a file, our writes, and whether to sync
+        uint32_t prng = (SEED << 16) ^ k;
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        bool sync = TEST_PRNG(&prng) % 2;
+        bool live = (k > k_);
+
+        char name[256];
+        sprintf(name, "file%03x", x);
+        uint32_t step = k;
+        struct lfs3_attr attr = {
+            .type = 's',
+            .flags = LFS3_A_WRONLY,
+            .buffer = &step,
+            .buffer_size = 4,
+        };
+        struct lfs3_file_cfg filecfg = {
+            .attrs = &attr,
+            .attr_count = 1,
+        };
+        lfs3_file_t file;
+        if (live) {
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_RDWR | LFS3_O_CREAT
+                        | ((FLUSH == 1) ? LFS3_O_FLUSH : 0),
+                    &filecfg) => 0;
+        }
+        memcpy(wbuf, sims[x], sim_sizes[x]);
+        lfs3_size_t size = sim_sizes[x];
+        for (lfs3_size_t w = 0; w < W; w++) {
+            lfs3_off_t off = TEST_PRNG(&prng) % (SIZE-CHUNK+1);
+            lfs3_size_t chunk = 1 + (TEST_PRNG(&prng) % CHUNK);
+            if (off > size) {
+                memset(&wbuf[size], 0, off - size);
+            }
+            for (lfs3_size_t j = 0; j < chunk; j++) {
+                wbuf[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+            }
+            size = lfs3_max(size, off+chunk);
+            if (live) {
+                lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+                lfs3_file_write(&lfs3, &file, &wbuf[off], chunk) => chunk;
+                if (FLUSH == 0) {
+                    lfs3_file_flush(&lfs3, &file) => 0;
+                }
+            }
+        }
+
+        if (sync) {
+            memcpy(sims[x], wbuf, size);
+            sim_sizes[x] = size;
+            sim_synced[x] = k;
+            if (live) {
+                lfs3_file_sync(&lfs3, &file) => 0;
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        } else {
+            if (live) {
+                lfs3_file_desync(&lfs3, &file) => 0;
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+        }
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, mflags, CFG) => 0;
+        }
+
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step;
+            if (sim_synced[x] < 0) {
+                lfs3_getattr(&lfs3, name, 's', &step, 4) => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_getattr(&lfs3, name, 's', &step, 4) => 4;
+            assert((int32_t)step == sim_synced[x]);
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+            assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# torn tails under powerloss
+#
+# A torn-tail powerloss leaves the first prog_size bytes of the
+# interrupted prog erased and programs some of the bytes after them, and
+# a pcache four times prog_size makes progs of more than prog_size bytes.
+# No byte may be programmed twice without an erase, so littlefs must not
+# trust erased state that only looks erased in its first prog unit
+#
+# Each file's step is committed with its data as a file-attached
+# attribute, so we can rebuild what each file should look like
+[cases.test_powerloss_p1_tear_tail]
+defines.POWERLOSS_BEHAVIOR = 'LFS3_EMUBD_POWERLOSS_TORNTAIL'
+defines.PROG_SIZE = [1, 16, 256]
+defines.PCACHE_SIZE = '4*PROG_SIZE'
+# no byte may be programmed twice without an erase
+defines.CKPROGONCE = true
+# WORKLOAD=0 => small appends resuming partially programmed blocks, as
+#               in powerloss::append_pl
+# WORKLOAD=1 => gc pre-erasing between writes, whole-block writes and
+#               small appends claiming pre-erased blocks, as in
+#               powerloss::preerase_pl_fuzz
+defines.WORKLOAD = [0, 1]
+defines.ERASE_VALUE = [0xff, 0x00, -1]
+defines.GC_FLAGS = 'LFS3_IFDEF_PREERASE(LFS3_GC_PREERASE, 0)'
+defines.GC_STEPS = 1
+defines.GC_PREERASE_COUNT = -1
+defines.N = 2
+defines.SIZE = '2*BLOCK_SIZE'
+defines.CHUNK = 64
+defines.OPS = 32
+defines.SEED = 'range(10)'
+fuzz = 'SEED'
+reentrant = true
+if = [
+    # appends only depend on the erase value through the ecksums
+    'WORKLOAD == 1 || ERASE_VALUE == 0xff',
+    # pre-erasing needs the gbmap, and revperturb to trust pre-erased
+    # blocks
+    '''WORKLOAD == 0 || (
+        LFS3_IFDEF_GC(true, false)
+            && LFS3_IFDEF_GBMAP(true, false)
+            && LFS3_IFDEF_REVPERTURB(true, false)
+            && LFS3_IFDEF_PREERASE(true, false))''',
+]
+code = '''
+    // format once per test
+    uint32_t mflags = LFS3_M_RDWR
+            | ((WORKLOAD == 1)
+                ? LFS3_IFDEF_REVPERTURB(LFS3_M_REVPERTURB, -1)
+                : 0);
+    lfs3_t lfs3;
+    int err = lfs3_mount(&lfs3, mflags, CFG);
+    if (err) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((WORKLOAD == 1)
+                        ? LFS3_IFDEF_REVPERTURB(LFS3_F_REVPERTURB, -1)
+                            | LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1)
+                        : 0),
+                CFG) => 0;
+        lfs3_mount(&lfs3, mflags, CFG) => 0;
+    }
+
+    // how far did we get?
+    uint32_t steps[N];
+    lfs3_size_t k_ = 0;
+    for (lfs3_size_t x = 0; x < N; x++) {
+        char name[256];
+        sprintf(name, "file%03x", x);
+        lfs3_ssize_t d = lfs3_getattr(&lfs3, name, 1,
+                &steps[x], sizeof(uint32_t));
+        assert(d == sizeof(uint32_t) || d == LFS3_ERR_NOENT);
+        if (d == LFS3_ERR_NOENT) {
+            steps[x] = 0;
+        }
+        k_ += steps[x];
+    }
+    assert(k_ <= OPS);
+
+    // replay our ops in our sim, then continue on disk
+    uint8_t sims[N][SIZE];
+    lfs3_off_t sim_sizes[N];
+    uint32_t counts[N];
+    for (lfs3_size_t x = 0; x < N; x++) {
+        sim_sizes[x] = 0;
+        counts[x] = 0;
+    }
+    uint8_t rbuf[SIZE+1];
+    uint32_t prng = SEED;
+    for (lfs3_size_t k = 0;; k++) {
+        // caught up with disk? check that every file matches our sim
+        if (k == k_) {
+            for (lfs3_size_t x = 0; x < N; x++) {
+                assert(counts[x] == steps[x]);
+                if (counts[x] == 0) {
+                    continue;
+                }
+
+                char name[256];
+                sprintf(name, "file%03x", x);
+                lfs3_file_t file;
+                lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+                lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+                assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        }
+
+        if (k == OPS) {
+            break;
+        }
+
+        // choose a file and an op
+        lfs3_size_t x = TEST_PRNG(&prng) % N;
+        uint8_t op = TEST_PRNG(&prng) % 2;
+        uint8_t *sim = sims[x];
+        lfs3_off_t size = sim_sizes[x];
+        lfs3_off_t off;
+        lfs3_size_t chunk;
+        // rewrite with whole blocks?
+        if ((WORKLOAD == 1 && op == 0) || size + CHUNK > SIZE) {
+            off = 0;
+            chunk = BLOCK_SIZE * (1 + (TEST_PRNG(&prng) % (SIZE/BLOCK_SIZE)));
+            size = 0;
+        // small append?
+        } else {
+            off = size;
+            chunk = 1 + (TEST_PRNG(&prng) % CHUNK);
+        }
+        for (lfs3_size_t j = 0; j < chunk; j++) {
+            sim[off+j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        size = off+chunk;
+
+        if (k >= k_) {
+            // pre-erase a step
+            #ifdef LFS3_GC
+            if (WORKLOAD == 1) {
+                lfs3_fs_gc(&lfs3) => 0;
+            }
+            #endif
+
+            // write our file
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step = counts[x]+1;
+            struct lfs3_attr attr = {
+                .type = 1,
+                .flags = LFS3_A_WRONLY,
+                .buffer = &step,
+                .buffer_size = sizeof(uint32_t),
+            };
+            struct lfs3_file_cfg filecfg = {
+                .attrs = &attr,
+                .attr_count = 1,
+            };
+            lfs3_file_t file;
+            lfs3_file_opencfg(&lfs3, &file, name,
+                    LFS3_O_WRONLY | LFS3_O_CREAT
+                        | ((off == 0) ? LFS3_O_TRUNC : LFS3_O_APPEND),
+                    &filecfg) => 0;
+            lfs3_file_write(&lfs3, &file, &sim[off], chunk) => chunk;
+            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+        sim_sizes[x] = size;
+        counts[x] += 1;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // remount?
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, mflags, CFG) => 0;
+        }
+
+        // check our files
+        for (lfs3_size_t x = 0; x < N; x++) {
+            char name[256];
+            sprintf(name, "file%03x", x);
+            uint32_t step;
+            if (counts[x] == 0) {
+                lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                        => LFS3_ERR_NOENT;
+                continue;
+            }
+            lfs3_getattr(&lfs3, name, 1, &step, sizeof(uint32_t))
+                    => sizeof(uint32_t);
+            assert(step == counts[x]);
+
+            lfs3_file_t file;
+            lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => sim_sizes[x];
+            assert(memcmp(rbuf, sims[x], sim_sizes[x]) == 0);
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''

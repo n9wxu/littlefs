@@ -969,6 +969,15 @@ The old, synced version of the file still points at the shorter slice, whose
 checksum only covers the part it knows about, so appending to the block
 doesn't disturb it.
 
+Only a sync, a flush or a close has to write the tail out. When an append
+fills the file cache in between, littlefs writes the cache up to the block's
+last prog boundary and keeps the tail cached: more appends before the sync
+would only replace a fragment written now, and each fragment costs a commit
+to the file's tree padded to `prog_size`. Likewise, when an append merges
+with the file's last fragment, removing that fragment and adding the longer
+one is a single commit, so an error part way can't leave the handle's tree
+half updated.
+
 There is one catch. Whether a data block still has erased space is only known
 in RAM, while the file is open; it isn't stored on disk. After a file is
 closed and reopened, or the filesystem remounted, the next append starts as
@@ -1203,11 +1212,27 @@ littlefs has a conservative model of flash: it never programs anything unless
 it is sure no program has been attempted there since the last erase. v2.1
 added a forward checksum for this, and v3 keeps the idea under the name
 ecksum. Every commit that doesn't end the block is followed by an ecksum tag,
-which holds the checksum of the next `prog_size` bytes as they were when the
-commit was written, which is to say erased. When littlefs fetches the log, it
-checksums those bytes again. If they still match, nothing has been programmed
-there, and it's safe to append. If they don't, littlefs assumes the worst, and
-the next write to the log compacts it instead of appending.
+which holds the checksum of the next program's worth of bytes as they were
+when the commit was written, which is to say erased. When littlefs fetches the
+log, it checksums those bytes again. If they still match, nothing has been
+programmed there, and it's safe to append. If they don't, littlefs assumes the
+worst, and the next write to the log compacts it instead of appending.
+
+A program's worth is not `prog_size` bytes. The next commit's first program
+is a flush of the program cache, up to `pcache_size` bytes, and a program cut
+short by power loss can leave its first prog unit erased while changing bytes
+after it. So the ecksum covers `pcache_size` bytes, at least 11 (the largest
+tag littlefs programs on its own), rounded up to `prog_size` and stopping at
+the end of the block. The one assumption left about the hardware is that an
+interrupted program changes nothing outside the bytes it was given.
+
+This costs reads: every fetch and every commit reads up to `pcache_size`
+bytes of erased flash instead of `prog_size`. On the flight log of the
+worked example, with `prog_size` 1 and a 1 KiB program cache, that's about
+100 KiB more a minute and 3 KiB more at mount, a few milliseconds a minute
+on a fast SPI bus. An ecksum narrower than the mount's, from an image
+written with a smaller program cache, isn't trusted, so the first commit to
+each such log compacts it.
 
 That leaves one more case. Erased flash can never pass as a valid commit,
 since a commit needs a checksum to match, but its first byte could pass the
@@ -1225,7 +1250,7 @@ end of a commit in the middle of a block:
 
 ... last tag |ecksum   |cksum               |padding   |erased ...
              |next     |crc of the log,     |to the    |
-             |prog_size|perturb bit,        |next prog |
+             |program's|perturb bit,        |next prog |
              |bytes    |phase bits          |boundary  |
 '-------- checksummed --------------------'  never      '-- covered by
                                              programmed     the ecksum
@@ -1492,7 +1517,7 @@ blocks costs one entry:
 | free   | not in use; erase before using                                  |
 | in use | referenced by the filesystem, or not known to be free           |
 | erased | not in use and already erased; carries an ecksum of the erased state |
-| bad    | reserved for bad-block tracking; nothing writes it yet          |
+| bad    | must never be erased or programmed, see [Bad blocks](#bad-blocks) |
 
 The gbmap's root, and the window into it described below, are stored in
 gstate, so they're updated atomically with whatever commit allocates blocks.
@@ -1580,8 +1605,9 @@ that wrong means either programming a block that isn't fully erased, or
 wearing blocks out by erasing them again and again.
 
 With the gbmap, v3 can remember. Incremental gc (below) erases free blocks
-inside the known window, reads back the first `prog_size` bytes, and records
-the block as erased in the gbmap, along with the checksum of those bytes. Later,
+inside the known window, checksums the first program's worth of bytes, as
+wide as an rbyd's ecksum, and records the block as erased in the gbmap,
+along with that checksum. Later,
 when the allocator picks an erased block, it checks the ecksum again. If it
 matches, the block is used without an erase. If it doesn't, something has
 been programmed there since, and the block is skipped entirely until the next
@@ -1614,8 +1640,11 @@ The maintainer:
 > the system works now. ([#1111])
 
 This relies on one assumption about the hardware: a program interrupted by
-power loss changes the first prog unit it was aimed at. The ecksum only
-covers the first `prog_size` bytes of a block.
+power loss changes nothing outside the bytes it was given. The ecksum covers
+the whole of the first program into the block, so a torn program that leaves
+its first prog unit erased still fails the check. A block pre-erased under a
+narrower ecksum, with a smaller `pcache_size`, isn't trusted, and is erased
+again when it is allocated.
 
 Pre-erasing needs `LFS3_PREERASE`, `LFS3_GBMAP` and `LFS3_REVPERTURB` at
 compile time, `LFS3_M_REVPERTURB` at mount, and a `gc_preerase_count`, the
@@ -1691,7 +1720,7 @@ time an mdir is relocated.
 ## Bad blocks
 
 Flash wears out. Eventually a block fails to erase, or fails to hold what was
-programmed into it. Here's what v3 does about it today.
+programmed into it. Here's what v3 does about it.
 
 The block device reports a bad block by returning `LFS3_ERR_CORRUPT` from
 `prog` or `erase`. littlefs then treats the block the way v2 did: as a reason
@@ -1711,40 +1740,20 @@ to relocate.
    `LFS3_ERR_NOSPC`. An mdir that can't be relocated is compacted in place
    anyway ("overrecycled"), trading wear leveling for a little more life.
 
+A failed read of the block being copied is not a bad destination. littlefs
+keeps the two apart, and returns `LFS3_ERR_CORRUPT` instead of relocating
+again, so an unreadable source can't make it allocate and erase new blocks
+until the disk is exhausted.
+
 Read errors are different. There's no copy of the data in RAM to rewrite, so
 littlefs can only detect them. littlefs itself doesn't do error correction,
 though a block device can, and littlefs honors any error the block device
 reports.
 
-There are a few things v3 does not handle yet, and it's worth being explicit
-about them:
+### Remembering bad blocks
 
-1. **Bad blocks aren't remembered.** A block that failed is retried when the
-   allocator comes back around to it, and after every mount. Each retry costs
-   another failed erase or prog on a block we already know is bad.
-
-2. **littlefs can't tell which block failed.** `LFS3_ERR_CORRUPT` from reading
-   the block being copied looks the same as `LFS3_ERR_CORRUPT` from
-   programming the block being copied to. A read error on the source of a
-   compaction is treated like a bad destination, so littlefs can relocate,
-   read the source again, fail again, and keep allocating (and erasing) new
-   blocks until the disk is exhausted.
-
-3. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
-   goes bad, the filesystem keeps working until littlefs next has to rewrite
-   that block, and from then on writes fail with `LFS3_ERR_NOSPC`. Format
-   also needs blocks 0 and 1 to be good, plus block 2 when formatting with a
-   gbmap.
-
-4. **An unreadable metadata block stops allocation.** Repopulating the
-   lookahead buffer or rebuilding the gbmap traverses the whole filesystem,
-   so a metadata block that can't be read makes every write that needs a
-   traversal fail.
-
----
-
-Bad-block tracking is planned, and is one of the two items the maintainer
-lists as blocking the release of v3, alongside this document:
+Bad-block tracking is one of the two items the maintainer lists as blocking
+the release of v3, alongside this document:
 
 > Bad-block tracking - This should be a relatively easy addition to the gbmap,
 > and would be significantly valuable by making bd-level error-correction
@@ -1754,111 +1763,117 @@ lists as blocking the release of v3, alongside this document:
 > questions around the API and how to handle bad blocks detected in rdonly
 > contexts. ([#1111])
 
-The gbmap already reserves a state for it, and current drivers already behave
-sensibly when they find it: the allocator treats a bad run as in use,
-pre-erasing skips it, and rebuilding the gbmap keeps it. Nothing writes it yet.
+With the gbmap (`LFS3_GBMAP`), littlefs remembers bad blocks. There is no
+separate option: without a gbmap there is nowhere to keep the marks, and
+littlefs relocates as described above, retrying a bad block each time the
+allocator comes back around to it.
 
-### Proposal: remembering bad blocks in the gbmap
+**On disk**, a bad block is a range in the gbmap's bad state, with the run
+length as its weight and no payload. Unlike free and erased ranges, bad ranges
+are trusted everywhere, not only inside the known window: allocation from the
+lookahead buffer marks them as in use before adopting a window, pre-erasing
+skips them, and rebuilding the gbmap keeps them, even for a block it finds
+still referenced.
 
-**This is a proposal for discussion. Nothing in it is implemented in
-v3-alpha.** It's included here because the remaining design questions are
-the ones the maintainer raised: what the API looks like, and what to do in
-read-only contexts.
+**In RAM**, a block that fails an erase, a prog or a `LFS3_M_CKPROGS`
+read-back joins a small queue of runs, `LFS3_BADQ_SIZE` (4), and the
+allocator skips queued blocks. The queue never forgets a block: a block
+failing while it's full merges the two closest runs, and the good blocks
+between them are marked with them. That costs a little space, where
+forgetting would let littlefs erase and program a known-bad block again, and
+refusing to allocate would fail writes on a disk with room left, which an
+unattended system reads as a full disk. Allocating a data block, where most
+failures are found, marks the queue first, so this takes more runs going bad
+in one metadata operation than the queue holds.
 
-**Goals:**
+**Marking** happens at an allocator checkpoint, as a gc step, or in
+`lfs3_fs_mkbad`, and writes every queued block into the in-RAM gbmap, which
+the next mdir commit persists. A block that fails while still in use is
+marked too: a file's last data block that failed an append, or an mdir's
+other block. There can be more of these than any queue holds, and the queue
+is lost at unmount, so waiting for their release would lose some. The mark
+only keeps the block from being erased, programmed or allocated again; its
+data stays readable, and rebuilding the gbmap keeps the mark until the block
+is released and after. Power loss can lose a mark that hasn't reached disk,
+which only costs another failed erase or prog.
 
-1. A block that fails an erase, a prog, or a CKPROGS read-back is never erased
-   or programmed again, across remounts, once the mark is committed.
-2. Marks are power-loss safe. Losing a mark to a power loss only costs a
-   retry, and nothing else loses one. A mark can never make a block that is
-   in use allocatable, or a block that holds data unreadable.
-3. Read-only builds and read-only mounts never write. Read paths never need to
-   allocate.
-4. No new compat flag: drivers that already understand the gbmap already treat
-   bad runs as in use.
-5. Bounded RAM, no allocation.
+**Read-only** builds and mounts never write a mark.
 
-**On disk**, a bad run is the gbmap's existing bad state, with the run length
-as its weight and no payload (an optional payload, such as a reason, could be
-added later, as long as an empty payload stays valid). Unlike free and erased
-entries, bad entries are trusted everywhere, not only inside the known window.
-Without a gbmap there's nowhere to persist marks, so the feature would require
-`LFS3_GBMAP`. One existing behavior has to change: rebuilding the gbmap marks
-every referenced block as in use, which would overwrite a bad mark on a block
-that still holds data. That update should leave bad entries alone.
+**Format** writes the gbmap's root to the first block from 2 on that erases
+and programs, and marks any it skipped as bad. Blocks 0 and 1 can't be
+marked, since the anchor can't move; they stay a hardware requirement. A NAND
+factory bad-block table can be honored by a block device that refuses to
+erase those blocks, which keeps format off them, and by `lfs3_fs_mkbad` right
+after format, before anything else is written.
 
-**In RAM**, a small fixed-size queue of bad blocks waiting to be committed,
-say four. It never drops a block: a block failing while it is full merges the
-two closest runs, marking any good blocks between them too, which costs a
-little space rather than a retry or a refused write. Allocating a data block,
-where most failures are found, marks the queue first.
+**The API** is three calls: `lfs3_fs_mkbad` marks a block known to be bad,
+refusing blocks in use with `LFS3_ERR_BUSY`; `lfs3_fs_mkgood` clears a mark,
+say after a bench test; and `lfs3_fs_nextbad` lists bad blocks, including
+those still queued. `LFS3_I_BADBLOCKS` says some are queued but not yet on
+disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap` drops
+every mark, and `lfs3_fs_mkgbmap` starts without any.
 
-**Detection** needs to know which block failed. The block device wrappers
-would record the block that a failing prog, erase or read-back was aimed at,
-and the relocation paths would only relocate (and enqueue the block) when the
-failing block is the destination. A failed read of the source would be
-returned as `LFS3_ERR_CORRUPT`, after at most one relocation, which also fixes
-the relocation storm described above. The places that enqueue are the places
-that relocate today: allocation, mdir allocation, compaction and splits,
-B-tree node relocation, and data block crystallization. Pre-erasing would mark
-a block that fails to erase and move on.
+**No compat flag** guards the bad state. Drivers that understand the gbmap
+already treat a bad range as in use when allocating from it, and an older
+driver that allocates a marked block from a traversal treats it as it would an
+unmarked bad block: one failed erase or prog, then relocation. A flag would
+instead stop every such driver from writing the filesystem at all.
 
-**Before a mark is committed**, the allocator skips blocks in the queue, and
-traversals that repopulate the lookahead buffer mark them as in use, the same
-way they already mark data that's in the middle of being written.
+### Suspect blocks
 
-**Committing a mark** writes it into the in-RAM gbmap at a point where every
-block is accounted for: at an allocator checkpoint, as a gc step before
-pre-erasing, or during a gbmap rebuild. The mark is then persisted by the next
-mdir commit, like any other gbmap change. If writing the mark itself hits a
-bad block, that block joins the queue; the queue size and the allocator's
-checkpoint bound how long this can go on.
+A read that fails, with `LFS3_ERR_CORRUPT` from the block device or a
+checksum that doesn't match, doesn't prove the block is bad. The supply may
+have been low, or a bit left metastable by a power loss may read differently
+next time. So littlefs doesn't mark these blocks bad. It lists them as
+suspect, in RAM, up to `LFS3_SUSPECTS_SIZE` (8), forgetting the oldest, and
+`lfs3_fs_nextsuspect` returns them, so an application can see where its flash
+is going wrong and decide what to do. Finding suspects never writes, so
+read-only mounts find them too. Keeping them across mounts would need a new
+gbmap state and a compat flag, so it's left to the application.
 
-**Blocks that hold data** and fail an erase or prog, such as a file's last
-block failing an append, are marked while still in use: there can be more of
-them than any queue holds, and the mark only keeps the block from being
-written or allocated again. Blocks that fail a read, or a CKDATA check, are
-not marked; read-side marking is left to a later feature that relocates the
-owner first.
+### Repairing checks
 
-**API sketch:**
+With the gbmap, a check can repair what it finds, not just report it. Data
+blocks and B-tree nodes have a checksum where they're referenced, so with
+`ck_retries` a check that fails is read again, up to that many times, before
+the check gives up with `LFS3_ERR_CORRUPT`. How hard to try is the
+application's choice, since only it knows whether its supply can sag.
 
-1. A compile-time option, `LFS3_BADBLOCKS`, which requires `LFS3_GBMAP`.
-2. `lfs3_fs_mkbad(lfs3, block)` to mark a block known to be bad, such as one
-   from a NAND factory bad-block table. It fails with `LFS3_ERR_INVAL` for
-   blocks out of range or for blocks 0 and 1, and with `LFS3_ERR_BUSY` if the
-   block is in use (a later version could relocate its owner instead).
-3. `lfs3_fs_mkgood(lfs3, block)` to clear a mark, say after a bench test.
-4. A count of bad blocks in `lfs3_fs_stat`, or traversals that report bad
-   blocks with a new block type.
-5. An info flag, set while marks are queued but not yet committed.
-6. A way to give format a factory bad-block list, or a callback, so bad blocks
-   are honored before their first erase. Format would then place the gbmap
-   root in the first good block after the anchor, instead of always block 2.
+On a writable filesystem, `lfs3_fs_ck`, `lfs3_fs_gc` and mount-time checks
+then move the contents of a suspect block to a new block, copying exactly
+the bytes of a read that passed: a data block's copy is checksummed as it's
+copied, and a B-tree node's copy is fetched and its checksum compared, so a
+bad read is never given a fresh checksum. Commits record the low two bits of
+their block, so a B-tree node is copied to a block with the same low bits.
+Once the new location is committed and nothing references the old block,
+littlefs tests it: erase, program a pattern, read it back. If that works the
+block was probably a weak write, and it's free again; if not, or if it needs
+moving twice in one mount, it's marked bad.
 
-Blocks 0 and 1 can't be marked, since they can't move. They stay a hardware
-requirement: the anchor blocks must be reliable.
+Some things aren't moved. mdirs and mtree nodes have no checksum in a
+parent, their commits are only covered globally by the gcksum, so there's
+nothing to check a copy against. Blocks of open files are left until the
+files close. A block that can't be moved now, because the disk is full or
+the copy never checked out, is left for the next check.
 
-**Read-only contexts** never queue or commit marks. Detection still returns
-`LFS3_ERR_CORRUPT`, and a read-only mount needs nothing else, since it never
-allocates.
+`ck_passes` makes `lfs3_fs_ck` and mount-time checks read everything more
+than once, which catches more bits that read differently each time.
 
-**Interactions:** `lfs3_fs_rmgbmap` would lose every mark, so it should
-either refuse while bad blocks are marked or document the loss.
-`lfs3_fs_mkgbmap` starts with no marks. Growing the filesystem adds free runs,
-which a factory list may mark bad. Pre-erasing and gbmap rebuilds already
-skip and keep bad runs. Running out of good blocks still ends in
-`LFS3_ERR_NOSPC`, but with no more erases spent on known-bad blocks.
+### What v3 still doesn't handle
 
-**Tests** would need to show, for each kind of failure the test block device
-can inject, with and without CKPROGS: that a bad block's erase count stops
-growing after its first failure and stays frozen across remounts and gbmap
-rebuilds; that power loss while marking leaves the filesystem consistent and
-the mark either present or absent, never on a block in use; that queue
-overflow is harmless; that read-only mounts don't write; that pre-erasing
-continues past a block that fails to erase; and that a read error on the
-source of a compaction is reported as `LFS3_ERR_CORRUPT` after at most one
-relocation.
+1. **Blocks 0 and 1 must work.** The anchor can't move. If one of its blocks
+   goes bad, the filesystem keeps working until littlefs next has to rewrite
+   that block, and from then on writes fail with `LFS3_ERR_NOSPC`. Format
+   also needs blocks 0 and 1 to be good.
+
+2. **An unreadable metadata block stops allocation.** Repopulating the
+   lookahead buffer or rebuilding the gbmap traverses the whole filesystem,
+   so a metadata block that can't be read makes every write that needs a
+   traversal fail.
+
+3. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
+   retried when the allocator comes back around to it, and after every
+   mount.
 
 ## Costs
 
@@ -1961,7 +1976,7 @@ The setup:
 1. A simulated W25Q128JV SPI NOR flash: 4 KiB sectors, 256-byte pages,
    0.4 ms to program a page and 45 ms to erase a sector (typical datasheet
    figures). littlefs uses an 8 MiB partition, 2048 blocks of 4 KiB, through
-   littlefs's emulated block device.
+   the bench runner's block device.
 2. Seven other files already on the filesystem, about 77 KiB, as a device's
    configuration and web assets would be.
 3. A flight log: 22-byte rows, one `lfs3_file_write` every 200 ms with the rows
@@ -1973,25 +1988,34 @@ The setup:
    gbmap, `lookgbmap_thresh` is 512 blocks, and pre-erasing runs gc to
    completion "on the pad", before the log is opened.
 
+The v3 runs are `bench_wlog_fresh` in `benches/bench_wlog.toml`, which
+`make bench` runs; REQUIREMENTS.md, Appendix B.1, has every permutation,
+with and without the gbmap and pre-erasing, and how the v2 figures were
+measured.
+
 At 1 row per second:
 
 | configuration                          | erases/min | longest call |
 |----------------------------------------|-----------:|-------------:|
 | v2.11.3, `prog_size=256`               | 62.7       | 96.6 ms      |
+| v2.11.3, `prog_size=16`                | 58.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 58.7       | 96.6 ms      |
-| v3, `prog_size=256`                    | 14.7       | 185.5 ms     |
-| v3, `prog_size=1`                      | 4.1        | 185.7 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 3.5        | 51.2 ms      |
+| v3, `prog_size=256`                    | 10.6       | 184.6 ms     |
+| v3, `prog_size=16`                     | 5.7        | 93.9 ms      |
+| v3, `prog_size=1`                      | 3.5        | 184.6 ms     |
+| v3, `prog_size=1`, gbmap, pre-erased   | 2.9        | 50.2 ms      |
 
 At 50 rows per second:
 
 | configuration                          | erases/min | longest call |
 |----------------------------------------|-----------:|-------------:|
 | v2.11.3, `prog_size=256`               | 80.7       | 96.6 ms      |
+| v2.11.3, `prog_size=16`                | 76.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 76.7       | 96.6 ms      |
-| v3, `prog_size=256`                    | 89.5       | 191.7 ms     |
-| v3, `prog_size=1`                      | 24.6       | 185.7 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 4.5        | 52.1 ms      |
+| v3, `prog_size=256`                    | 48.5       | 185.9 ms     |
+| v3, `prog_size=16`                     | 27.8       | 145.3 ms     |
+| v3, `prog_size=1`                      | 23.1       | 184.6 ms     |
+| v3, `prog_size=1`, gbmap, pre-erased   | 3.4        | 52.0 ms      |
 
 Every run read back every row intact.
 
@@ -2008,50 +2032,65 @@ v3 doesn't copy the tail. To see where its erases come from, we instrumented
 a copy of the driver to attribute every erase and every programmed byte to
 the kind of block it went to:
 
-| per minute               | mdir erases | mdir bytes | B-tree erases | B-tree bytes | data erases | data bytes |
-|--------------------------|------------:|-----------:|--------------:|-------------:|------------:|-----------:|
-| 1 row/s, `prog_size=256` | 8.7         | 34842      | 5.6           | 22067        | 0.4         | 1306       |
-| 1 row/s, `prog_size=1`   | 3.6         | 13112      | 0.1           | 7            | 0.4         | 1320       |
-| 1 row/s, pre-erased      | 3.5         | 13749      | 0             | 6            | 0           | 1320       |
-| 50 rows/s, `prog_size=256` | 28.7      | 116813     | 44.6          | 167398       | 16.2        | 65997      |
-| 50 rows/s, `prog_size=1` | 4.2         | 15845      | 4.2           | 14426        | 16.2        | 66000      |
-| 50 rows/s, pre-erased    | 4.5         | 17953      | 0             | 14446        | 0           | 66000      |
+| per minute                 | mdir erases | mdir bytes | B-tree erases | B-tree bytes | data erases | data bytes |
+|----------------------------|------------:|-----------:|--------------:|-------------:|------------:|-----------:|
+| 1 row/s, `prog_size=256`   | 6.5         | 25805      | 3.7           | 14131        | 0.4         | 1306       |
+| 1 row/s, `prog_size=16`    | 5.2         | 19958      | 0.1           | 8            | 0.4         | 1320       |
+| 1 row/s, `prog_size=1`     | 3.0         | 11022      | 0.1           | 7            | 0.4         | 1320       |
+| 1 row/s, pre-erased        | 2.9         | 11742      | 0             | 6            | 0           | 1320       |
+| 50 rows/s, `prog_size=256` | 14.4        | 58470      | 17.9          | 66381        | 16.2        | 65997      |
+| 50 rows/s, `prog_size=16`  | 5.3         | 20117      | 6.3           | 22696        | 16.2        | 66000      |
+| 50 rows/s, `prog_size=1`   | 3.2         | 11799      | 3.7           | 12727        | 16.2        | 66000      |
+| 50 rows/s, pre-erased      | 3.4         | 13751      | 0             | 12622        | 0           | 66000      |
 
-The data columns are just the log itself: 22 or 1100 bytes a second, and one
+Bytes programmed to blocks that were replaced within the same call, about
+2% of the total at `prog_size=256` and less otherwise, are left out. The
+data columns are just the log itself: 22 or 1100 bytes a second, and one
 erase per 4 KiB of it. Everything else is metadata.
 
 With `prog_size=1`, at 1 row per second, each sync appends the new row to the
 end of the log's current data block, without an erase, and makes two small
 mdir commits: the shrub commit that grafts the longer block pointer into the
 file's tree, and the commit that updates the file's struct tag. Together they
-come to about 220 bytes. The log's tree stays a B-shrub holding a handful of
+come to about 180 bytes. The log's tree stays a B-shrub holding a handful of
 block pointers, so no B-tree node is touched. The mdir fills up and is
-compacted, one erase, about every 17 syncs.
+compacted, one erase, about every 20 syncs.
 
 With `prog_size=256`, two things go wrong at once:
 
-1. Every commit is rounded up to a prog boundary, and its ecksum covers the
-   next 256 bytes. The mdir took about 580 bytes per sync instead of 220,
-   and was compacted about every 7 syncs instead of every 17.
+1. Every commit is rounded up to a prog boundary. The mdir took about 430
+   bytes per sync instead of 180, and was compacted about every 9 syncs
+   instead of every 20.
 
 2. Data can only be appended to the data block in 256-byte units, so each
    second's 22 bytes go into a fragment in the tree instead, rewritten at
    every sync until 256 bytes have accumulated. With fragments in it, the
    tree outgrew its shrub and moved its root into a block of its own (we
-   checked: it was a B-tree at the end of the run, and a B-shrub with
-   `prog_size=1`). Each sync then also appends a padded commit to that node,
-   about 370 bytes, and every time the node fills it is relocated, an erase.
+   checked: it became a B-tree after three and a half minutes, and stays a
+   B-shrub with `prog_size=1`). Each sync then also appends a padded commit
+   to that node, about 360 bytes, and every time the node fills it is
+   relocated, an erase.
 
-At 50 rows per second the same effects compound. With `prog_size=256`, the
-file's B-tree nodes are relocated 44.6 times a minute, and v3 ends up erasing
-more than v2. With `prog_size=1`, metadata costs 8.4 erases per minute on top
-of the 16.2 the data needs.
+At 50 rows per second the same effects compound. Within a few minutes the
+log needs B-tree leaves at any `prog_size`, under a root kept in the mdir.
+With `prog_size=256`, each second's 1100 bytes reach the data block in
+256-byte units. A write that fills the file cache flushes only up to the
+block's last prog boundary and keeps the rest cached, since more appends
+will follow before the sync. The sync writes what's left as a fragment and
+grafts it, with the longer block pointer, into the tree, replacing the
+previous fragment and appending past it in one commit. That's about three
+commits a second to the leaf, each padded to 256 bytes, and as many to the
+root in the mdir: the leaf is relocated 17.9 times a minute and the mdir
+compacted 14.4 times, 48.5 erases a minute against v2's 80.7. With
+`prog_size=1`, the data block takes every byte, the pointer is grafted once
+a second, and metadata costs 6.9 erases per minute on top of the 16.2 the
+data needs.
 
 Pre-erasing removes the data and B-tree erases from the log's path entirely:
 gc on the pad erased all 2023 free blocks, which took 93 simulated seconds.
-What remains, 3.5 and 4.5 erases per minute, is mdir compaction, the one erase
-pre-erasing can't remove. The longest call drops from 186 ms, four erases in
-one sync, to 51 ms, one erase and some programs. Pre-erasing moves erases
+What remains, 2.9 and 3.4 erases per minute, is mdir compaction, the one erase
+pre-erasing can't remove. The longest call drops from 185 ms, four erases in
+one sync, to 50 ms, one erase and some programs. Pre-erasing moves erases
 rather than adding them, as long as erased blocks are used while the gbmap
 still trusts them.
 
@@ -2060,7 +2099,9 @@ still trusts them.
 So `prog_size` matters a lot more to v3 than it did to v2. v2's sync cost was
 dominated by a block copy that didn't depend on the program size. v3 gets rid
 of the block copy, and what's left are small commits whose size is rounded up
-to `prog_size`.
+to `prog_size`. Going from `prog_size=1` to 16 to 256, the log's erases go
+from 3.5 to 5.7 to 10.6 a minute at 1 row per second, and from 23.1 to 27.8
+to 48.5 at 50, while v2's stay between 59 and 81.
 
 On NOR flash, the page size is usually not the program size. A page is the
 most a single program command can write; most SPI NOR flash, the W25Q128JV
@@ -2074,8 +2115,9 @@ to the same conclusion:
 
 Devices that really do need large programs, NAND with per-page ECC or NOR with
 on-die ECC, have to use their real program size. For them the
-`prog_size=256` rows above are what to expect: a big improvement over v2 for
-slow logs, but not for fast ones.
+`prog_size=256` rows above are what to expect: a sixth of v2's erases for
+slow logs, and three fifths for fast ones. REQUIREMENTS.md, Appendix B.5,
+describes the changes to how littlefs appends that got fast logs there.
 
 ## Compatibility
 
@@ -2122,8 +2164,9 @@ details of every one of these.
 v3 is not finished. Here's where the remaining pieces stand, according to the
 maintainer ([#1111], [#1114]):
 
-1. **Bad-block tracking** in the gbmap, described above. Planned, and one of
-   the two things blocking release.
+1. **Bad-block tracking** in the gbmap, described above, and one of the two
+   things blocking release. Blocks that fail reads are listed as suspect in
+   RAM only; keeping them across mounts would be a format addition.
 
 2. **This document and SPEC.md.** The other blocker, followed by a period of
    review, since "it would be foolish to commit to a disk format without at

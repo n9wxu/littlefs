@@ -6410,10 +6410,10 @@ code = '''
 '''
 
 # test that an error in the middle of a graft spanning many entries never
-# reaches disk, even if we try to sync
+# reaches disk or the application, even if we try to sync
 #
 # grafts can take more than one commit, so the file may be left
-# partially grafted
+# partially grafted, torn, which only lfs3_file_resync or close undo
 [cases.test_badblocks_graft_torn]
 defines.BADBLOCK_BEHAVIOR = 'LFS3_EMUBD_BADBLOCK_READERROR'
 # OP=0 => write
@@ -6482,20 +6482,51 @@ code = '''
         // try to sync anyways, this should either write a consistent
         // file or refuse
         err = lfs3_file_sync(&lfs3, &file);
-        assert(!err || err == LFS3_ERR_INVAL);
-        if (err == LFS3_ERR_INVAL) {
+        assert(!err || err == LFS3_ERR_BADFD);
+        if (err == LFS3_ERR_BADFD) {
             printf("--- badblock: 0x%x ---\n", badblock);
             torn += 1;
 
-            // only resync can recover
-            lfs3_file_sync(&lfs3, &file) => LFS3_ERR_INVAL;
-            lfs3_file_resync(&lfs3, &file) => 0;
-            lfs3_file_size(&lfs3, &file) => SIZE;
+            // a torn handle refuses anything that reads, writes or sizes
+            // it, and writes nothing
+            lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+            lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
             uint8_t rbuf[2*SIZE];
+            lfs3_file_sync(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_flush(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => LFS3_ERR_BADFD;
+            lfs3_file_write(&lfs3, &file, wbuf, CHUNK) => LFS3_ERR_BADFD;
+            lfs3_file_truncate(&lfs3, &file, SIZE/2) => LFS3_ERR_BADFD;
+            lfs3_file_fruncate(&lfs3, &file, SIZE/2) => LFS3_ERR_BADFD;
+            lfs3_file_size(&lfs3, &file) => LFS3_ERR_BADFD;
+            lfs3_file_seek(&lfs3, &file, 0, LFS3_SEEK_END)
+                    => LFS3_ERR_BADFD;
+            lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA | LFS3_CK_CKDATA)
+                    => LFS3_ERR_BADFD;
+            assert(lfs3_emubd_progs(CFG) == progs);
+            assert(lfs3_emubd_erases(CFG) == erases);
+
+            // but its position still works
+            lfs3_file_seek(&lfs3, &file, CHUNK, LFS3_SEEK_SET) => CHUNK;
+            lfs3_file_seek(&lfs3, &file, CHUNK, LFS3_SEEK_CUR) => 2*CHUNK;
+            lfs3_file_tell(&lfs3, &file) => 2*CHUNK;
             lfs3_file_rewind(&lfs3, &file) => 0;
-            lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
-            assert(memcmp(rbuf, sim, SIZE) == 0);
-            lfs3_file_sync(&lfs3, &file) => 0;
+            lfs3_file_desync(&lfs3, &file) => 0;
+
+            // only resync can recover, or close drops it without writing
+            if (torn % 2 == 0) {
+                lfs3_file_resync(&lfs3, &file) => 0;
+                lfs3_file_size(&lfs3, &file) => SIZE;
+                lfs3_file_rewind(&lfs3, &file) => 0;
+                lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+                assert(memcmp(rbuf, sim, SIZE) == 0);
+                lfs3_file_sync(&lfs3, &file) => 0;
+            } else {
+                lfs3_file_close(&lfs3, &file) => 0;
+                assert(lfs3_emubd_progs(CFG) == progs);
+                assert(lfs3_emubd_erases(CFG) == erases);
+                lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+            }
         }
         lfs3_file_close(&lfs3, &file) => 0;
 
@@ -6525,6 +6556,189 @@ code = '''
     // make sure we actually tested torn grafts
     printf("torn: %d\n", torn);
     assert(OP == 0 || torn > 0);
+'''
+
+# test that an error in an append that replaces only the file's last
+# fragment never tears the handle
+#
+# each append coalesces with the last fragment, so its graft carves
+# that fragment and appends past it, which must be one commit
+[cases.test_badblocks_append_torn]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGERROR',
+    'LFS3_EMUBD_BADBLOCK_ERASEERROR',
+    'LFS3_EMUBD_BADBLOCK_READERROR',
+]
+defines.PROG_SIZE = [1, 16]
+defines.FRAGMENT_SIZE = 64
+defines.CHUNK = 16
+defines.SIZE = '4*BLOCK_SIZE + CHUNK'
+defines.APPENDS = 64
+defines.SEED = 42
+code = '''
+    // no crystallization, the file stays fragments
+    struct lfs3_cfg cfg = *CFG;
+    cfg.crystal_thresh = -1;
+
+    // test all possible bad blocks
+    lfs3_size_t failed = 0;
+    for (lfs3_block_t badblock = 0; badblock < BLOCK_COUNT; badblock++) {
+        // write a file out of many fragments, the last one partial
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t sim[SIZE+APPENDS*CHUNK];
+        uint32_t prng = SEED;
+        for (lfs3_size_t i = 0; i < SIZE+APPENDS*CHUNK; i++) {
+            sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        for (lfs3_size_t i = 0; i < SIZE; i += CHUNK) {
+            lfs3_file_write(&lfs3, &file, &sim[i], CHUNK) => CHUNK;
+            lfs3_file_flush(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // append with a bad block until an append fails
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_APPEND) => 0;
+        lfs3_emubd_mkbad(CFG, badblock) => 0;
+        int err = 0;
+        for (lfs3_size_t i = 0; i < APPENDS && !err; i++) {
+            lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                    &sim[SIZE+i*CHUNK], CHUNK);
+            assert(d == CHUNK || d == LFS3_ERR_CORRUPT);
+            err = (d < 0) ? d : lfs3_file_flush(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_CORRUPT);
+        }
+        if (err) {
+            failed += 1;
+        }
+        lfs3_emubd_mkgood(CFG, badblock) => 0;
+
+        // sync must never find the handle torn
+        lfs3_file_sync(&lfs3, &file) => 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // disk should have the old contents and some of the appends
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[2*(SIZE+APPENDS*CHUNK)];
+        lfs3_ssize_t d = lfs3_file_read(&lfs3, &file, rbuf,
+                2*(SIZE+APPENDS*CHUNK));
+        assert(d >= SIZE && d <= SIZE+APPENDS*CHUNK);
+        assert((d - SIZE) % CHUNK == 0);
+        assert(memcmp(rbuf, sim, d) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // make sure appends actually failed
+    printf("failed: %d\n", failed);
+    assert(BADBLOCK_BEHAVIOR != LFS3_EMUBD_BADBLOCK_READERROR
+            || failed > 0);
+'''
+
+# test that an error in the middle of rewriting data blocks never makes us
+# program a byte twice, whichever read, prog or erase fails
+#
+# the failed write leaves the handle mid-crystallization, so the sync
+# that follows must not resume where the failed attempt already
+# programmed
+[cases.test_badblocks_crystal_ioerror]
+defines.OP = [
+    'LFS3_EMUBD_OP_READ',
+    'LFS3_EMUBD_OP_PROG',
+    'LFS3_EMUBD_OP_ERASE',
+]
+# small blocks keep the sweep over every read short
+defines.BLOCK_SIZE = 512
+defines.SIZE = '2*BLOCK_SIZE'
+defines.CHUNK = 16
+defines.FRAGMENT_SIZE = 16
+defines.SEED = 42
+defines.CKPROGONCE = true
+code = '''
+    for (uint32_t n = 1;; n++) {
+        // write a file out of many fragments
+        struct lfs3_cfg cfg = *CFG;
+        cfg.crystal_thresh = -1;
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, &cfg) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "hello",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        uint8_t sim[SIZE];
+        uint32_t prng = SEED;
+        for (lfs3_size_t i = 0; i < SIZE; i++) {
+            sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        for (lfs3_size_t i = 0; i < SIZE; i += CHUNK) {
+            lfs3_file_write(&lfs3, &file, &sim[i], CHUNK) => CHUNK;
+            lfs3_file_flush(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // overwrite the middle, crystallizing it into data blocks, and
+        // fail the n-th op
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDWR) => 0;
+        uint8_t wbuf[SIZE];
+        memcpy(wbuf, sim, SIZE);
+        for (lfs3_size_t i = SIZE/4; i < 3*SIZE/4; i++) {
+            wbuf[i] = 'A' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_seek(&lfs3, &file, SIZE/4, LFS3_SEEK_SET) => SIZE/4;
+        lfs3_emubd_mkioerror(CFG, OP, n, 0) => 0;
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file,
+                &wbuf[SIZE/4], SIZE/2);
+        assert(d == SIZE/2 || d == LFS3_ERR_IO);
+        int err = (d < 0) ? d : lfs3_file_flush(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_IO);
+        bool fired = (lfs3_emubd_ioerror(CFG, OP) == 0);
+        lfs3_emubd_mkioerror(CFG, OP, 0, 0) => 0;
+
+        // sync anyways, this should either write a consistent file or
+        // refuse
+        err = lfs3_file_sync(&lfs3, &file);
+        assert(!err || err == LFS3_ERR_BADFD);
+        if (err == LFS3_ERR_BADFD) {
+            lfs3_file_resync(&lfs3, &file) => 0;
+            lfs3_file_size(&lfs3, &file) => SIZE;
+            lfs3_file_sync(&lfs3, &file) => 0;
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // disk should have the old contents, the new contents, or a
+        // prefix of the write
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_file_open(&lfs3, &file, "hello", LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[2*SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, 2*SIZE) => SIZE;
+        lfs3_size_t i = 0;
+        while (i < SIZE && rbuf[i] == wbuf[i]) {
+            i += 1;
+        }
+        assert(memcmp(&rbuf[i], &sim[i], SIZE-i) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        // stop once the write no longer reaches the n-th op
+        if (!fired) {
+            printf("ops: %d\n", n-1);
+            break;
+        }
+    }
 '''
 
 # test that a stuck mroot doesn't leave a half-applied gcksum/grm behind
@@ -7070,7 +7284,7 @@ defines.BADBLOCK_BEHAVIOR = [
 ]
 # we need prog checking to detect silent prog errors
 defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_PROGNOOP'
-defines.PROG_SIZE = [1, 16]
+defines.PROG_SIZE = [1, 16, 256]
 defines.REOPEN = [false, true]
 defines.SIZE = 2000
 defines.APPEND = 64
@@ -7096,12 +7310,13 @@ code = '''
     lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
     lfs3_file_sync(&lfs3, &file) => 0;
 
-    // find the block holding our last byte and mark it bad, mark the
-    // first unwritten bit so flipping progs hit it
+    // find the block holding our last prog-aligned byte, anything after
+    // it is a fragment, and mark it bad, mark the first unwritten bit so
+    // flipping progs hit it
     lfs3_bid_t bid;
     lfs3_bid_t weight;
     lfs3_bptr_t bptr;
-    lfs3_file_lookupnext(&lfs3, &file, SIZE-1,
+    lfs3_file_lookupnext(&lfs3, &file, lfs3_aligndown(SIZE, PROG_SIZE)-1,
             &bid, &weight, &bptr) => 0;
     assert(lfs3_bptr_isbptr(&bptr));
     lfs3_block_t badblock = lfs3_bptr_block(&bptr);
@@ -7145,10 +7360,14 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
-# test a bad block where format puts the gbmap, this should just error
+# test a bad block where format puts the gbmap root
 #
-# format's test mount doesn't read the gbmap, so silent failures need
-# either prog checking or a format-time ckmeta
+# format puts the root on the next block it can erase and program, and
+# marks the ones it skips bad, but format's test mount doesn't read the
+# gbmap, so silent failures need prog checking to be skipped, a
+# format-time ckmeta can only fail format
+#
+# CKPROGS isn't needed for read errors, but they should work with it
 [cases.test_badblocks_gbmap_format]
 defines.BADBLOCK_BEHAVIOR = [
     'LFS3_EMUBD_BADBLOCK_PROGERROR',
@@ -7158,9 +7377,10 @@ defines.BADBLOCK_BEHAVIOR = [
     'LFS3_EMUBD_BADBLOCK_ERASENOOP',
 ]
 defines.CKMETA = [false, true]
-# we need prog checking to detect read errors
 defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR && !CKMETA'
-defines.BADBLOCK = 2
+# BADBLOCKS=1 => block 2 is bad
+# BADBLOCKS=n => every block after the mroot anchor is bad
+defines.BADBLOCKS = [1, 'BLOCK_COUNT-2']
 if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
 ifdef = 'LFS3_GBMAP'
 code = '''
@@ -7168,25 +7388,74 @@ code = '''
             | LFS3_F_GBMAP
             | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0)
             | ((CKMETA) ? LFS3_F_CKMETA : 0);
-    lfs3_emubd_mkbad(CFG, BADBLOCK) => 0;
-
-    // format should fail
-    lfs3_t lfs3;
-    int err = lfs3_format(&lfs3, flags, CFG);
-    assert(err < 0);
-
-    // and so should mount, unless format only found the bad gbmap after
-    // writing the mroot, mount doesn't read the gbmap, but a check should
-    // still find it
-    err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
-    assert(err < 0 || CKMETA);
-    if (!err) {
-        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
-        lfs3_unmount(&lfs3) => 0;
+    for (lfs3_block_t b = 2; b < 2+BADBLOCKS; b++) {
+        lfs3_emubd_mkbad(CFG, b) => 0;
     }
 
-    // without the bad block format should work
-    lfs3_emubd_mkgood(CFG, BADBLOCK) => 0;
+    // can format see the bad blocks? building the gbmap root reads back
+    // what it progs, so read errors are seen too
+    bool seen = BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_PROGERROR
+            || BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_ERASEERROR
+            || BADBLOCK_BEHAVIOR == LFS3_EMUBD_BADBLOCK_READERROR
+            || CKPROGS;
+
+    lfs3_t lfs3;
+    lfs3_emubd_io_t erased = lfs3_emubd_erased(CFG);
+    int err = lfs3_format(&lfs3, flags, CFG);
+    if (seen && BADBLOCKS == 1) {
+        // format should put the gbmap root somewhere else, trying the
+        // bad block only once
+        assert(err == 0);
+        assert(lfs3_emubd_erased(CFG) - erased <= 4*BLOCK_SIZE);
+
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        lfs3_fs_nextbad(&lfs3, 0) => 2;
+        lfs3_fs_nextbad(&lfs3, 3) => LFS3_ERR_NOENT;
+        // and nothing should use the bad block
+        lfs3_trv_t trv;
+        lfs3_trv_open(&lfs3, &trv, LFS3_T_RDONLY) => 0;
+        while (true) {
+            struct lfs3_tinfo tinfo;
+            err = lfs3_trv_read(&lfs3, &trv, &tinfo);
+            assert(!err || err == LFS3_ERR_NOENT);
+            if (err == LFS3_ERR_NOENT) {
+                break;
+            }
+            assert(tinfo.block != 2);
+        }
+        lfs3_trv_close(&lfs3, &trv) => 0;
+        lfs3_mkdir(&lfs3, "hi") => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "hi", &info) => 0;
+        assert(info.type == LFS3_TYPE_DIR);
+        lfs3_fs_nextbad(&lfs3, 0) => 2;
+        lfs3_unmount(&lfs3) => 0;
+
+    } else if (seen) {
+        // no good block for the gbmap root
+        assert(err == LFS3_ERR_NOSPC);
+
+    } else {
+        // format should fail, and so should mount, unless format only
+        // found the bad gbmap after writing the mroot, mount doesn't
+        // read the gbmap, but a check should still find it
+        assert(err < 0);
+        err = lfs3_mount(&lfs3, LFS3_M_RDWR, CFG);
+        assert(err < 0 || CKMETA);
+        if (!err) {
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+            lfs3_unmount(&lfs3) => 0;
+        }
+    }
+
+    // without the bad blocks format should work
+    for (lfs3_block_t b = 2; b < 2+BADBLOCKS; b++) {
+        lfs3_emubd_mkgood(CFG, b) => 0;
+    }
     lfs3_format(&lfs3, flags, CFG) => 0;
     lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
     lfs3_mkdir(&lfs3, "hi") => 0;
@@ -9079,4 +9348,217 @@ code = '''
     }
 
     lfs3_unmount(&lfs3) => 0;
+'''
+
+
+## P1 tests ##
+
+# a write that fails partway through an overwrite spanning several
+# entries leaves its handle desynced, a later successful sync of that
+# handle must leave a filesystem that passes lfs3_fs_ck, with every byte
+# outside the failed write as it was
+#
+# We sweep the fault over every point of the overwrite and its sync
+[cases.test_badblocks_error_then_sync]
+# FAULT=0 => out of space, n blocks free
+# FAULT=1 => the n-th prog fails with LFS3_ERR_CORRUPT, a bad block
+# FAULT=2 => the n-th erase fails with LFS3_ERR_CORRUPT, a bad block
+# FAULT=3 => the n-th prog fails with LFS3_ERR_IO
+defines.FAULT = [0, 1, 2, 3]
+# LAYOUT=0 => a file of fragments, crystallization off
+# LAYOUT=1 => a file of data blocks
+defines.LAYOUT = [0, 1]
+defines.SIZE = '(LAYOUT == 0) ? 2048 : 4*BLOCK_SIZE'
+defines.CRYSTAL_THRESH = '(LAYOUT == 0) ? BLOCK_SIZE+1 : BLOCK_SIZE/16'
+defines.PROG_SIZE = [1, 16]
+# a small disk, so filling it is quick
+defines.BLOCK_COUNT = 32
+# no byte may be programmed twice without an erase, even when a prog
+# failed partway through a write
+defines.CKPROGONCE = true
+code = '''
+    uint8_t *old = malloc(SIZE);
+    uint8_t *new = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE+1);
+    assert(old && new && rbuf);
+    uint32_t prng = 42;
+    for (lfs3_size_t j = 0; j < SIZE; j++) {
+        old[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        new[j] = 'A' + (TEST_PRNG(&prng) % 26);
+    }
+    // the overwrite spans several entries, starting and ending in the
+    // middle of one
+    lfs3_off_t off = SIZE/8 + 10;
+    lfs3_size_t len = SIZE/2;
+
+    for (uint32_t n = 0;; n++) {
+        // a bit hacky, but this catches faults that always fire
+        assert(n < 10000);
+
+        lfs3_t lfs3;
+        lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+        // write our file, as fragments or blocks
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, "f",
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_size_t chunk = (LAYOUT == 0) ? 64 : SIZE;
+        for (lfs3_size_t j = 0; j < SIZE; j += chunk) {
+            lfs3_file_write(&lfs3, &file, &old[j], chunk) => chunk;
+            if (LAYOUT == 0) {
+                lfs3_file_sync(&lfs3, &file) => 0;
+            }
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+
+        // leave n blocks free?
+        lfs3_size_t fillers = 0;
+        if (FAULT == 0) {
+            uint8_t fbuf[BLOCK_SIZE];
+            memset(fbuf, 'z', BLOCK_SIZE);
+            for (;; fillers++) {
+                char name[256];
+                sprintf(name, "filler%03x", fillers);
+                lfs3_file_t filler;
+                int err = lfs3_file_open(&lfs3, &filler, name,
+                        LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL);
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (err) {
+                    break;
+                }
+                lfs3_ssize_t d = lfs3_file_write(&lfs3, &filler,
+                        fbuf, BLOCK_SIZE);
+                assert(d == BLOCK_SIZE || d == LFS3_ERR_NOSPC);
+                err = lfs3_file_close(&lfs3, &filler);
+                assert(!err || err == LFS3_ERR_NOSPC);
+                if (d < 0 || err) {
+                    // the filler may not exist if the close failed
+                    err = lfs3_remove(&lfs3, name);
+                    assert(!err || err == LFS3_ERR_NOENT);
+                    break;
+                }
+            }
+            // free n of them
+            for (lfs3_size_t i = 0; i < lfs3_min(n, fillers); i++) {
+                char name[256];
+                sprintf(name, "filler%03x", i);
+                lfs3_remove(&lfs3, name) => 0;
+            }
+        }
+
+        // arm our fault
+        if (FAULT == 1) {
+            lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, n+1,
+                    LFS3_ERR_CORRUPT) => 0;
+        } else if (FAULT == 2) {
+            lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_ERASE, n+1,
+                    LFS3_ERR_CORRUPT) => 0;
+        } else if (FAULT == 3) {
+            lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, n+1, 0) => 0;
+        }
+
+        // overwrite, and sync
+        //
+        // opening for writing may need room to finish removing a filler,
+        // if so we make room and leave this point untested
+        int err = lfs3_file_open(&lfs3, &file, "f", LFS3_O_RDWR);
+        assert(!err || (FAULT == 0 && err == LFS3_ERR_NOSPC));
+        if (err) {
+            for (lfs3_size_t i = 0; i < fillers; i++) {
+                char name[256];
+                sprintf(name, "filler%03x", i);
+                err = lfs3_remove(&lfs3, name);
+                assert(!err || err == LFS3_ERR_NOENT);
+            }
+            lfs3_file_open(&lfs3, &file, "f", LFS3_O_RDWR) => 0;
+        }
+        lfs3_file_seek(&lfs3, &file, off, LFS3_SEEK_SET) => off;
+        lfs3_ssize_t d = lfs3_file_write(&lfs3, &file, &new[off], len);
+        assert(d == (lfs3_ssize_t)len
+                || d == LFS3_ERR_NOSPC
+                || d == LFS3_ERR_IO);
+        if (d >= 0) {
+            err = lfs3_file_sync(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_NOSPC || err == LFS3_ERR_IO);
+        }
+        bool failed = (d < 0 || err);
+
+        // did our fault fire? if not, we're done
+        bool fired = (FAULT == 0)
+                ? n < fillers
+                : lfs3_emubd_ioerror(CFG,
+                    (FAULT == 2) ? LFS3_EMUBD_OP_ERASE : LFS3_EMUBD_OP_PROG)
+                    == 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_PROG, 0, 0) => 0;
+        lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_ERASE, 0, 0) => 0;
+        printf("n=%"PRId32": write %"PRId32", sync %d\n", n, d, err);
+
+        // bad blocks are relocated around, so the write succeeds
+        if (FAULT == 1 || FAULT == 2) {
+            assert(!failed);
+        }
+
+        // now sync the desynced handle, after making room if we were
+        // out of space
+        //
+        // a write that failed after committing some of its entries
+        // leaves the handle torn, lfs3_file_sync refuses to write that
+        // out and lfs3_file_resync goes back to what's on disk
+        bool torn = false;
+        if (failed) {
+            if (FAULT == 0) {
+                for (lfs3_size_t i = 0; i < fillers; i++) {
+                    char name[256];
+                    sprintf(name, "filler%03x", i);
+                    err = lfs3_remove(&lfs3, name);
+                    assert(!err || err == LFS3_ERR_NOENT);
+                }
+            }
+            err = lfs3_file_sync(&lfs3, &file);
+            assert(!err || err == LFS3_ERR_BADFD);
+            if (err == LFS3_ERR_BADFD) {
+                torn = true;
+                lfs3_file_resync(&lfs3, &file) => 0;
+            }
+        }
+        lfs3_file_close(&lfs3, &file) => 0;
+        printf("n=%"PRId32": %s\n", n,
+                (!failed) ? "written"
+                    : (torn) ? "torn, resynced"
+                    : "synced after the error");
+
+        for (int remount = 0; remount < 2; remount++) {
+            if (remount) {
+                lfs3_unmount(&lfs3) => 0;
+                lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+            }
+
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+
+            // bytes outside the failed write are as they were, and the
+            // written range is all new if nothing failed
+            lfs3_file_open(&lfs3, &file, "f", LFS3_O_RDONLY) => 0;
+            lfs3_file_size(&lfs3, &file) => SIZE;
+            lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+            assert(memcmp(rbuf, old, off) == 0);
+            assert(memcmp(&rbuf[off+len], &old[off+len],
+                    SIZE-(off+len)) == 0);
+            if (!failed) {
+                assert(memcmp(&rbuf[off], &new[off], len) == 0);
+            } else if (torn) {
+                assert(memcmp(&rbuf[off], &old[off], len) == 0);
+            }
+            lfs3_file_close(&lfs3, &file) => 0;
+        }
+
+        lfs3_unmount(&lfs3) => 0;
+        if (!fired) {
+            break;
+        }
+    }
+
+    free(old);
+    free(new);
+    free(rbuf);
 '''
