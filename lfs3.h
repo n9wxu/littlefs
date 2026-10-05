@@ -887,8 +887,8 @@ struct lfs3_cfg {
     // needs moving again in the same mount. LFS3_ERR_CORRUPT is returned
     // only if every read fails. An mdir is settled into its other block
     // instead, see lfs3_mount, when no open handle holds it, its log reads
-    // back as written, and its other block holds an older revision. mtree
-    // nodes aren't moved.
+    // back as written, and its other block holds an older revision. An
+    // mtree node is moved by a commit through the mtree and the mroot.
     //
     // 0 doesn't read again or move anything. Where the supply can sag or
     // power can be lost mid-write, we suggest 3: a block that fails 4

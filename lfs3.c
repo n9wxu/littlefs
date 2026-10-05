@@ -19596,8 +19596,8 @@ int lfs3_fs_mkconsistent(lfs3_t *lfs3) {
 // that passed the cksum recorded where it's referenced, to a new block,
 // then test the old block
 //
-// mdirs and mtree nodes have no such cksum, so we leave these where they
-// are
+// mdirs have no such cksum, so we settle these into their other block,
+// see lfs3_mdir_rescue
 
 // copy a data block to a new block, exactly the bytes its cksum covers
 //
@@ -19721,8 +19721,8 @@ static int lfs3_mtree_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         return 0;
     }
 
-    // only file trees and the gbmap record cksums we can check copies
-    // against, and open files may still hold the old tree
+    // file trees, the mtree and the gbmap record cksums we can check
+    // copies against, and open files may still hold the old tree
     lfs3_smid_t mid = mgc->t.h.mdir.mid;
     if (mid >= 0) {
         for (lfs3_handle_t *h = lfs3->handles; h; h = h->next) {
@@ -19731,7 +19731,8 @@ static int lfs3_mtree_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
                 return 0;
             }
         }
-    } else if (!(mid == LFS3_MID_GBMAP && tag == LFS3_TAG_BRANCH)) {
+    } else if (!((mid == LFS3_MID_GBMAP || mid == LFS3_MID_MTREE)
+            && tag == LFS3_TAG_BRANCH)) {
         return 0;
     }
 
@@ -19747,10 +19748,34 @@ static int lfs3_mtree_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         goto failed;
     }
 
+    // moving an mtree node? commit through it, which moves it, then
+    // commit the new mtree to the mroot, nothing between these may
+    // checkpoint the allocator, the new nodes aren't referenced yet
+    bool moved;
+    if (mid == LFS3_MID_MTREE) {
+        lfs3_btree_t mtree_ = lfs3->mtree;
+        suspects->moving = block;
+        err = lfs3_mtree_commit(lfs3, &mtree_, bid, LFS3_RATTRS(
+                LFS3_RATTR_NULL));
+        moved = (suspects->moving == -1);
+        suspects->moving = -1;
+        if (err) {
+            goto failed;
+        }
+
+        err = lfs3_mdir_commit_(lfs3, &lfs3->mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_tag_MASK8 | LFS3_TAG_MTREE, 0,
+                    LFS3_FROM_BTREE),
+                LFS3_RATTR_ARG(&mtree_),
+                LFS3_RATTR_NULL));
+        if (err) {
+            goto failed;
+        }
+        lfs3->mtree = mtree_;
+
     // moving a gbmap node? commit through it, which moves it, and write
     // the gbmap out so nothing references the old block
-    bool moved;
-    if (mid < 0) {
+    } else if (mid < 0) {
         lfs3_btree_t gbmap_ = lfs3->gbmap.b;
         lfs3_btree_claim(&lfs3->gbmap.b);
         suspects->moving = block;

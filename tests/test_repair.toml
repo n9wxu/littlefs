@@ -952,3 +952,95 @@ code = '''
     free(bad);
     free(suspect);
 '''
+
+# test moving an mtree node off of a suspect block
+#
+# The mtree records its nodes' cksums like any B-tree, so a check moves
+# a node that needed a retry by a commit through the mtree, which copies
+# it, and a commit of the new mtree to the mroot
+#
+# WHICH=0 => the mtree's root
+# WHICH=1 => a node below the root
+[cases.test_repair_mtree]
+defines.WHICH = [0, 1]
+defines.FAILS = [1, 3]
+defines.CK_RETRIES = 3
+defines.BLOCK_SIZE = 512
+defines.SIZE = 8
+code = '''
+    struct lfs3_cfg cfg;
+    test_repair_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // write files until the mtree has a node below its root
+    lfs3_size_t n = 0;
+    lfs3_sblock_t block = -1;
+    while (block < 0) {
+        assert(n < BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "spider%03d", n);
+        test_repair_write(&lfs3, name, n, SIZE);
+        n += 1;
+
+        lfs3_btrv_t btrv;
+        btrv.bid = -1;
+        lfs3_size_t nodes = 0;
+        while (true) {
+            lfs3_data_t data;
+            lfs3_stag_t tag = lfs3_btree_traverse(&lfs3, &lfs3.mtree,
+                    &btrv, NULL, NULL, &data);
+            assert(tag >= 0 || tag == LFS3_ERR_NOENT);
+            if (tag == LFS3_ERR_NOENT) {
+                break;
+            }
+            if (tag == LFS3_TAG_BRANCH) {
+                nodes += 1;
+                if (nodes == 2) {
+                    block = (WHICH == 0)
+                            ? lfs3.mtree.r.blocks[0]
+                            : ((const lfs3_rbyd_t*)data.u.buffer)->blocks[0];
+                    break;
+                }
+            }
+        }
+    }
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+
+    // the node needs retries, so a check moves it
+    test_repair_break(block, 0, FAILS);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => 0;
+    test_repair_heal();
+
+    // the node moved, and the old block is free again
+    assert(test_repair_issuspect(&lfs3, block));
+    assert(!test_repair_isbad(&lfs3, block));
+    assert(!test_repair_inuse(&lfs3, block));
+    assert(lfs3.mtree.r.blocks[0] != (lfs3_block_t)block);
+
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+            assert(!test_repair_inuse(&lfs3, block));
+        }
+
+        for (lfs3_size_t i = 0; i < n; i++) {
+            char name[256];
+            sprintf(name, "spider%03d", i);
+            test_repair_read_(&lfs3, name, i, SIZE);
+        }
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    // and a second check finds nothing to move
+    memset(test_repair_erases, 0, sizeof(test_repair_erases));
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    for (lfs3_block_t b = 0; b < BLOCK_COUNT; b++) {
+        assert(test_repair_erases[b] == 0);
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''

@@ -1862,15 +1862,16 @@ littlefs knows what the log should read: the trunk and checksum of the mdir
 in RAM. So an mdir whose active block is suspect is settled instead: copied
 into its other block, commit by commit, as at mount, but only when the log
 reads back exactly as littlefs has it, and only over an other block that
-reads as older, since a fetch that can't read the newer block falls back to
-the older one without an error. The suspect block stays the pair's other
+reads as older. The suspect block stays the pair's other
 block, the next compaction erases and writes it, which tests it, and one
 that needs settling off again is marked bad, so that compaction relocates
 the pair. An mdir an open handle holds is left until the handle closes.
 
-Some things aren't moved. mtree nodes would need a commit through the mtree
-and the mroot, which isn't written yet. Blocks of open files are left until
-the files close. A block that can't be moved now, because the disk is full
+mtree nodes are moved like gbmap nodes: a commit through the mtree copies
+the node, and a commit of the new mtree to the mroot replaces it, with no
+checkpoint of the allocator between, since the new nodes aren't referenced
+until the second commit. Blocks of open files are left until the files
+close. A block that can't be moved now, because the disk is full
 or the copy never checked out, is left for the next check.
 
 `ck_passes` makes `lfs3_fs_ck` and mount-time checks read everything more
