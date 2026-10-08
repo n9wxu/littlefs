@@ -19,6 +19,13 @@ after = [
 code = '''
 #include <setjmp.h>
 
+// power-loss cases here longjmp back into their own loops, and nothing
+// they read after the jump changes between setjmp and longjmp, which
+// gcc's -Wclobbered can't see
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
+
 // a powerloss callback that abandons the interrupted operation, the way
 // the linear runner does
 __attribute__((unused))

@@ -17,6 +17,13 @@ defines.SIZE = 8
 code = '''
 #include <setjmp.h>
 
+// power-loss cases here longjmp back into their own loops, and nothing
+// they read after the jump changes between setjmp and longjmp, which
+// gcc's -Wclobbered can't see
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wclobbered"
+#endif
+
 // a model of what we wrote, and where it is
 #define TEST_SALVAGE_MAX 256
 
