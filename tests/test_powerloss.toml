@@ -2753,6 +2753,20 @@ code = '''
         .powerloss_data = &powerloss_jmp,
         .seed = BD_SEED,
     };
+    // our own caches, so the mount and file abandoned when power is lost
+    // leak nothing
+    uint8_t *rcache = malloc(cfg.rcache_size);
+    uint8_t *pcache = malloc(cfg.pcache_size);
+    uint8_t *lookahead = malloc(cfg.lookahead_size);
+    uint8_t *fcache = malloc(cfg.fcache_size);
+    assert(rcache && pcache && lookahead && fcache);
+    cfg.rcache_buffer = rcache;
+    cfg.pcache_buffer = pcache;
+    cfg.lookahead_buffer = lookahead;
+    struct lfs3_file_cfg fcfg = {
+        .fcache_buffer = fcache,
+        .fcache_size = cfg.fcache_size,
+    };
 
     // count the progs and erases of our commit, then do it all again,
     // losing power at its last prog
@@ -2767,8 +2781,8 @@ code = '''
         // a write session that hasn't ended?
         lfs3_file_t file;
         if (KIND == 1) {
-            lfs3_file_open(&lfs3, &file, "a",
-                    LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+            lfs3_file_opencfg(&lfs3, &file, "a",
+                    LFS3_O_WRONLY | LFS3_O_CREAT, &fcfg) => 0;
             lfs3_file_write(&lfs3, &file, "0", 1) => 1;
             lfs3_file_sync(&lfs3, &file) => 0;
             lfs3_file_rewind(&lfs3, &file) => 0;
@@ -2852,6 +2866,11 @@ code = '''
     }
 
     lfs3_emubd_destroy(&cfg) => 0;
+
+    free(rcache);
+    free(pcache);
+    free(lookahead);
+    free(fcache);
 '''
 
 # Metastable bits under powerloss
