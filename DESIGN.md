@@ -478,7 +478,10 @@ Most of v2's reasoning still applies, so we'll only go over it briefly:
 4. If the compacted mdir would be more than half full, littlefs splits it into
    two new mdirs instead. The same argument as in v2 applies: a log compacted
    to more than 50% full gets compacted again too soon, and splitting at 50%
-   bounds the amortized cost of compaction to about 2x.
+   bounds the amortized cost of compaction to about 2x. A commit that only
+   removes is the exception: it compacts in place, so a removal never needs
+   more room than the mdir already holds, and removing files frees space on
+   a full disk or a full mroot.
 
 v3 adds one rule: an mdir whose last entry is removed is dropped from the
 filesystem. mdirs are never merged, but empty ones don't linger.
@@ -982,7 +985,10 @@ would only replace a fragment written now, and each fragment costs a commit
 to the file's tree padded to `prog_size`. Likewise, when an append merges
 with the file's last fragment, removing that fragment and adding the longer
 one is a single commit, so an error part way can't leave the handle's tree
-half updated.
+half updated. And a crystallization that leaves a block pointer as it was
+doesn't graft it again. All three matter most with a large `prog_size`,
+where every commit is padded to a prog boundary; the worked example below
+shows by how much.
 
 There is one catch. Whether a data block still has erased space is only known
 in RAM, while the file is open; it isn't stored on disk. After a file is
@@ -1112,7 +1118,9 @@ allocator keeps their private blocks alive while they're open.
 
 The same machinery gives littlefs a well-defined answer to errors. Since v3
 was a rewrite anyway, it reverts in-RAM filesystem state to the last
-known-good state when an operation fails. File data is the one exception:
+known-good state when an operation fails, unless the commit already reached
+the disk and only the sync after it failed (see
+[Handling errors](#handling-errors)). File data is the other exception:
 
 > Reverting file data correctly turned out to roughly double the cost of
 > files. And now that you can manual revert with `lfs3_file_resync`, I figured
@@ -1154,6 +1162,52 @@ Small files can skip the stickynote. `lfs3_set` writes a new file's name and
 contents in a single commit when the contents fit in a fragment, and a sync of
 a small file that fits entirely in its cache writes the whole file as one
 fragment in the same commit as its struct tag.
+
+## Handling errors
+
+littlefs usually runs where nobody reads a log message, so an error has to
+tell the firmware what to do next, and what state it left behind.
+[ERRORS.md](ERRORS.md) gives every error code one meaning, one recommended
+action, and the state on disk and in RAM after each kind of call fails. The
+actions are three:
+
+1. **Retry.** The same call can succeed later. `LFS3_ERR_IO` is the block
+   device failing in a way that may not last, a bus error or a sagging
+   supply, and nothing is marked bad for it.
+2. **Rebuild.** Repair or reclaim something, then retry: remove files on
+   `LFS3_ERR_NOSPC`; on `LFS3_ERR_CORRUPT`, data that failed a check, run a
+   repairing check, and, if a mount fails, mount read-only, degraded, or
+   with `LFS3_M_SALVAGE`, smallest repair first.
+3. **Fail.** Stop using this path and take the application's contingency.
+
+`lfs3.h` lists every code each function can return, and the test runner
+records every code the tests see, which `make test-errs` checks against
+those lists.
+
+Giving each code one meaning settled a few behaviours:
+
+1. A file handle that a failed multi-commit write left matching no version
+   of its file is torn. Every call that would read or write through it
+   returns `LFS3_ERR_BADFD` until `lfs3_file_resync`, and closing it writes
+   nothing. `LFS3_ERR_INVAL` means a bug in the caller, which a torn handle
+   isn't. An append that only replaces the file's last fragment is one
+   commit, so a logger appending through errors never sees a torn handle.
+
+2. When `cfg->sync` fails after a commit was programmed, littlefs can't know
+   whether the commit is durable, but it does know the device will return
+   it. So the commit stands, in RAM as on disk, the operation completes, and
+   the sync's error is returned once, from the call. `lfs3_file_sync`
+   leaves the file unsynced, so a retry commits and syncs again. Reverting
+   RAM instead would leave it disagreeing with the next read.
+
+3. `lfs3_remove` and `lfs3_rename` commit first and clean up after. If only
+   the cleanup fails, they return 0: the operation is complete,
+   `LFS3_I_MKCONSISTENT` reports the pending cleanup, and the next write
+   retries it. This is the one exception to "the error is reported where it
+   happened".
+
+4. A failed read is never taken as evidence of anything: not of which block
+   of a pair is newer, not of a power loss, and not of a bad block.
 
 ## Checksums
 
@@ -1325,9 +1379,11 @@ the bus traffic of every write, and CKDATACKSUMS re-reads the whole
 checksummed prefix of a block on every read, up to a block per read.
 
 All of this is detection, not correction. A failed check returns
-`LFS3_ERR_CORRUPT`. Error correction within a block fits better at the block
-device level (see [ramcrc32bd] and [ramrsbd] for examples), and redundancy
-across blocks is planned.
+`LFS3_ERR_CORRUPT`, unless a read retried within `ck_retries` passes, and
+with the gbmap a check can move what still reads to a new block (see
+[Repairing checks](#repairing-checks)). Error correction within a block
+fits better at the block device level (see [ramcrc32bd] and [ramrsbd] for
+examples), and redundancy across blocks is planned.
 
 ## Global checksums
 
@@ -1501,6 +1557,18 @@ erase. littlefs has two answers:
    during the settle itself is left, at the cost of an erase per pair
    written since the last mount, clean shutdown or not.
 
+Both modes were measured with emubd's metastable power loss, which leaves
+one bit of the interrupted program reading randomly until its block is
+erased: by default, 55 completed syncs were lost in 11,832 power losses,
+all in the unprotected cases above; with `LFS3_M_SETTLE`, none in 14,626.
+Neither mode adds a commit. A default mount after a power cut costs about
+two erases, and one after a clean shutdown none; `LFS3_M_SETTLE` costs about
+three erases per mount after writes, more when the writes were spread over
+many pairs. The marks do cost something for a file reopened for every
+append, whose sessions each set and clear a mark: 11% more erases at
+`prog_size` 16 in one benchmark. `lfs3.h` recommends `LFS3_M_SETTLE` where a
+completed sync must never be lost.
+
 A read the block device fails is not a power loss: the supply may have
 sagged, and the next read may pass. So a failed read never counts among the
 settle's reads, never makes the active block look like an interrupted
@@ -1632,7 +1700,11 @@ difference, since large blocks keep allocation cheap there; small-block
 devices like SD and eMMC are where it should help ([#1114]).
 
 The gbmap adds code on top of the lookahead allocator, which it still needs as
-a fallback and to bootstrap itself. It's tracked by a write-compat flag, so a
+a fallback and to bootstrap itself. On a full disk a rebuild may find no block
+for its own nodes; allocation then falls back to lookahead scans, so removes,
+which free blocks, still work. And a rebuild that meets an mdir it can't read
+doesn't stop writes: allocation goes on from the blocks the gbmap already
+knows are free, until those run out. It's tracked by a write-compat flag, so a
 driver built without gbmap support can still mount a filesystem that has one,
 read-only.
 
@@ -1692,7 +1764,9 @@ again when it is allocated.
 
 Pre-erasing needs `LFS3_PREERASE`, `LFS3_GBMAP` and `LFS3_REVPERTURB` at
 compile time, `LFS3_M_REVPERTURB` at mount, and a `gc_preerase_count`, the
-number of erased blocks gc tries to keep ready ahead of the window.
+number of erased blocks gc tries to keep ready ahead of the window. A mount
+without `LFS3_M_REVPERTURB` can't trust the erased state, so it treats
+pre-erased blocks as free and erases them again before use.
 
 There's one erase pre-erasing can't remove. Compacting an mdir erases the
 other block of its pair, which is never a free block, so mdir compactions
@@ -1725,6 +1799,11 @@ matching `LFS3_M_*` flags, or driven step by step with
 None of this work is new. Lookahead scans, compactions and erases all happen
 anyway. Incremental gc lets an application move them out of the operations
 it cares about and into time it doesn't.
+
+`gc_steps` of -1 runs the work to completion, and every gc and check call
+returns: gc stops work that can't make progress, a gbmap rebuild that gains
+nothing on a nearly full disk, or a compaction that the size estimate shows
+can't shrink an mdir.
 
 ## Wear leveling
 
@@ -1790,9 +1869,11 @@ again, so an unreadable source can't make it allocate and erase new blocks
 until the disk is exhausted.
 
 Read errors are different. There's no copy of the data in RAM to rewrite, so
-littlefs can only detect them. littlefs itself doesn't do error correction,
-though a block device can, and littlefs honors any error the block device
-reports.
+littlefs first has to find a read that passes. It reads again, up to
+`ck_retries` times, never takes a failed read of a metadata pair as a reason
+to fall back to its older block, and, with the gbmap, can move what reads to
+a new block (below). littlefs itself doesn't do error correction, though a
+block device can, and littlefs honors any error the block device reports.
 
 ### Remembering bad blocks
 
@@ -1886,6 +1967,15 @@ is going wrong and decide what to do. Finding suspects never writes, so
 read-only mounts find them too. Keeping them across mounts would need a new
 gbmap state and a compat flag, so it's left to the application.
 
+### Health
+
+`lfs3_fs_health` counts, in one traversal, the blocks in use, the bad blocks,
+the suspect blocks, and the good blocks left to write. Capacity shrinks as
+blocks go bad, so an unattended device can use this to log less or rotate
+sooner, before writes start failing with `LFS3_ERR_NOSPC`. Blocks that
+copy-on-write structures share can count twice, so the free count never
+overstates what can be written.
+
 ### Repairing checks
 
 With the gbmap, a check can repair what it finds, not just report it. Data
@@ -1943,11 +2033,42 @@ than once, which catches more bits that read differently each time.
    serves everything else, degraded, and `LFS3_M_SALVAGE` makes the
    filesystem writable again by rewriting the pair from a block that
    still reads, losing the commits since its last compaction, or by
-   dropping it with its entries and the directories it named.
+   dropping it with its entries and the directories it named. A dropped
+   pair stays lost even if it would read later. Salvage can't help an mroot
+   with no block that reads, or a damaged node of the mtree: those mounts
+   still fail with `LFS3_ERR_CORRUPT`, and a read-only mount is what's
+   left.
 
 4. **Without the gbmap, bad blocks aren't remembered.** A block that failed is
    retried when the allocator comes back around to it, and after every
    mount.
+
+5. **Suspects are forgotten at unmount.** The repairing check moves what
+   it can while mounted, but a block that failed reads is only suspect
+   until the next mount, unless the application keeps its own list from
+   `lfs3_fs_nextsuspect`.
+
+## Thread safety
+
+A filesystem is one `lfs3_t`, and any call can touch any of it, so littlefs
+calls on the same filesystem must not overlap. Different `lfs3_t`s on
+different block devices share nothing, and can be used from different
+threads without any locking.
+
+For a filesystem shared between threads, `LFS3_THREADSAFE` adds `lock` and
+`unlock` callbacks to the configuration. Every public function takes the
+lock once before anything else and releases it once on every return path.
+littlefs's own calls between public functions go to unlocked versions, so
+the lock never nests and can be a plain mutex.
+
+A `lock` that fails returns its error before any block device operation,
+with nothing changed. An `unlock` that fails after a call that succeeded
+returns `unlock`'s error, though the call took effect; after a call that
+failed, the call's own error wins. ERRORS.md says what to do about each.
+
+Builds without `LFS3_THREADSAFE` compile to the same code as before the
+lock existed. With it, the Cortex-M0+ build below grows by 1,332 bytes,
+and `lfs3_t` doesn't grow at all.
 
 ## Costs
 
@@ -1971,30 +2092,45 @@ append needs a three-alt FIFO no matter how big the tree is, a B-tree
 traversal needs a position and one cached leaf, and every commit is built from
 a bounded list of attributes.
 
-Measured on v3-alpha, for a Cortex-M0+ (`arm-none-eabi-gcc` 13.2,
-`-mthumb -Os`), the structs are:
+Measured for a Cortex-M0+ (`arm-none-eabi-gcc` 13.2,
+`-mcpu=cortex-m0plus -mthumb -Os`, asserts and logging compiled out), at
+v3-alpha (`b10efaa`) and on `v3-integration` (`9a2148ff`), the structs
+are:
 
 | struct          | v2.11 | v3 default | v3 gbmap | v3 gbmap+gc+preerase | v3 read-only |
 |-----------------|------:|-----------:|---------:|---------------------:|-------------:|
-| `lfs_t`/`lfs3_t` | 128 B | 188 B      | 296 B    | 436 B                | 120 B        |
+| `lfs_t`/`lfs3_t`, v3-alpha | 128 B | 188 B | 296 B | 436 B | 120 B |
+| `lfs_t`/`lfs3_t`, now | 128 B | 216 B | 416 B | 556 B | 124 B |
 | file            | 84 B  | 136 B      | 136 B    | 136 B                | 104 B        |
 | directory       | 52 B  | 48 B       | 48 B     | 48 B                 | 44 B         |
 
 A traversal, `lfs3_trv_t`, is 108 bytes in the default build. The gbmap's
 in-RAM state and the gc traversal are what make `lfs3_t` grow in the larger
-configurations.
+configurations. Since v3-alpha, the default `lfs3_t` has grown by the
+deferred sync error, what fetches and mount found for settling, and the
+blocks littlefs failed to write as a pair's next state; the gbmap build
+also by the bad-block queue, four runs of a block and a length, and the
+suspect list, eight blocks, which only exist with the gbmap.
+`LFS3_THREADSAFE` adds two callbacks to the configuration and nothing to
+`lfs3_t`.
 
 ### Code and stack
 
-v3 is a little less little than v2. Measured the same way, with asserts and
-logging compiled out:
+v3 is a little less little than v2. Measured the same way, code and data of
+`lfs3.c` and `lfs3_util.c`:
 
-| build      | v2.11    | v3        |       |
-|------------|---------:|----------:|------:|
-| default    | 15752 B  | 32548 B   | 2.07x |
-| read-only  | 5792 B   | 9976 B    | 1.72x |
-| + gbmap    |          | 35536 B   | +9.2% |
-| + gbmap, gc, pre-erase |  | 36276 B | +11.5% |
+| build      | v2.11    | v3-alpha  |       | v3 now    |       |
+|------------|---------:|----------:|------:|----------:|------:|
+| default    | 15752 B  | 32548 B   | 2.07x | 40848 B   | 2.59x |
+| read-only  | 5792 B   | 9976 B    | 1.72x | 11400 B   | 1.97x |
+| + gbmap    |          | 35536 B   | +9.2% | 49368 B   | +20.9% |
+| + gbmap, gc, pre-erase |  | 36276 B | +11.5% | 50244 B | +23.0% |
+| + `LFS3_THREADSAFE` |  |           |       | 42180 B   | +3.3% |
+
+Most of the growth since v3-alpha is the work of this fork's issues:
+settling metadata after a power loss, retrying failed reads, the degraded
+and salvage mounts, and, with the gbmap, bad-block tracking and repairing
+checks, which is why the gbmap builds grew most.
 
 The maintainer's own measurements, from a different build, show the same
 ratio and also cover stack: 1440 bytes for v2 and 2136 bytes for v3 by
@@ -2035,6 +2171,8 @@ bytes, and files of _N_ bytes:
 | B-tree node                   | one erase each time a node fills and is relocated         |
 | allocation, lookahead         | a full traversal every `8*lookahead_size` blocks         |
 | allocation, gbmap             | _O(log_b n)_ per block, a full traversal per rebuild     |
+| repairing check               | per suspect block moved, an erase and a copy, and a test erase of the old block |
+| `LFS3_M_SALVAGE`              | an erase and a copy per damaged pair, a pass over the entries per dropped pair, and a gbmap rebuild |
 
 Erases of data blocks and B-tree nodes can be moved out of the way by
 pre-erasing. Erases from mdir compactions can't, but can be done early by
@@ -2063,9 +2201,9 @@ The setup:
    completion "on the pad", before the log is opened.
 
 The v3 runs are `bench_wlog_fresh` in `benches/bench_wlog.toml`, which
-`make bench` runs; REQUIREMENTS.md, Appendix B.1, has every permutation,
-with and without the gbmap and pre-erasing, and how the v2 figures were
-measured.
+`make bench` runs, measured on `v3-integration` at `9a2148ff`;
+REQUIREMENTS.md, Appendix B.1, has every permutation, with and without the
+gbmap and pre-erasing, and how the v2 figures were measured.
 
 At 1 row per second:
 
@@ -2074,10 +2212,10 @@ At 1 row per second:
 | v2.11.3, `prog_size=256`               | 62.7       | 96.6 ms      |
 | v2.11.3, `prog_size=16`                | 58.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 58.7       | 96.6 ms      |
-| v3, `prog_size=256`                    | 10.6       | 184.6 ms     |
-| v3, `prog_size=16`                     | 5.7        | 93.9 ms      |
+| v3, `prog_size=256`                    | 10.5       | 184.5 ms     |
+| v3, `prog_size=16`                     | 5.8        | 49.0 ms      |
 | v3, `prog_size=1`                      | 3.5        | 184.6 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 2.9        | 50.2 ms      |
+| v3, `prog_size=1`, gbmap, pre-erased   | 2.8        | 50.6 ms      |
 
 At 50 rows per second:
 
@@ -2087,9 +2225,9 @@ At 50 rows per second:
 | v2.11.3, `prog_size=16`                | 76.7       | 96.6 ms      |
 | v2.11.3, `prog_size=1`                 | 76.7       | 96.6 ms      |
 | v3, `prog_size=256`                    | 48.5       | 185.9 ms     |
-| v3, `prog_size=16`                     | 27.8       | 145.3 ms     |
+| v3, `prog_size=16`                     | 27.8       | 144.9 ms     |
 | v3, `prog_size=1`                      | 23.1       | 184.6 ms     |
-| v3, `prog_size=1`, gbmap, pre-erased   | 3.4        | 52.0 ms      |
+| v3, `prog_size=1`, gbmap, pre-erased   | 3.4        | 50.2 ms      |
 
 Every run read back every row intact.
 
@@ -2103,8 +2241,9 @@ erases per minute), because v2 copies a partially filled tail block whenever
 it extends a file, whatever the program size.
 
 v3 doesn't copy the tail. To see where its erases come from, we instrumented
-a copy of the driver to attribute every erase and every programmed byte to
-the kind of block it went to:
+a copy of the driver, at `32eb36e7`, to attribute every erase and every
+programmed byte to the kind of block it went to. The dirty marks and
+settling added since move these figures by at most 0.3 erases a minute:
 
 | per minute                 | mdir erases | mdir bytes | B-tree erases | B-tree bytes | data erases | data bytes |
 |----------------------------|------------:|-----------:|--------------:|-------------:|------------:|-----------:|
@@ -2162,7 +2301,7 @@ data needs.
 
 Pre-erasing removes the data and B-tree erases from the log's path entirely:
 gc on the pad erased all 2023 free blocks, which took 93 simulated seconds.
-What remains, 2.9 and 3.4 erases per minute, is mdir compaction, the one erase
+What remains, 2.8 and 3.4 erases per minute, is mdir compaction, the one erase
 pre-erasing can't remove. The longest call drops from 185 ms, four erases in
 one sync, to 50 ms, one erase and some programs. Pre-erasing moves erases
 rather than adding them, as long as erased blocks are used while the gbmap
@@ -2174,7 +2313,7 @@ So `prog_size` matters a lot more to v3 than it did to v2. v2's sync cost was
 dominated by a block copy that didn't depend on the program size. v3 gets rid
 of the block copy, and what's left are small commits whose size is rounded up
 to `prog_size`. Going from `prog_size=1` to 16 to 256, the log's erases go
-from 3.5 to 5.7 to 10.6 a minute at 1 row per second, and from 23.1 to 27.8
+from 3.5 to 5.8 to 10.5 a minute at 1 row per second, and from 23.1 to 27.8
 to 48.5 at 50, while v2's stay between 59 and 81.
 
 On NOR flash, the page size is usually not the program size. A page is the
@@ -2239,8 +2378,12 @@ v3 is not finished. Here's where the remaining pieces stand, according to the
 maintainer ([#1111], [#1114]):
 
 1. **Bad-block tracking** in the gbmap, described above, and one of the two
-   things blocking release. Blocks that fail reads are listed as suspect in
-   RAM only; keeping them across mounts would be a format addition.
+   things blocking release. It's implemented on the fork this document was
+   written against, with `BMBAD`, which the format already reserved; the
+   maintainer's open questions about its API and read-only contexts are
+   answered there too. Blocks that fail reads are listed as suspect in RAM
+   only; keeping them across mounts would be a format addition, which the
+   fork decided against.
 
 2. **This document and SPEC.md.** The other blocker, followed by a period of
    review, since "it would be foolish to commit to a disk format without at
@@ -2305,6 +2448,13 @@ v3 brings a lot of new vocabulary. In rough order of appearance:
 | known window | the range of the gbmap that can be trusted                            |
 | stickynote  | a file that has been created but not yet synced                       |
 | zombie      | an open handle whose file has been removed                             |
+| dirty mark  | a `DIRTY` tag on a file whose write session is open                    |
+| settle      | copy a metadata pair into its other block from bytes that pass their checksums |
+| settled copy | the result, marked with a generation in its last checksum tag         |
+| torn handle | a file handle that a failed write left matching no version of its file |
+| suspect block | a block that failed a read or a check, which doesn't prove it bad    |
+| degraded mount | a read-only mount that serves everything outside the damage         |
+| salvage     | a mount that rewrites or drops damaged metadata pairs                  |
 
 ## Conclusion
 

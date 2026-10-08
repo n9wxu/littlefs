@@ -17,7 +17,8 @@ power is lost the filesystem will fall back to the last known good state.
 
 **Dynamic wear leveling** - littlefs is designed with flash in mind, and
 provides wear leveling over dynamic blocks. Additionally, littlefs can
-detect bad blocks and work around them.
+detect bad blocks and work around them, and with the optional global block
+map, remember them.
 
 **Bounded RAM/ROM** - littlefs is designed to work with a small amount of
 memory. RAM usage is strictly bounded, which means RAM consumption does not
@@ -32,6 +33,7 @@ main runs. The program can be interrupted at any time without losing track
 of how many times it has been booted and without corrupting the filesystem:
 
 ``` c
+#include <stdio.h>
 #include "lfs3.h"
 
 // variables used by the filesystem
@@ -59,6 +61,9 @@ const struct lfs3_cfg cfg = {
     .shrub_size = 1024,
     .fragment_size = 256,
     .crystal_thresh = 256,
+
+    // read failing blocks again before giving up, see lfs3.h
+    .ck_retries = 3,
 };
 
 // entry point
@@ -90,14 +95,16 @@ int main(void) {
     lfs3_unmount(&lfs3);
 
     // print the boot count
-    printf("boot_count: %d\n", boot_count);
+    printf("boot_count: %lu\n", (unsigned long)boot_count);
 }
 ```
 
 ## Usage
 
 Detailed documentation (or at least as much detail as is currently available)
-can be found in the comments in [lfs.h](lfs.h).
+can be found in the comments in [lfs3.h](lfs3.h). This is littlefs v3, whose
+API and on-disk format are not compatible with v2 and are not frozen yet:
+images are marked v0.0, which a released v3 will refuse.
 
 littlefs takes in a configuration structure that defines how the filesystem
 operates. The configuration struct provides the filesystem with the block
@@ -105,10 +112,12 @@ device operations and dimensions, tweakable parameters that tradeoff memory
 usage for performance, and optional static buffers if the user wants to avoid
 dynamic memory.
 
-The state of the littlefs is stored in the `lfs_t` type which is left up
+The state of the littlefs is stored in the `lfs3_t` type which is left up
 to the user to allocate, allowing multiple filesystems to be in use
-simultaneously. With the `lfs_t` and configuration struct, a user can
-format a block device or mount the filesystem.
+simultaneously. With the `lfs3_t` and configuration struct, a user can
+format a block device or mount the filesystem. To share one filesystem
+between threads, build with `LFS3_THREADSAFE` and provide the `lock` and
+`unlock` callbacks.
 
 Once mounted, the littlefs provides a full set of POSIX-like file and
 directory functions, with the deviation that the allocation of filesystem
@@ -124,16 +133,19 @@ Littlefs is written in C, and specifically should compile with any compiler
 that conforms to the `C99` standard.
 
 All littlefs calls have the potential to return a negative error code. The
-errors can be either one of those found in the `enum lfs_error` in
-[lfs.h](lfs.h), or an error returned by the user's block device operations.
+errors can be either one of those found in the `enum lfs3_err` in
+[lfs3.h](lfs3.h), or an error returned by the user's block device operations.
 What each code means, what firmware should do about it, and the state each
 call leaves behind, are in [ERRORS.md](ERRORS.md).
 
-In the configuration struct, the `prog` and `erase` function provided by the
-user may return a `LFS_ERR_CORRUPT` error if the implementation already can
-detect corrupt blocks. However, the wear leveling does not depend on the return
-code of these functions, instead all data is read back and checked for
-integrity.
+In the configuration struct, the `prog` and `erase` functions provided by the
+user may return `LFS3_ERR_CORRUPT` if the implementation can detect a bad
+block; littlefs then writes elsewhere, and with the gbmap (`LFS3_GBMAP`)
+remembers the block as bad. `read` may return `LFS3_ERR_CORRUPT` for data it
+can't read correctly, an uncorrectable ECC error for example, and
+`LFS3_ERR_IO` for a failure that may pass, such as a low supply. littlefs
+checksums everything it writes; with `LFS3_M_CKPROGS` it also reads every
+program back.
 
 If your storage caches writes, make sure that the provided `sync` function
 flushes all the data to memory and ensures that the next read fetches the data
@@ -200,15 +212,26 @@ More details on how littlefs works can be found in [DESIGN.md](DESIGN.md) and
   and the state each call leaves after an error. Useful for firmware that
   runs unattended.
 
+- [REQUIREMENTS.md](REQUIREMENTS.md) - What littlefs v3 is required to do,
+  each requirement with the test that checks it and its status.
+
+- [TEST_PLAN.md](TEST_PLAN.md) - How v3 is tested, including recovery from
+  every kind of flash failure, and what is left to test.
+
 ## Testing
 
 The littlefs comes with a test suite designed to run on a PC using the
-[emulated block device](bd/lfs_testbd.h) found in the `bd` directory.
-The tests assume a Linux environment and can be started with make:
+[emulated block device](bd/lfs3_emubd.h) found in the `bd` directory, which
+can also inject power loss, bad blocks and device errors. The tests can be
+started with make:
 
 ``` bash
 make test
 ```
+
+[TEST_PLAN.md](TEST_PLAN.md) lists the other builds and checks, such as
+`make test-sanitize`, `make test-threadsafe` and `make test-errs`, and how
+CI runs them.
 
 ## License
 

@@ -2,7 +2,8 @@
 
 This is the technical specification of the little filesystem v3 with
 on-disk version v0.0, the experimental version written by the v3-alpha
-driver. This document covers the technical details of how littlefs is
+driver and by the fork's `v3-integration` branch, which adds the `DIRTY`
+tag, settled copies and their wcompat flag, and writes `BMBAD`. This document covers the technical details of how littlefs is
 stored on disk for introspection and tooling. This document assumes you are
 familiar with the design of littlefs, for more info on how littlefs works
 check out [DESIGN.md](DESIGN.md).
@@ -668,19 +669,34 @@ block would program bytes twice.
 To ensure we only ever program erased bytes, each commit can contain an
 erased-state checksum, an [`ECKSUM`](#0x3200-lfs3_tag_ecksum) tag with a
 CRC-32C of the first `cksize` bytes after the commit, taken when the block
-was erased. `cksize` is the writer's `prog_size`.
+was erased.
+
+`cksize` must cover the first program the writer can make there: a power
+loss can leave the first `prog_size` bytes of a program erased and program
+bytes after them. The v0.0 driver's first program into an erased region is
+a flush of its program cache, so it writes `cksize` as `pcache_size`, at
+least 11 (the largest tag it programs on its own), rounded up to
+`prog_size` and clamped to the end of the block. Drivers before
+`57493587` wrote `prog_size`. The encoding didn't change, since `cksize`
+is stored.
 
 A writer may only append to an rbyd if its last commit has an `ECKSUM`,
 and:
 
-1. The end of the commit, `eoff`, is aligned to the current `prog_size`.
+1. The end of the commit, `eoff`, is before `block_size` and aligned to
+   the current `prog_size`.
 
-2. `eoff + cksize < block_size`.
+2. `eoff + cksize <= block_size`.
 
-3. The first byte after the commit does not pass the valid-bit check, that
+3. `cksize` covers the writer's own first program at `eoff`. The v0.0
+   driver requires it to be at least the `cksize` it would write itself, so
+   a narrower checksum, from an older image or a smaller `pcache_size`,
+   costs a compaction instead of being trusted.
+
+4. The first byte after the commit does not pass the valid-bit check, that
    is, `(byte >> 7) ^ perturb != parity(canonical checksum)`.
 
-4. The CRC-32C of the `cksize` bytes at `eoff` matches the `ECKSUM`.
+5. The CRC-32C of the `cksize` bytes at `eoff` matches the `ECKSUM`.
 
 If any of these fail, we must assume a commit was attempted but failed due
 to power-loss, and the rbyd must be compacted into a new block before it
@@ -688,13 +704,9 @@ can be written again. Readers that don't write can ignore erased-state
 checksums entirely.
 
 Writers only write an `ECKSUM` when there is room for another commit.
-Commits that fill their block, ending exactly at `block_size`, omit it.
-
-Note the writer emits an `ECKSUM` whenever the next commit would start
-before `block_size`, but the reader requires `eoff + cksize < block_size`.
-A commit that ends exactly one program unit before the end of the block
-gets an `ECKSUM` that a later fetch will reject. This is harmless, it only
-wastes the last program unit of the block.
+Commits that fill their block, ending exactly at `block_size`, omit it. A
+checksum clamped to the end of the block ends exactly at `block_size`,
+which rule 2 accepts.
 
 ### Fetching an rbyd
 
@@ -984,7 +996,14 @@ block.
 To find the active block, a reader:
 
 1. Reads the revision counts of both blocks. A block whose revision count
-   can't be read is treated as older.
+   can't be read must not be treated as older, since that would silently
+   roll the pair back: the reader reads again, and if the read keeps
+   failing, the pair is damaged. The v0.0 driver reads again up to
+   `ck_retries` times, the same for a failed read of the log it fetches,
+   and only passes over a block that can't hold the newer state: the
+   mroot's other block while mounted, and a block it failed to write as
+   the pair's next state. A read-only mount may take what reads, and
+   reports the filesystem as degraded.
 
 2. Fetches the block with the more recent revision count, compared with
    sequence arithmetic, first. If the revision counts are equal, the pair
@@ -1738,9 +1757,9 @@ So types `0x00-0x7f` are stored as [`UATTR`](#0x06xx-lfs3_tag_uattr) tags
 [`SATTR`](#0x07xx-lfs3_tag_sattr) tags `0x0700-0x077f`. The type's top bit
 moves to bit 8 because bit 7 of every tag is reserved.
 
-The data is the attribute's value, any number of bytes. Note the driver
-does not enforce a limit, but an attribute must fit in a metadata
-commit (see [Open points](#open-points)).
+The data is the attribute's value, any number of bytes. An attribute must
+fit in a metadata block with its entry; the driver refuses one that
+doesn't with `LFS3_ERR_NOSPC` (see [Open points](#open-points)).
 
 The attribute types are divided into ranges:
 
@@ -1943,6 +1962,11 @@ from the gbmap, where a bad block no longer referenced looks free, and
 must keep `BMBAD` ranges when it repopulates the gbmap, even for a block
 it finds still referenced. A writer may clear one (`lfs3_fs_mkgood`).
 
+When more blocks fail between two allocator checkpoints than the driver
+can hold in RAM, it merges the two closest runs of failed blocks, and the
+good blocks between them are marked with them, rather than forget a failed
+block.
+
 Marks are advisory: a lost mark only costs another failed erase or prog,
 so `BMBAD` comes with no compat flag. gbmap drivers older than the bad-block
 tracking on `v3-integration` (4f6d5ef8) treat `BMBAD` as in use in the
@@ -1958,12 +1982,16 @@ bytes still match the checksum, and the writer perturbs revision counts
 (`LFS3_M_REVPERTURB`, see [Revision counts](#revision-counts)), which
 guarantees that writing to the block invalidates the checksum.
 
-The driver only allocates `BMERASED` blocks when built with pre-erase
+The driver trusts `BMERASED` checksums only when built with pre-erase
 support (`LFS3_PREERASE`) and mounted with `LFS3_M_REVPERTURB`. It then
 uses a block whose checksum still matches without erasing it, skips a block
 whose checksum no longer matches, and erases a block without a checksum.
-Otherwise it treats `BMERASED` like `BMINUSE` until the gbmap is
-repopulated.
+Otherwise it treats `BMERASED` blocks as free and erases them before use;
+it keeps their checksum until it claims the block, so the claim is
+committed to the gbmap before any data is programmed. The checksum must be
+as wide as an rbyd's `ECKSUM` (see
+[Erased-state checksums](#erased-state-checksums)); a narrower one makes
+the driver erase the block again.
 
 Not every entry in the gbmap is current. The gbmap's gstate includes a
 window: only blocks from `window` to `window+known-1`, modulo the block
@@ -2155,17 +2183,15 @@ with other drivers, and notes where the v0.0 driver differs.
    any wcompat flag it doesn't understand, but may mount it read-only. The
    v0.0 driver requires the wcompat flags to equal its own set exactly,
    except for `GBMAP`, which it accepts either way when built with gbmap
-   support, and `SETTLED`, which it accepts either way. On a mismatch it refuses to mount read-write, but can still
-   mount read-only.
+   support, and `SETTLED`, which it accepts either way. On a mismatch it
+   refuses to mount read-write, but can still mount read-only.
 
 4. **ocompat flags** - May be ignored. The v0.0 driver never reads them.
 
 5. **Config** - A driver must refuse to mount a filesystem whose
    active mroot contains a config tag (`0x0100-0x01ff` at rid -1) it doesn't
-   understand. The v0.0 driver only looks for unknown config tags at
-   `0x013b` and above, so unknown config tags in `0x0100-0x0130`, `0x0132`,
-   and `0x0133` are silently ignored. This is a known gap, see
-   [Open points](#open-points).
+   understand. The v0.0 driver refuses every config tag in that range but
+   the ones listed here, including those with bit 7 set.
 
    A driver must also refuse a filesystem whose block size differs from its
    configured block size, whose block count is larger than its configured
@@ -2647,9 +2673,8 @@ Bptr fields:
 
 5. **Cksum (32-bits)** - CRC-32C of the first `cksize` bytes of the block.
 
-`scripts/dbgtag.py` marks bit 2 of `BLOCK` as an `e` field. The driver
-doesn't define it, writes it as 0, and would not recognize a `BLOCK` tag
-with it set.
+Bit 2 of `BLOCK` is reserved: the driver writes it as 0 and would not
+recognize a `BLOCK` tag with it set.
 
 ---
 #### `0x0420` LFS3_TAG_DID
@@ -3003,15 +3028,19 @@ on disk:
 ## Open points
 
 The v3 on-disk format is still being worked on, and this specification
-describes the v0.0 format as implemented by the v3-alpha driver. The
-following are places where the format is unfinished, marked as reserved or
-TODO in the code, or where the driver and this document leave a question
-open.
+describes the v0.0 format as implemented by the driver on the fork's
+`v3-integration` branch. The following are places where the format is
+unfinished, marked as reserved or TODO in the code, or where the driver and
+this document leave a question open.
 
 1. **The version is not frozen.** `LFS3_DISK_VERSION` is `0x00000000`, and
    every v3-alpha image claims v0.0, so incompatible alpha revisions can't
    be told apart on disk. The maintainer has said the format may still
    change before release, and that the released driver will reject v0.0.
+   The additions of this fork, `DIRTY`, the settled field of `CKSUM`, and
+   the `SETTLED` wcompat flag, are either ignorable or guarded, so other
+   v0.0 drivers read these images and refuse only to write ones that hold
+   settled copies.
 
 2. **Planned features.** Metadata redundancy, data redundancy and
    deduplication, and 16-bit and 64-bit variants are planned or being
@@ -3019,16 +3048,14 @@ open.
    which the maintainer lists as a release blocker, uses `BMBAD` without a
    format change. Blocks that only fail reads are kept in RAM as suspect
    and not written to disk; keeping them across mounts would need a new
-   gbmap state and a wcompat flag.
+   gbmap state and a wcompat flag, which this fork decided against.
 
 3. **Redundancy bits.** The two low bits of `MAGIC`, `GBMAPDELTA`, and
    most struct tags are reserved for redundancy (`lfs3_tag_redund` exists in
-   the driver but is unused).
-   `MAGIC`, `MROOT`, and `MDIR` are written with `01`, everything else with
-   `00`. The driver matches these tags exactly and reads exactly two blocks
-   from an mptr, while the debug scripts ignore the redundancy bits and read
-   any number of blocks. How readers should treat other values is not
-   defined yet.
+   the driver but is unused). `MAGIC`, `MROOT`, and `MDIR` are written with
+   `01`, everything else with `00`. The driver, and the debug scripts,
+   match these tags exactly and read exactly two blocks from an mptr. How
+   readers should treat other values is not defined yet.
 
 4. **Reserved representations.** The `MSPROUT`, `MSHRUB`, `BMOSS`, and
    `BSPROUT` rcompat flags name representations that are not implemented,
@@ -3036,49 +3063,35 @@ open.
 
 5. **Reserved tags and bits.** The `NOTE` tag is reserved and never
    written. The `10` tag mode is unused. Bit 7 of every tag is reserved for
-   extending the subtype. `scripts/dbgtag.py` marks bit 2 of `BLOCK` as an
-   `e` field that the driver doesn't define.
+   extending the subtype.
 
-6. **Unknown config tags.** The driver only rejects unknown config tags at
-   `0x013b` and above. Unknown config tags at `0x0100-0x0130`, `0x0132`,
-   and `0x0133` are silently accepted, which breaks rule 5 of
-   [Compatibility](#compatibility).
-
-7. **rcompat matching.** The compat flags are described as "must
+6. **rcompat matching.** The compat flags are described as "must
    understand", but the driver requires its rcompat flags, and its wcompat
-   flags apart from `GBMAP`, to match exactly, so a filesystem that doesn't
-   set the flag of a feature the driver supports (`MTREE`, say) is still
-   rejected. It's not clear yet whether a driver may accept a subset of its
-   flags.
+   flags apart from `GBMAP` and `SETTLED`, to match exactly, so a
+   filesystem that doesn't set the flag of a feature the driver supports
+   (`MTREE`, say) is still rejected. It's not clear yet whether a driver may
+   accept a subset of its flags.
 
-8. **Version width.** The version macros allow 16-bit major and minor
-   versions, but `VERSION` stores 8 bits of each. `scripts/dbglfs3.py`
-   decodes `VERSION` as two leb128s instead of two bytes. The two agree for
-   versions below 128.
+7. **Version width.** The version macros allow 16-bit major and minor
+   versions, but `VERSION` stores 8 bits of each.
 
-9. **Custom attribute ranges.** `lfs3.h` reserves types `0x80-0xff` for
+8. **Custom attribute ranges.** `lfs3.h` reserves types `0x80-0xff` for
    standard attributes, while the v3-alpha announcement reserves
    `0x80-0xbf` and encourages `0xc0-0xff` for system attributes. No
    standard attributes are defined.
 
-10. **Limits.** The format puts no limit on names or attribute sizes beyond
-    `NAMELIMIT`, but an entry and its attributes must fit in a metadata
-    pair after compaction. The driver doesn't enforce this, and very large
-    names or attributes, relative to the block size, can trip an assertion
-    in the driver.
+9. **Limits.** The format puts no limit on names or attribute sizes beyond
+   `NAMELIMIT`, but an entry and its attributes must fit in a metadata
+   pair after compaction. The v0.0 driver caps names at
+   `block_size/2 - 124` bytes and refuses an attribute that doesn't fit
+   with `LFS3_ERR_NOSPC`; another driver may choose other bounds.
 
-11. **Unchecked bptrs.** The driver doesn't check that a bptr's
+10. **Unchecked bptrs.** The driver doesn't check that a bptr's
     `off + size <= cksize <= block_size` when reading it.
 
-12. **Erased-state boundary.** Writers emit an `ECKSUM` whenever another
-    commit could start before the end of the block, but readers require
-    `eoff + cksize < block_size`, so a commit ending exactly one program
-    unit before the end of the block gets an `ECKSUM` that is rejected
-    later. This is harmless, but one of the two should probably change.
-
-13. **gbmap at format.** Format places the initial gbmap root in the first
+11. **gbmap at format.** Format places the initial gbmap root in the first
     block from 2 on that erases and programs, marking any it skips bad. A
     block device can refuse to erase a block it knows is bad.
 
-14. **Empty `BMERASED`.** An empty `BMERASED` payload is defined as
+12. **Empty `BMERASED`.** An empty `BMERASED` payload is defined as
     "erased, checksum unknown", but the driver never writes one.

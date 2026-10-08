@@ -3,13 +3,13 @@
 This document lists what littlefs v3 is required to do, stated so that each
 requirement can be checked. For every requirement it names the observable
 that decides it, the condition that passes, the condition that fails, and the
-test that checks it. It also records, for the v3-alpha code, whether that test
-exists and whether the code meets the requirement.
+test that checks it. It also records, for the fork's `v3-integration` branch,
+whether that test exists and whether the code meets the requirement.
 
 This is a draft. It does not describe how littlefs works. For that, see
-[DESIGN.md](DESIGN.md) and [SPEC.md](SPEC.md). Both still describe v2 at the
-time of writing, and their v3 versions are release blockers (LFS3-DOC-01,
-LFS3-DOC-02).
+[DESIGN.md](DESIGN.md) and [SPEC.md](SPEC.md), which describe v3, and
+[ERRORS.md](ERRORS.md) for what to do about each error. [TEST_PLAN.md](TEST_PLAN.md)
+plans the tests that check these requirements.
 
 ```
    | | |     .---._____
@@ -72,37 +72,42 @@ It has three uses:
    intent is what they want before the on-disk format is frozen for v3-beta
    (#1114, 2026-04-22).
 
-2. Status. Each requirement records whether the v3-alpha code meets it and
-   whether any test checks it.
+2. Status. Each requirement records whether the code on `v3-integration`
+   meets it and whether any test checks it.
 
 3. Test plan. Section 9 lists every requirement that needs a new test.
 
 ## 2. Scope
 
-- **Code.** v3-alpha at commit `b10efaa` (2026-03-05): `lfs3.c`, `lfs3.h`,
-  `lfs3_util.h`, `lfs3_util.c`, `bd/`, `runners/`, `scripts/` and `tests/`.
-  Line numbers written `lfs3.c:N` or `lfs3.h:N` refer to `b10efaa`. The
-  requirements were checked against the `v3-fixes` branch, which is
-  `b10efaa` plus the fixes F-1 to F-8 of Appendix A. Its line numbers match
-  `b10efaa` closely. Fixes for many of the other defects exist on further
-  branches of the fork (`v3-fix-alloc`, `v3-fix-api`, `v3-fix-files`,
-  `v3-fix-parity`, `v3-ci`); Appendix A names them. None is upstream yet,
-  and the Status of every requirement still describes `b10efaa`.
+- **Code.** The fork's `v3-integration` branch at `9a2148ff` (2026-10-05):
+  `lfs3.c`, `lfs3.h`, `lfs3_util.h`, `lfs3_util.c`, `bd/`, `runners/`,
+  `scripts/`, `tests/`, `benches/` and `.github/workflows/`. It is v3-alpha
+  `b10efaa` (2026-03-05), where this document began, plus the fixes, tests
+  and features of the fork's issues #1 to #25. None of it is upstream yet.
+  Every Status describes `v3-integration`, and says what held at `b10efaa`
+  where that differs. Line numbers written `lfs3.c:N` or `lfs3.h:N` refer
+  to `b10efaa`; the code has moved since. Commits are cited by their hash on
+  `v3-integration`, and `scripts/reqstatus.py -c v3-integration` checks the
+  ones Status fields cite.
 
 - **On-disk format.** Disk version 0.0 (`LFS3_DISK_VERSION 0x00000000`,
   `lfs3.h:26`), as written by `b10efaa`. Version 0.0 marks the format as
   experimental. PR #1111 says the released v3 will refuse to mount it
   (LFS3-MOUNT-24).
 
-- **API.** The 50 functions declared in `lfs3.h` at `b10efaa`, and the four
+- **API.** The 55 functions declared in `lfs3.h` on `v3-integration` (the
+  50 of `b10efaa`, and `lfs3_fs_health`, `lfs3_fs_mkbad`, `lfs3_fs_mkgood`,
+  `lfs3_fs_nextbad` and `lfs3_fs_nextsuspect`), and the four
   exported helpers declared in `lfs3_util.h` (`lfs3_crc32c`,
   `lfs3_crc32c_mul`, `lfs3_toleb128`, `lfs3_fromleb128`). Appendix C maps
   each function, each `struct lfs3_cfg` field and each compile-time option to
   the requirements that cover it.
 
-- **Planned work.** Bad-block tracking (release blocker #1) is included as a
-  planned requirement set (6.5). DESIGN.md and SPEC.md (release blocker #2)
-  are included as documentation requirements.
+- **Planned work.** Bad-block tracking (release blocker #1) was a planned
+  requirement set (6.5); `v3-integration` implements it with the gbmap.
+  DESIGN.md and SPEC.md (release blocker #2) are included as documentation
+  requirements. Error handling (6.23) and graceful degradation (6.24) were
+  added for unattended systems.
 
 - **Not in scope.**
   - littlefs v2, and migration from v2 (a stretch goal in #1111).
@@ -128,7 +133,7 @@ littlefs shall <one behaviour>.
 - Pass:        the exact condition that passes
 - Fail:        the exact condition that fails
 - Verified by: existing test cases, or NEW: the test that is needed
-- Status:      state at b10efaa
+- Status:      state on v3-integration
 - When:        how often the check must run
 ```
 
@@ -154,23 +159,34 @@ Every Source field starts with one of three levels:
 
 ### 3.2 Status values
 
-Status describes `b10efaa` in the default build (`make test`, which runs
-`-Pnone` and `-Plinear`), unless the note says otherwise.
+Status describes `v3-integration` at `9a2148ff`, in the builds and schedules
+the Pass condition names. CI runs B-DEF, B-BIG and B-YGB, with `-Pnone`
+and `-Plinear`, on every push, so a case compiled out of B-DEF but named in
+B-BIG counts. A check that only a nightly job runs counts once that job has
+run; at `9a2148ff` the nightly workflow has not yet run on GitHub. Each
+Status starts with one of these words, which `scripts/reqstatus.py` counts
+(section 7):
 
-- **Tested.** An existing case checks the Pass condition and runs in the
-  default build.
-- **Partly tested.** A case checks part of the Pass condition, or the case
-  that checks it is compiled out of the default build, or only some of the
-  required environments run it. The note says which part is missing.
-- **Untested.** No case checks the Pass condition. The code may still meet it.
-- **Not implemented (planned).** The maintainer plans the feature and the code
-  does not have it yet.
+- **Tested.** An existing case checks the Pass condition in the builds it
+  names, and passes. "Tested on v3-integration (hash)" names the commits
+  that added the test or the fix; a bare "Tested." held at `b10efaa`
+  already. "Tested by review", "by build" or "by comparison" names a Pass
+  condition that a reader, a compiler or a size comparison decides.
+- **Partly tested.** A case checks part of the Pass condition, or only some
+  of the required builds, schedules or geometries run it. The note says
+  which part is missing.
+- **Untested.** No case checks the Pass condition. The code may still meet
+  it, and the note says when a fix exists without a test.
+- **Not implemented.** The feature or document does not exist yet.
+- **Open question (Qn).** The intended behaviour waits on a decision in
+  section 8.
 - **Known defect (ref).** The code does not meet the requirement. The ref
   points to Appendix A. A defect is listed only when a probe program or a
   test run reproduced it, the code establishes it without doubt, or the
-  maintainer records it as a known bug; the register says which. "Fixed on
-  v3-fixes" means our branch fixes it and the fix has not yet been offered
-  upstream.
+  maintainer records it as a known bug; the register says which.
+
+A note such as "Known defect at `b10efaa`" records what the requirement
+found before the fix; the first word gives the state now.
 
 A requirement whose status is not Tested is not a claim that the code is
 wrong. It is a claim that nothing shows it is right.
@@ -189,6 +205,8 @@ wrong. It is a claim that nothing shows it is right.
 `suite::case` names the case `test_<suite>_<case>` in `tests/test_<suite>.toml`.
 For example `dread::seek` is `test_dread_seek` in `tests/test_dread.toml`. A
 `*` matches any suffix. **NEW:** marks a test that does not exist yet.
+NEW-n refers to the specification of that test in TEST_PLAN.md section 6,
+which also names the case that implements it.
 
 ## 4. Definitions
 
@@ -319,7 +337,20 @@ At `b10efaa` there are 25 suites, 842 cases and 880,240 permutations, of
 which 618,712 run in the default build under `-Pnone`. 64 cases are
 reentrant (run under power loss). A baseline run of the default build on
 macOS/clang passed 634,435 of 634,616 runs. The 181 failures were two test
-bugs that are fixed on v3-fixes (F-4, F-6).
+bugs, F-4 and F-6.
+
+On `v3-integration` there are 32 suites and 1,029 cases, 91 of them
+reentrant. At `3aa6ae9f` (the last code change before `9a2148ff` other
+than the lock of LFS3-THR-01) every permutation passes: 668,217 in B-DEF,
+662,245 in B-YGB and 1,135,378 in B-BIG, and 668,220 in B-TS
+(`make test-threadsafe`). emubd gained fault injection for the faults of
+5.10 (`lfs3_emubd_mkioerror`, `lfs3_emubd_mktransient`,
+`lfs3_emubd_mkbadsync`, the TORNTAIL behaviour), a prog-once check
+(`CKPROGONCE`), per-block metastable state (`lfs3_emubd_metastable`), and
+`lfs3_emubd_setpowercycles`; `bd/lfs3_sparsebd.c` backs only the blocks
+written, for very large devices. The runner gained death tests, allocator
+hooks that count and fail `lfs3_malloc`, and the error recording of
+LFS3-ERR-01.
 
 ### 5.2 Build configurations
 
@@ -370,8 +401,11 @@ Selected with `-DPOWERLOSS_BEHAVIOR=n` (`bd/lfs3_emubd.h:45-51`).
 | 2 | MOSTBITS | is applied, then one bit in the first `prog_size` bytes (or, for an erase, anywhere) flips |
 | 3 | OOO | every block written since the last `sync` reverts, except the one being written |
 | 4 | METASTABLE | is applied, then one bit that it wrote (for an erase, one bit of the block) becomes metastable and reads of it return random values until the block is erased, as a half-programmed cell does; later progs elsewhere in the block don't settle it. Bits outside the interrupted operation never change: a flip there is bit rot (F12 to F14), not power loss |
+| 5 | TORNTAIL | prog: the first `prog_size` bytes stay erased, a random-length run of the bytes after them is programmed, and one bit in that run flips; a prog of only `prog_size` bytes is lost whole. Erases are atomic |
 
 **PLB-TORN** means the set {0, 1, 2, 3}. **PLB-ALL** means {0, 1, 2, 3, 4}.
+Cases that test torn programs beyond the first prog unit (LFS3-PRE-09) add
+5, and every `powerloss::*` case runs with it.
 
 ### 5.6 emubd bad-block behaviours
 
@@ -423,11 +457,12 @@ named build. A case that the named build compiles out does not pass.
 
 ### 5.10 Faults emubd cannot inject
 
-emubd cannot at present make `sync` fail, return an error other than
-`LFS3_ERR_CORRUPT`, fail a read once and then succeed, disturb bytes of a
-prog outside its first `prog_size` bytes, disturb neighbouring blocks, or
-fail only some offsets of a block. Requirements that depend on these faults
-say "NEW: emubd extension".
+At `b10efaa` emubd could not make `sync` fail, return an error other than
+`LFS3_ERR_CORRUPT`, fail a read once and then succeed, or disturb bytes of a
+prog outside its first `prog_size` bytes. `v3-integration` adds each of
+these (5.1). emubd still cannot disturb neighbouring blocks, fail only some
+offsets of a block, or tear an erase. Requirements that depend on these
+faults say "NEW: emubd extension".
 
 ## 6. Requirements
 
@@ -442,8 +477,10 @@ littlefs shall pass the default test suite on a 32-bit little-endian target.
 - **Measure:** `test_runner` exit status under qemu-arm.
 - **Pass:** `make test` (B-DEF, `-Pnone -Plinear`) exits 0 on A-32LE.
 - **Fail:** the build fails, or any permutation fails.
-- **Verified by:** all suites; NEW: CI job (LFS3-CI-02).
-- **Status:** Untested (no v3 CI job exists).
+- **Verified by:** all suites, through the CI job `test` with `arch: thumb`
+  (qemu-arm).
+- **Status:** Tested on v3-integration (162b05f7, 211e4666): the `test` job
+  passed the default suite on thumb in CI run 36985477685 (issue #17).
 - **When:** every CI run.
 
 #### LFS3-GEN-02
@@ -485,14 +522,13 @@ suite.
 - **Verified by:** `make test-sanitize`, which also runs `-Plinear`: job
   `test-sanitize` in `.github/workflows/test.yml` for B-DEF, and job
   `test-sanitize-biggest` in `.github/workflows/nightly.yml` for B-BIG.
-- **Status:** Tested on `v3-integration` (41165ec9): `make test-sanitize`
+- **Status:** Tested on v3-integration (41165ec9): `make test-sanitize`
   reports nothing in the CI image (Ubuntu 24.04, GCC 13.3), in B-DEF with
-  `-Pnone` and LeakSanitizer (642,838 permutations) and `-Plinear`
-  (25,099), and in B-BIG with `-Pnone` and LeakSanitizer (1,101,749) and
-  `-Plinear` (32,633); with clang on macOS the whole B-DEF suite and B-BIG
-  `-Plinear` pass too. The jobs have not run on GitHub yet. 4-api R17
-  (fb675e5b), 1-meta 0.7c (7f689b8), F-1, F-3 and D-7 (82ab4f07,
-  b5888089) are fixed.
+  `-Pnone` and LeakSanitizer (642,838 permutations) and `-Plinear` (25,099),
+  and in B-BIG with `-Pnone` and LeakSanitizer (1,101,749) and `-Plinear`
+  (32,633); with clang on macOS the whole B-DEF suite and B-BIG `-Plinear`
+  pass too. The jobs have not run on GitHub yet. 4-api R17 (fb675e5b),
+  1-meta 0.7c (7f689b87), F-1, F-3 and D-7 (82ab4f07, b5888089) are fixed.
 - **When:** every CI run in B-DEF; nightly in B-BIG.
 
 #### LFS3-GEN-04
@@ -527,8 +563,10 @@ callback during that call.
 - **Fail:** any other negative value.
 - **Verified by:** cases assert specific codes throughout; the hook and
   `scripts/ckerrs.py` of LFS3-ERR-01.
-- **Status:** Partly tested at `b10efaa`; tested on `v3-integration`
-  (9c9e8145).
+- **Status:** Tested on v3-integration (14f90293, 9c9e8145): the runner
+  records every code each public function returns, and `make test-errs` (job
+  `test-errs`) finds none outside `enum lfs3_err`. Partly tested at
+  `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-GEN-06
@@ -547,9 +585,12 @@ made on a filesystem mounted with `LFS3_M_RDONLY`, including in builds with
 - **Pass:** counters unchanged in B-DEF (where each call must assert or
   return an error) and in B-NA.
 - **Fail:** any counter increases.
-- **Verified by:** NEW: death-test harness for B-DEF; plain test for B-NA.
-- **Status:** Known defect (4-api R12). See also LFS3-MOUNT-17 and open
-  question Q2.
+- **Verified by:** `mount::rdonly_mutate`, a death test, for B-DEF; for
+  B-NA, a plain case once Q2 is decided.
+- **Status:** Open question (Q2). In B-DEF `mount::rdonly_mutate` (696a539e)
+  shows that every mutating call asserts before it writes. With
+  `LFS3_NO_ASSERT` the calls go unchecked and write (4-api R12), which is
+  what Q2 must decide. See also LFS3-MOUNT-17.
 - **When:** every CI run.
 
 #### LFS3-GEN-07
@@ -569,8 +610,11 @@ contains an out-of-range block address, offset, size, weight or alt jump.
 - **Fail:** an assert, a crash, a sanitizer report or a result other than
   `LFS3_ERR_CORRUPT`.
 - **Verified by:** NEW: crafted-image suite (extends `mtree::truncated_*`).
-- **Status:** Untested. The decoders assert (`lfs3.c:2352-2390`,
-  `5174-5201`, `6519`, `7528`, `8036-8040`). See open question Q21.
+- **Status:** Open question (Q21). Untested: no crafted-image suite exists
+  (NEW-68 waits on Q21). 42e7f9eb, e5646435 and 7d27de3d turned the asserts
+  on alts, on metadata that reads differently and on bit-7 tags into
+  `LFS3_ERR_CORRUPT`; the range asserts in the decoders remain
+  (`lfs3_data_readshrub`, `lfs3_data_readgrm`, block pointers, branches).
 - **When:** before v3-beta.
 
 #### LFS3-GEN-08
@@ -584,9 +628,13 @@ littlefs shall not issue a block device operation outside
 - **Pass:** no out-of-range call in any suite, and none in the scenario of
   LFS3-MOUNT-21.
 - **Fail:** any out-of-range call.
-- **Verified by:** every suite (wrapper asserts); NEW: LFS3-MOUNT-21 test.
-- **Status:** Known defect (4-api R4: after `lfs3_fs_grow(128)` on a
-  64-block configuration the allocator erases block 64).
+- **Verified by:** every suite (the bd wrapper asserts every address);
+  `grow::invalid`, which also checks that no operation reaches a block past
+  `block_count` (LFS3-MOUNT-21).
+- **Status:** Tested on v3-integration (613ccac8, 818b61a4): `lfs3_fs_grow`
+  past the device returns `LFS3_ERR_INVAL` and touches nothing. Known defect
+  at `b10efaa` (4-api R4: after `lfs3_fs_grow(128)` on a 64-block
+  configuration the allocator erased block 64).
 - **When:** every CI run.
 
 #### LFS3-GEN-09
@@ -616,14 +664,14 @@ produces, with or without the read checks of `LFS3_M_CKMETAPARITY`.
   mount with `LFS3_ERR_NOTSUP` (LFS3-MOUNT-09), not `LFS3_ERR_CORRUPT`.
 - **Fail:** an assert, or any other negative result.
 - **Verified by:** as listed; `ck::reserved_bit` and `ck::root_bookmark`
-  (NEW-134), which make the same misreads happen deterministically in
+  (NEW-156), which make the same misreads happen deterministically in
   every build.
-- **Status:** Tested on `v3-integration` (7d27de3d). Before, in B-YGB a
+- **Status:** Tested on v3-integration (7d27de3d). Before, in B-YGB a
   misdirected bookmark lookup in `lfs3_mkdir` pushed mid 0 to the grm
   (assert in `lfs3_grm_push`, 6 permutations of
   `dirs::rm_many_2layers_metastable`), and a tag read with bit 7 set was
   copied into a new commit (assert in `lfs3_rbyd_appendtag`,
-  `ck::metastable_alts`); NEW-134 hit both, and an assert in
+  `ck::metastable_alts`); NEW-156 hit both, and an assert in
   `lfs3_file_lookupnext`, in B-DEF (issue #18).
 - **When:** every CI run.
 
@@ -664,7 +712,11 @@ interrupted operation is torn as in SOMEBITS, MOSTBITS or OOO.
 - **Fail:** any permutation fails.
 - **Verified by:** `powerloss::*` (the only cases that set these
   behaviours).
-- **Status:** Partly tested (4 of 64 reentrant cases).
+- **Status:** Partly tested. The reentrant cases added for NEW-01 to NEW-07
+  and NEW-09 to NEW-11 run SOMEBITS, MOSTBITS and OOO themselves in every CI
+  run, and pass. The nightly job `test-powerloss-behavior` (da14f0ea) runs
+  every other reentrant case with each behaviour, but has not run on GitHub
+  yet.
 - **When:** nightly.
 
 #### LFS3-PL-03
@@ -686,8 +738,8 @@ LFS3-DEG-12 and LFS3-DEG-13.
   `MODE` 0 (default) and 1 (`LFS3_M_SETTLE`), in B-BIG.
 - **Fail:** any read returns other data without an error.
 - **Verified by:** NEW-08.
-- **Status:** Tested on `v3-rc` (`a12705da`): NEW-08 reads no wrong data in
-  either mode, 11,832 power losses by default and 14,626 with
+- **Status:** Tested on v3-integration (c783a551, a12705da): NEW-08 reads no
+  wrong data in either mode, 11,832 power losses by default and 14,626 with
   `LFS3_M_SETTLE`, in B-BIG.
 - **When:** nightly.
 
@@ -736,7 +788,7 @@ littlefs shall not make data written by `lfs3_file_write` or
   and `lfs3.h:1594-1595` (a write is not stored "until either sync or close
   is called").
 - **Measure:** file content after remount.
-- **Pass:** a NEW reentrant case that writes, then flushes (explicitly, with
+- **Pass:** a reentrant case that writes, then flushes (explicitly, with
   `LFS3_O_FLUSH` and with `LFS3_M_FLUSH`) without syncing, finds after every
   power loss that the file equals its last synced state.
 - **Fail:** any unsynced byte is visible.
@@ -852,12 +904,13 @@ that sync or the previous one.
 - **Source:** Derived from LFS3-PL-04 for the truncate paths, which change
   the tree without writing data.
 - **Measure:** content and size after remount.
-- **Pass:** a NEW reentrant case of truncate and fruncate followed by sync
-  (growing and shrinking, including the write-then-fruncate log pattern of
-  #1111 "Easier logging APIs") passes under `-Plinear` in B-DEF.
+- **Pass:** a reentrant case of truncate and fruncate followed by sync
+  (growing and shrinking, including the write-then-fruncate log pattern
+  of #1111 "Easier logging APIs") passes under `-Plinear` in B-DEF.
 - **Fail:** any other content or size.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::truncate_pl_fuzz` (NEW-02).
+- **Status:** Tested on v3-integration (4ac6579e): passes with PLB-TORN and
+  torn tails, `PROG_SIZE` 1 and 16.
 - **When:** every CI run.
 
 #### LFS3-PL-14
@@ -868,11 +921,12 @@ and a sync, after a power loss, as of either that sync or the previous one.
 - **Source:** Derived from LFS3-PL-04 for B-tree updates (#1111 "Efficient
   random writes").
 - **Measure:** content and size after remount.
-- **Pass:** a NEW reentrant variant of `fwrite::fuzz_unaligned` with
-  periodic syncs passes under `-Plinear` in B-DEF.
+- **Pass:** a reentrant variant of `fwrite::fuzz_unaligned` with periodic
+  syncs passes under `-Plinear` in B-DEF.
 - **Fail:** any other content or size.
-- **Verified by:** NEW. `test_fwrite` has no reentrant case.
-- **Status:** Untested.
+- **Verified by:** `powerloss::fwrite_pl_fuzz` (NEW-03).
+- **Status:** Tested on v3-integration (537091b3, fabeee0e): passes with
+  PLB-TORN and torn tails, with and without shrubs.
 - **When:** every CI run.
 
 #### LFS3-PL-15
@@ -884,12 +938,14 @@ references when power is lost while it appends into the same block.
   block after a sync (`lfs3.c:13715-13756`); the synced bptr's checksum covers
   only the programmed prefix.
 - **Measure:** content of the synced prefix after remount.
-- **Pass:** a NEW reentrant case of small appends, each followed by sync,
-  with `PROG_SIZE` in {1, 16, 256}, passes under `-Plinear` with
-  PLB-TORN in B-DEF.
+- **Pass:** a reentrant case of small appends, each followed by sync, with
+  `PROG_SIZE` in {1, 16, 256}, passes under `-Plinear` with PLB-TORN in
+  B-DEF.
 - **Fail:** any synced byte differs.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::append_pl` (NEW-04), with the prog-once
+  check.
+- **Status:** Tested on v3-integration (2f326ad3, 68595ec7): passes with
+  PLB-TORN and torn tails, `PROG_SIZE` 1, 16 and 256, in every CI run.
 - **When:** nightly.
 
 #### LFS3-PL-16
@@ -947,12 +1003,14 @@ disabled.
   together (`lfs3.c:17002-17096`).
 - **Measure:** `LFS3_I_GBMAP` in `lfs3_fs_stat`, and `lfs3_fs_ck` result,
   after remount.
-- **Pass:** NEW reentrant variants of `gbmap::mkgbmap`, `gbmap::rmgbmap`,
+- **Pass:** reentrant variants of `gbmap::mkgbmap`, `gbmap::rmgbmap`,
   `gbmap::rmmkgbmap` and `gbmap::mkrmgbmap` pass under `-Plinear` in B-BIG.
 - **Fail:** mount fails, `lfs3_fs_ck` fails, or the flag disagrees with the
   on-disk state.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::gbmap_pl` (NEW-06), which alternates mkgbmap
+  and rmgbmap with writes.
+- **Status:** Tested on v3-integration (7fed4f64): passes with PLB-ALL
+  (behaviour 4 with `LFS3_M_SETTLE`) and torn tails in B-BIG.
 - **When:** nightly.
 
 #### LFS3-PL-20
@@ -963,12 +1021,16 @@ traversal-driven work and mount-time work.
 - **Source:** Derived: janitorial work commits (compaction, mkconsistent,
   gbmap sync) like any other operation.
 - **Measure:** mount result and file contents after remount.
-- **Pass:** NEW reentrant cases that call `lfs3_fs_gc`, `lfs3_fs_ck`, RDWR
+- **Pass:** reentrant cases that call `lfs3_fs_gc`, `lfs3_fs_ck`, RDWR
   traversals with every `LFS3_T_*` work flag, and `lfs3_mount` with every
   `LFS3_M_*` work flag, pass under `-Plinear` in B-BIG.
 - **Fail:** any permutation fails.
-- **Verified by:** NEW. `test_gc` and `test_trvs` have no reentrant case.
-- **Status:** Untested.
+- **Verified by:** `powerloss::gc_pl_fuzz` (NEW-05) and
+  `powerloss::gc_crossmode_pl_fuzz`, which run gc, checks, traversals and
+  the mount work flags between operations.
+- **Status:** Tested on v3-integration (51f20178, 5f100274): pass in B-DEF,
+  B-YGB and B-BIG with PLB-TORN, and `gc_pl_fuzz` also with behaviour 4
+  under `LFS3_M_SETTLE`.
 - **When:** nightly.
 
 #### LFS3-PL-21
@@ -982,8 +1044,11 @@ littlefs shall survive a torn write during wear-levelling relocation.
   (`BLOCK_RECYCLES` 0, 1, 4) pass under `-Plinear` with PLB-TORN in B-DEF.
 - **Fail:** any permutation fails.
 - **Verified by:** as listed.
-- **Status:** Partly tested (ATOMIC only; `test_powerloss` uses
-  `BLOCK_RECYCLES=-1`).
+- **Status:** Partly tested. `relocations::spam_*_pl_fuzz` run ATOMIC only
+  in CI; `mtree::relocate_pl` and `mtree::extend_pl` (f51aaa5c) relocate
+  mdirs with PLB-TORN and `BLOCK_RECYCLES` 0 and 1. The torn behaviours on
+  the relocation suites need the nightly job `test-powerloss-behavior`,
+  which has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-PL-22
@@ -994,11 +1059,12 @@ during `lfs3_format`.
 - **Source:** Derived: a device that loses power while being formatted must
   remain usable.
 - **Measure:** `lfs3_format` and `lfs3_mount` results after the loss.
-- **Pass:** a NEW reentrant case that formats, then formats and mounts again
+- **Pass:** a reentrant case that formats, then formats and mounts again
   after each loss, passes under `-Plinear` with PLB-TORN in B-DEF and B-YGB.
 - **Fail:** format or mount fails.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::format_pl` (NEW-01).
+- **Status:** Tested on v3-integration (d85400f6, c7400a10): passes with
+  PLB-ALL and torn tails, with and without the gbmap.
 - **When:** every CI run.
 
 #### LFS3-PL-23
@@ -1011,7 +1077,8 @@ possible write operation.
 - **Pass:** every reentrant case passes under `-P'permute(1)'` in B-DEF.
 - **Fail:** any permutation fails.
 - **Verified by:** all reentrant cases.
-- **Status:** Untested (not run for v3).
+- **Status:** Untested. The nightly job `test-pls` (da14f0ea) runs
+  `-P'permute(1)'`, split by suite, but has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-PL-24
@@ -1027,7 +1094,8 @@ power losses at every pair of write operations.
   `-P'permute(2)'` in B-DEF.
 - **Fail:** any permutation fails.
 - **Verified by:** as listed.
-- **Status:** Untested (not run for v3).
+- **Status:** Untested. The nightly job `test-limited-pls` (da14f0ea) runs
+  `-P'permute(2)'` on `test_dirs` only, and has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-PL-25
@@ -1037,13 +1105,14 @@ block.
 
 - **Source:** Derived: the combination of LFS3-PL-01 and LFS3-FAIL-01/02.
 - **Measure:** reentrant case results.
-- **Pass:** NEW reentrant variants of `badblocks::region_spam_file_fuzz` and
-  `badblocks::alternating_spam_dir_fuzz` pass under `-Plinear` with
-  PLB-TORN and `BADBLOCK_BEHAVIOR` in {0, 1} in B-DEF, and in {2, 3, 4} in
-  B-BIG.
+- **Pass:** reentrant variants of `badblocks::region_spam_file_fuzz` and
+  `badblocks::alternating_spam_dir_fuzz` pass under `-Plinear` with PLB-TORN
+  and `BADBLOCK_BEHAVIOR` in {0, 1} in B-DEF, and in {2, 3, 4} in B-BIG.
 - **Fail:** any permutation fails.
-- **Verified by:** NEW. `test_badblocks` has no reentrant case.
-- **Status:** Untested.
+- **Verified by:** `badblocks::region_pl_fuzz` and
+  `badblocks::alternating_pl_fuzz` (NEW-09).
+- **Status:** Tested on v3-integration (2a241e3b): pass with PLB-TORN and
+  `BADBLOCK_BEHAVIOR` 0 to 4 (2 to 4 with `LFS3_CKPROGS`, so in B-BIG).
 - **When:** nightly.
 
 #### LFS3-PL-26
@@ -1063,10 +1132,10 @@ littlefs shall survive a power loss while blocks are wearing out.
 - **Fail:** any permutation fails, or end of life is reported as anything
   other than `LFS3_ERR_NOSPC`.
 - **Verified by:** `exhaustion::spam_file_pl_fuzz` (NEW-10).
-- **Status:** Tested on `v3-integration` (afdf7f05): passes in B-DEF,
-  B-YGB and B-BIG. Before, 60 permutations failed in B-YGB because ten
-  interrupted formats wore out block 2 before the workload started
-  (issue #4).
+- **Status:** Tested on v3-integration (9904cc94, afdf7f05): passes in
+  B-DEF, B-YGB and B-BIG. Before afdf7f05, 60 permutations failed in B-YGB
+  because ten interrupted formats wore out block 2 before the workload
+  started (issue #4).
 - **When:** nightly.
 
 #### LFS3-PL-27
@@ -1081,7 +1150,8 @@ littlefs shall pass `dirs::rm_many_2layers` under power loss with `N=4`.
   removed.
 - **Fail:** any permutation fails.
 - **Verified by:** `dirs::rm_many_2layers`.
-- **Status:** Known defect (4-api R27).
+- **Status:** Tested on v3-integration (caaea78c): `dirs::rm_many_2layers`
+  runs `N=4` again and passes. Known defect at `b10efaa` (4-api R27).
 - **When:** every CI run.
 
 ### 6.3 Error detection and integrity (INT)
@@ -1159,8 +1229,7 @@ erased-state checksum (ecksum).
   disturbed block, after erasing it. Without a flip the commit appends.
 - **Fail:** the commit is appended to the disturbed block.
 - **Verified by:** `mtree::ecksum_disturb`.
-- **Status:** Tested on v3-integration (f6e23134); with the settling mount
-  tested on `v3-rc` (`1a17402f`).
+- **Status:** Tested on v3-integration (f6e23134, 1a17402f).
 - **When:** every CI run.
 
 #### LFS3-INT-05
@@ -1177,8 +1246,10 @@ final XOR 0xffffffff) in `lfs3_crc32c`, and the crc32c ring product in
   `LFS3_SMALLER_CRC32C`, `LFS3_FASTER_CRC32C` and `LFS3_PMUL_CRC32C`.
 - **Fail:** any case fails, or an implementation option does not build.
 - **Verified by:** as listed.
-- **Status:** Partly tested (default implementation only; the PMUL option
-  does not compile, LFS3-BUILD-05).
+- **Status:** Partly tested. The default implementation runs in every CI
+  run. `LFS3_PMUL_CRC32C` compiles since a2a3117d (LFS3-BUILD-05), but no
+  job runs `ck::crc32c*` with `LFS3_SMALLER_CRC32C`, `LFS3_FASTER_CRC32C` or
+  `LFS3_PMUL_CRC32C`.
 - **When:** every CI run.
 
 #### LFS3-INT-06
@@ -1348,7 +1419,8 @@ corrupted.
 - **Pass:** `ck::ckmeta_*` and `ck::ckdata_*` with `METHOD=1` pass in B-BIG.
 - **Fail:** gc completes without the error.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF; needs `LFS3_GC`).
+- **Status:** Tested in B-BIG, which runs on every push (job
+  `test-biggest`). Compiled out of B-DEF, which has no `LFS3_GC`.
 - **When:** every CI run.
 
 #### LFS3-INT-16
@@ -1363,7 +1435,8 @@ the scan.
   `gc::iflags_unck` pass in B-BIG.
 - **Fail:** the flag stays clear, or the scan is not repeated.
 - **Verified by:** as listed.
-- **Status:** Partly tested (the `gc::*` cases need `LFS3_GC`).
+- **Status:** Tested in B-BIG (job `test-biggest`). The `gc::*` cases need
+  `LFS3_GC`, so they are compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-INT-17
@@ -1381,7 +1454,7 @@ another block.
 - **Fail:** a mismatched prog is accepted, or the operation fails while free
   good blocks remain.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-INT-18
@@ -1397,7 +1470,7 @@ a mismatch.
   `ck::ckfetches_btree` and `ck::spam_*_fuzz` with `METHOD=2` pass in B-BIG.
 - **Fail:** the corrupted block is used without the error.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-INT-19
@@ -1448,9 +1521,9 @@ return `LFS3_ERR_CORRUPT` on a mismatch.
   pass in B-BIG.
 - **Fail:** corrupted data is returned without the error.
 - **Verified by:** as listed.
-- **Status:** Known defect (F-2: the option did not compile at `b10efaa`;
-  fixed on v3-fixes, where the cases pass in a B-BIG run, Appendix B.3; never
-  run in upstream CI).
+- **Status:** Tested on v3-integration (e4c046b5): the cases pass in B-BIG
+  on every push. Known defect at `b10efaa` (F-2: the option did not
+  compile).
 - **When:** every CI run.
 
 #### LFS3-INT-21
@@ -1507,10 +1580,10 @@ littlefs shall not return `LFS3_ERR_CORRUPT` because of
 - **Fail:** any `LFS3_ERR_CORRUPT` on an unmodified image.
 - **Verified by:** `mount::flags`, `mount::format_flags`;
   `ck::ckparity_btree_append` (added with the fix).
-- **Status:** Known defect (D-2: `lfs3_bd_readtag` parity-checks CKSUM tags
-  during quick fetches, so every B-tree commit to an rbyd not fetched since
-  mount fails; 1275 permutations of `mount::flags` and `mount::format_flags`
-  fail in B-BIG).
+- **Status:** Tested on v3-integration (f90e1323): CKSUM tags are no longer
+  parity-checked, and the cases pass in B-BIG. Known defect at `b10efaa`
+  (D-2: 1275 permutations of `mount::flags` and `mount::format_flags` failed
+  in B-BIG).
 - **When:** every CI run.
 
 #### LFS3-INT-24
@@ -1626,10 +1699,9 @@ mounted.
   `mount::readerror_mounted` (NEW-141), `powerloss::settle_newer`
   (NEW-137), `badblocks::mrootanchor_wear`,
   `badblocks::mrootanchor_stuck`, `badblocks::grow`.
-- **Status:** Known defect at `6f80e646` (issue #6): every permutation of
-  `mount::readerror` with `LFS3_ERR_CORRUPT` and of
-  `mount::readerror_mounted` found the older state. Fixed and tested on
-  `v3-r21` (`862e3695`).
+- **Status:** Tested on v3-integration (862e3695). Before it (issue #6),
+  every permutation of `mount::readerror` with `LFS3_ERR_CORRUPT` and of
+  `mount::readerror_mounted` found the older state.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -1682,8 +1754,8 @@ block when the readback of a just-programmed block returns
   `BADBLOCK_BEHAVIOR=2` and `CKPROGS=true` in B-BIG.
 - **Fail:** an error while free good blocks remain, or wrong content.
 - **Verified by:** as listed.
-- **Status:** Partly tested (the `CKPROGS=true` permutations are compiled out
-  of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). The `CKPROGS=true`
+  permutations are compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-FAIL-04
@@ -1697,15 +1769,17 @@ while it cannot read every block that might reference it.
   half is what makes the first safe.
 - **Measure:** return values and file content after a live, non-anchor mdir
   or B-tree node starts returning `LFS3_ERR_CORRUPT` on read.
-- **Pass:** a NEW case (READERROR on a live mdir, a file B-tree node, and a
-  gbmap node) finds `LFS3_ERR_CORRUPT` from reads and writes that touch the
-  block, finds no prog or erase to any block referenced before the failure,
-  and finds files in other mdirs still readable with `LFS3_M_RDONLY`, in
-  B-DEF and B-YGB.
+- **Pass:** `badblocks::live_readerror` (READERROR on a live mdir, a file
+  B-tree node, a data block and the gbmap root) finds `LFS3_ERR_CORRUPT`
+  from reads and writes that touch the block, finds no prog or erase to any
+  block referenced before the failure, and finds files in other mdirs still
+  readable with `LFS3_M_RDONLY`, in B-DEF and B-YGB.
 - **Fail:** any other error, a write to a referenced block, or a crash.
-- **Verified by:** NEW.
-- **Status:** Untested. The read-only half: LFS3-DEG-03 (Q6 settled),
-  allocation: LFS3-DEG-04.
+- **Verified by:** `badblocks::live_readerror` (NEW-13); with the degraded
+  mount and allocation around damage, `mount::degraded` and
+  `badblocks::alloc_with_damage` (LFS3-DEG-03, DEG-04).
+- **Status:** Tested on v3-integration (650b1ee3; the read-only and
+  allocation halves since 862e3695 and 320dc4a8).
 - **When:** every CI run.
 
 #### LFS3-FAIL-05
@@ -1719,7 +1793,7 @@ block when a prog silently does nothing.
   `BADBLOCK_BEHAVIOR=3` and `CKPROGS=true` in B-BIG.
 - **Fail:** an error while free good blocks remain, or wrong content.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-FAIL-06
@@ -1733,7 +1807,7 @@ block when an erase silently does nothing.
   `BADBLOCK_BEHAVIOR=4` and `CKPROGS=true` in B-BIG.
 - **Fail:** an error while free good blocks remain, or wrong content.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-FAIL-07
@@ -1745,13 +1819,14 @@ silently did nothing.
 - **Source:** Derived: without read-back, a lost prog looks like a power
   loss before the commit, or like a rollback that the gcksum catches.
 - **Measure:** mount result and data returned.
-- **Pass:** NEW variants of `badblocks::region_spam_file_fuzz` with
-  `BADBLOCK_BEHAVIOR` in {3, 4} and `CKPROGS=false` finish with every read
-  returning either data that some sync committed or `LFS3_ERR_CORRUPT`, with
-  no assert, in B-DEF.
+- **Pass:** `badblocks::silent_nockprogs`, a fuzz with `BADBLOCK_BEHAVIOR`
+  in {3, 4} and no `LFS3_M_CKPROGS`, finishes with every read returning
+  either data that some sync committed or `LFS3_ERR_CORRUPT`, with no
+  assert, in B-DEF.
 - **Fail:** an assert, a crash, or data that no sync committed.
-- **Verified by:** NEW.
-- **Status:** Untested. The limitation is documented by LFS3-DOC-12.
+- **Verified by:** `badblocks::silent_nockprogs` (NEW-14).
+- **Status:** Tested on v3-integration (9f136f90). The limitation is
+  documented by LFS3-DOC-12.
 - **When:** nightly.
 
 #### LFS3-FAIL-08
@@ -1766,7 +1841,8 @@ check or fetch that covers the block.
   `BADBLOCK_BEHAVIOR=5` in B-BIG.
 - **Fail:** flipped data is returned without an error.
 - **Verified by:** as listed.
-- **Status:** Partly tested (the CKPROGS cases are compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). The CKPROGS cases are
+  compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-FAIL-09
@@ -1798,9 +1874,9 @@ covers a block whose bits flipped after it was written.
   with `BADBLOCK_BEHAVIOR=7` and `METHOD` 1 to 3 in B-BIG.
 - **Fail:** a check returns 0 over a flipped block.
 - **Verified by:** as listed.
-- **Status:** Partly tested (B-DEF runs only the methods that need no
-  feature macro; at `b10efaa` `ck::spam_uz_fuzz` never updated its model
-  after a sync, F-9).
+- **Status:** Tested in B-BIG (job `test-biggest`); B-DEF runs only the
+  methods that need no feature macro. At `b10efaa` `ck::spam_uz_fuzz` never
+  updated its model after a sync (F-9, fixed in 1d0f8afa).
 - **When:** every CI run.
 
 #### LFS3-FAIL-11
@@ -1816,7 +1892,8 @@ assert, when wear-out leaves no good block to write.
   `exhaustion::spam_uzd_fuzz` pass with `BADBLOCK_BEHAVIOR` 0 to 4 in B-BIG.
 - **Fail:** any other error at end of life.
 - **Verified by:** as listed.
-- **Status:** Partly tested (behaviours 2 to 4 need `LFS3_CKPROGS`).
+- **Status:** Tested in B-BIG (job `test-biggest`). Behaviours 2 to 4 need
+  `LFS3_CKPROGS`, so B-DEF runs 0 and 1.
 - **When:** every CI run.
 
 #### LFS3-FAIL-12
@@ -1826,12 +1903,12 @@ before wear-out made it return `LFS3_ERR_NOSPC`.
 
 - **Source:** Derived: a worn-out device must still give its data back.
 - **Measure:** mount result and file contents after end of life.
-- **Pass:** NEW: the `exhaustion::*` cases, after the first
-  `LFS3_ERR_NOSPC`, remount read-only and compare every file with the model,
-  for `BADBLOCK_BEHAVIOR` 0 and 1 in B-DEF.
+- **Pass:** `exhaustion::readback` writes until the first `LFS3_ERR_NOSPC`,
+  remounts read-only and compares every file with the model, for
+  `BADBLOCK_BEHAVIOR` 0 and 1 in B-DEF, and 0 to 4 in B-BIG.
 - **Fail:** the mount fails or any synced file differs.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `exhaustion::readback` (NEW-15).
+- **Status:** Tested on v3-integration (51b30dd1).
 - **When:** every CI run.
 
 #### LFS3-FAIL-13
@@ -1859,12 +1936,14 @@ when `block_recycles` is 0 or more.
   of two (`lfs3.c:15247-15263`), which is within this bound.
 - **Measure:** emubd per-block erase counts of mdir blocks between
   relocations.
-- **Pass:** a NEW case that commits repeatedly to one mdir with
-  `block_recycles` in {0, 1, 4, 16, 100} finds no mdir block erased more
-  than `block_recycles + 1` times between relocations, in B-DEF.
+- **Pass:** `relocations::wear_bound` commits repeatedly to the mroot and to
+  an mdir of the mtree with `block_recycles` in {0, 1, 4, 16, 100} and finds
+  no mdir block erased more than `block_recycles + 1` times between
+  relocations, in B-DEF.
 - **Fail:** any block exceeds the bound.
-- **Verified by:** NEW. `relocations::*` check correctness only.
-- **Status:** Untested.
+- **Verified by:** `relocations::wear_bound`. The anchor's own bound is
+  LFS3-DEG-08 (`relocations::anchor_wear`).
+- **Status:** Tested on v3-integration (f91f8c71).
 - **When:** every CI run.
 
 #### LFS3-FAIL-15
@@ -1890,11 +1969,12 @@ when a block it must write during format is bad.
   filesystem.
 - **Measure:** format result.
 - **Pass:** `badblocks::mrootanchor_format` (blocks 0 and 1, all behaviours
-  0 to 4) and `ck::ckprogs_mroot` pass in B-DEF, and a NEW case with block 2
-  bad and `LFS3_F_GBMAP` passes in B-YGB.
+  0 to 4) and `ck::ckprogs_mroot` pass in B-DEF, and
+  `badblocks::gbmap_format` with block 2 bad and `LFS3_F_GBMAP` passes in
+  B-YGB: format places the gbmap root on the next good block (LFS3-BAD-14).
 - **Fail:** format returns 0 and the image does not mount.
-- **Verified by:** as listed; NEW for block 2.
-- **Status:** Partly tested.
+- **Verified by:** as listed; `badblocks::gbmap_format` (NEW-16).
+- **Status:** Tested on v3-integration (02ec7ef4, 185efae3).
 - **When:** every CI run.
 
 #### LFS3-FAIL-17
@@ -1909,28 +1989,45 @@ relocating, instead of treating the failure as a bad destination.
   retry allocates and erases a new block until the allocator is exhausted
   (3-alloc B5).
 - **Measure:** error returned and emubd erase count.
-- **Pass:** a NEW case with READERROR on the source of an mdir compaction, a
-  B-tree node relocation and a data-block rewrite gets `LFS3_ERR_CORRUPT`
-  with at most one erase per operation, in B-DEF.
+- **Pass:** `badblocks::source_readerror`, with READERROR on the source of
+  an mdir compaction, a B-tree node rewrite, a data-block rewrite and the
+  carving of a fragment, gets `LFS3_ERR_CORRUPT` with at most one erase per
+  operation, in B-DEF.
 - **Fail:** `LFS3_ERR_NOSPC`, or more than one erase.
-- **Verified by:** NEW.
-- **Status:** Untested (suspected defect, 3-alloc B5).
+- **Verified by:** `badblocks::source_readerror` (NEW-17).
+- **Status:** Tested on v3-integration (2da3c077, 6b838628). At `b10efaa` a
+  source read error took the bad-prog path and erased block after block
+  (3-alloc B5).
 - **When:** every CI run.
 
 #### LFS3-FAIL-18
 
-littlefs shall return the error that `cfg->sync` returns, and the
-filesystem shall still mount and pass `lfs3_fs_ck` afterwards.
+littlefs shall return the error that `cfg->sync` returns, once, from the
+call whose commit it followed; that commit shall stand, in RAM as on disk,
+and the filesystem shall still mount and pass `lfs3_fs_ck` afterwards.
 
 - **Source:** Stated: `lfs3.h:489-493` ("Negative error codes are
-  propagated").
-- **Measure:** return value; mount and check results afterwards.
-- **Pass:** a NEW case, using an emubd extension that fails the n-th sync,
-  gets that error from the call, and after remount `lfs3_fs_ck` with
-  `LFS3_CK_CKMETA | LFS3_CK_CKDATA` returns 0, for every n, in B-DEF.
-- **Fail:** another error, a mount failure, or a check failure.
-- **Verified by:** NEW: emubd extension.
-- **Status:** Untested. The in-RAM side is LFS3-META-10.
+  propagated"). Decided in this fork (5eaedd05, issue #11): a failed sync
+  leaves the durability of a programmed commit unknown, so littlefs keeps
+  RAM equal to what the device returns and reports the error once (`lfs3.h`,
+  `struct lfs3_cfg` `sync`; ERRORS.md).
+- **Measure:** return value; the operation's effect and `lfs3_fs_cksum` in
+  the same mount; mount and check results afterwards.
+- **Pass:** `badblocks::badsync` fails the sync after an `lfs3_mkdir` and an
+  `lfs3_rename`, in the mroot and in an mdir of the mtree: the call returns
+  the error, its effect is visible and `lfs3_fs_cksum` reflects it; the next
+  call succeeds; a power loss before the next sync returns the old state;
+  after remount `lfs3_fs_ck` with `LFS3_CK_CKMETA | LFS3_CK_CKDATA`
+  returns 0. `badblocks::ioerror` with `OP` sync fails the n-th sync for
+  every n with the same result, in B-DEF.
+- **Fail:** another error, the error reported twice or not at all, the
+  effect missing while mounted, a mount failure, or a check failure.
+- **Verified by:** `badblocks::badsync`, `badblocks::ioerror` (NEW-18,
+  NEW-19), `errs::ioerror`; emubd's `lfs3_emubd_mkbadsync` (`bd::badsync`).
+- **Status:** Tested on v3-integration (bd5bb8c2, 4e2f8f3d, 5eaedd05).
+  Before 5eaedd05 the commit was reverted in RAM but stayed on disk, so a
+  failed mkdir in an mtree mdir left a gcksum mismatch and the next mount
+  failed. The in-RAM side is LFS3-META-10.
 - **When:** every CI run.
 
 #### LFS3-FAIL-19
@@ -1942,12 +2039,14 @@ afterwards.
 - **Source:** Stated: `lfs3.h:468-487` ("Negative error codes are
   propagated to the user").
 - **Measure:** return value; mount result afterwards.
-- **Pass:** a NEW case, using an emubd extension that returns `LFS3_ERR_IO`
-  from the n-th operation of each kind, gets `LFS3_ERR_IO`, and the image
+- **Pass:** `badblocks::ioerror` and `errs::ioerror`, using
+  `lfs3_emubd_mkioerror` to return `LFS3_ERR_IO` from the n-th read, prog,
+  erase or sync of each kind of call, get `LFS3_ERR_IO`, and the image
   mounts, for every n, in B-DEF.
 - **Fail:** another error, or a mount failure.
-- **Verified by:** NEW: emubd extension.
-- **Status:** Untested.
+- **Verified by:** `badblocks::ioerror` (NEW-19), `errs::ioerror`
+  (LFS3-ERR-04).
+- **Status:** Tested on v3-integration (4e2f8f3d, 3c7a175e).
 - **When:** every CI run.
 
 #### LFS3-FAIL-20
@@ -1961,9 +2060,9 @@ littlefs shall meet LFS3-FAIL-01 to FAIL-06 with the gbmap enabled.
   `BADBLOCK_BEHAVIOR` 0 to 4.
 - **Fail:** any permutation fails or is excluded.
 - **Verified by:** as listed.
-- **Status:** Untested (never run in upstream CI, and no B-YGB run here;
-  `badblocks::*_btree_many`
-  are excluded under gbmap).
+- **Status:** Partly tested. B-YGB runs every `badblocks::*` and
+  `exhaustion::*` case on every push (job `test-yes-gbmap`), and they pass,
+  but `badblocks::*_btree_many` are still excluded under `LFS3_YES_GBMAP`.
 - **When:** nightly.
 
 #### Failure classes and the requirements that cover them
@@ -2032,10 +2131,9 @@ failed an `LFS3_M_CKPROGS` read-back.
 - **Fail:** any later erase or prog of the block.
 - **Verified by:** `badblocks_gbmap::recording`,
   `badblocks_gbmap::recording_mdir`, `badblocks_gbmap::queue_full`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (2e8ae492), and on `v3-rc` (`edc41794`) with more runs going bad at once
-  than the queue holds. The mroot anchor (blocks 0 and 1) cannot move and is
-  exempt.
+- **Status:** Tested on v3-integration (2e8ae492, edc41794), also with more
+  runs going bad at once than the queue holds. The mroot anchor (blocks 0
+  and 1) cannot move and is exempt. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-02
@@ -2052,8 +2150,8 @@ littlefs shall keep a recorded bad block out of use across remounts.
 - **Fail:** any erase or prog of the block after remount.
 - **Verified by:** `badblocks_gbmap::recording`, `badblocks_gbmap::reading`,
   `badblocks_gbmap::alloc_skip`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (94ecb238, 2e8ae492, 4f6d5ef8).
+- **Status:** Tested on v3-integration (94ecb238, 2e8ae492, 4f6d5ef8). Not
+  implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-03
@@ -2084,9 +2182,8 @@ when power is lost while recording.
   data can't be read, or the check fails.
 - **Verified by:** `badblocks_gbmap::pl_fuzz`,
   `badblocks_gbmap::reading_inuse`, `badblocks_gbmap::queue_inuse`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (9d6b2fd1) with no referenced block marked; tested as restated on `v3-rc`
-  (`edc41794`).
+- **Status:** Tested on v3-integration (9d6b2fd1, edc41794): failed blocks
+  still referenced are marked straight away. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-04
@@ -2103,8 +2200,9 @@ littlefs shall not write to the block device to record a bad block in an
   nothing queued, in B-YGB and B-BIG. `LFS3_RDONLY` builds have no queue.
 - **Fail:** any prog or erase.
 - **Verified by:** `badblocks_gbmap::rdonly`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (9d6b2fd1) for read-only mounts; B-RO cannot run the suite (LFS3-BUILD-19).
+- **Status:** Tested on v3-integration (9d6b2fd1) for read-only mounts. B-RO
+  cannot run the suite (LFS3-BUILD-19); its code has no path that records a
+  mark. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-05
@@ -2127,12 +2225,13 @@ allocates from the lookahead buffer, without a new compat flag.
   without erasing or programming a BMBAD block, and keep the marks.
 - **Fail:** a mount error, or a write to a BMBAD block.
 - **Verified by:** `compat::gbmap_exchange`.
-- **Status:** Partly met. Drivers from `v3-integration` 4f6d5ef8 on keep BMBAD
-  blocks out of use. Earlier gbmap drivers, `b10efaa` included, allocate
-  them from their lookahead fallback (53 erases of one BMBAD block in
+- **Status:** Tested on v3-integration (4f6d5ef8, c9410b20) for drivers from
+  4f6d5ef8 on. Earlier gbmap drivers, `b10efaa` included, allocate BMBAD
+  blocks from their lookahead fallback (53 erases of one BMBAD block in
   `compat::gbmap_exchange` without 4f6d5ef8), which costs them a failed
-  erase or prog per use, as an unmarked bad block would. v0.0 promises no
-  compatibility between alpha drivers (SPEC.md), so no flag guards this.
+  erase or prog per use, as an unmarked bad block would. Decided in
+  issue #9: no compat flag, since marks are advisory and a wcompat flag
+  would stop such drivers writing at all.
 - **When:** every CI run (`compat::gbmap_exchange` in B-YGB and B-BIG, and
   `make test-compat-gbmap` in the test-compat-gbmap job, 1c768762).
 
@@ -2151,8 +2250,8 @@ gbmap.
 - **Fail:** any mark disappears.
 - **Verified by:** `badblocks_gbmap::reading`, `badblocks_gbmap::reading_inuse`,
   `badblocks_gbmap::grow`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (94ecb238, 9c0769c3).
+- **Status:** Tested on v3-integration (94ecb238, 9c0769c3). Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-07
@@ -2168,10 +2267,10 @@ size fixed at compile time, without `lfs3_malloc`.
   `badblocks_gbmap::*` pass in it.
 - **Fail:** any `lfs3_malloc` call, or a failure.
 - **Verified by:** `make test-nomalloc` (`badblocks_gbmap::*`).
-- **Status:** Not implemented at `b10efaa`. On `v3-integration` the queue
-  and the suspect list are fixed arrays in `lfs3_t`; tested with
-  `make test-nomalloc` (71a6f970, f09acb9d), which also runs `repair::*`,
-  and run by the test-nomalloc CI job (1c768762).
+- **Status:** Tested on v3-integration (71a6f970, f09acb9d): the queue and
+  the suspect list are fixed arrays in `lfs3_t`; `make test-nomalloc` runs
+  `badblocks_gbmap::*` and `repair::*` without malloc, in the CI job
+  `test-nomalloc` (1c768762). Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-08
@@ -2208,9 +2307,9 @@ records its failed data blocks as it goes.
   or a write that fails while good blocks remain.
 - **Verified by:** `badblocks_gbmap::overflow`, `badblocks_gbmap::queue_full`,
   `badblocks_gbmap::queue_inuse`, `badblocks_gbmap::queue_merge`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (9d6b2fd1) with the queue forgetting its smallest runs; tested as
-  restated on `v3-rc` (`edc41794`).
+- **Status:** Tested on v3-integration (9d6b2fd1, edc41794): before edc41794
+  a full queue forgot its smallest runs, and `badblocks_gbmap::exhaustion`
+  saw a failed block erased again. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-09
@@ -2231,9 +2330,9 @@ device's life.
 - **Fail:** a dead block is erased again, or the lifetime ratio drops below
   1.82.
 - **Verified by:** `badblocks_gbmap::exhaustion`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (9d6b2fd1) with one erase allowed; tested as restated on `v3-rc`
-  (`edc41794`).
+- **Status:** Tested on v3-integration (9d6b2fd1, edc41794): no erase after
+  a failure on any of 1024 seeds, run by hand; the suite runs 16. Not
+  implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-10
@@ -2249,8 +2348,8 @@ fails.
   CKPROGS, READERROR) blocks return 0, and the blocks are recorded bad.
 - **Fail:** gc returns an error, or the block is not recorded.
 - **Verified by:** `badblocks_gbmap::preerase`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (9c0769c3), in B-BIG.
+- **Status:** Tested on v3-integration (9c0769c3), in B-BIG. Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-11
@@ -2267,8 +2366,8 @@ littlefs shall provide a call that records a given block as bad, returning
   `LFS3_ERR_BUSY`.
 - **Fail:** any other result.
 - **Verified by:** `badblocks_gbmap::api`, `badblocks_gbmap::factory`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (1e27e318).
+- **Status:** Tested on v3-integration (1e27e318). Not implemented at
+  `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-12
@@ -2282,8 +2381,8 @@ littlefs shall provide a call that clears a bad-block record.
   again when free.
 - **Fail:** the block stays out of use.
 - **Verified by:** `badblocks_gbmap::api`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (1e27e318).
+- **Status:** Tested on v3-integration (1e27e318). Not implemented at
+  `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-13
@@ -2301,8 +2400,8 @@ written to disk.
 - **Fail:** any other set.
 - **Verified by:** `badblocks_gbmap::api`, `badblocks_gbmap::api_ibadblocks`,
   `badblocks_gbmap::reading`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (1e27e318).
+- **Status:** Tested on v3-integration (1e27e318). Not implemented at
+  `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-14
@@ -2334,10 +2433,9 @@ programs, recording each block it skipped as bad, and returning
 - **Fail:** format fails while a good block remains, or a listed block is
   written.
 - **Verified by:** `badblocks::gbmap_format`, `badblocks_gbmap::factory`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (185efae3), which also fixes the 60 `LFS3_YES_GBMAP` permutations of
-  `exhaustion::spam_file_pl_fuzz` that reformat a disk with block 2 worn
-  out (issue #4).
+- **Status:** Tested on v3-integration (185efae3). Before it,
+  `badblocks::gbmap_format` failed 8 of 14 B-YGB permutations and
+  `badblocks_gbmap::factory` 2. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-15
@@ -2354,7 +2452,9 @@ holds the marks, and leave builds without it unchanged.
   queue.
 - **Fail:** tracking code or RAM in B-DEF.
 - **Verified by:** build (B-DEF, `#if` guards).
-- **Status:** Not implemented at `b10efaa`; met on `v3-integration`.
+- **Status:** Tested by build on v3-integration (2e8ae492): the tracking is
+  compiled only with `LFS3_GBMAP`, and `lfs3_t` and the code of builds
+  without it are unchanged. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-16
@@ -2380,8 +2480,8 @@ blocks through `lfs3_fs_nextsuspect`.
 - **Fail:** a damaged block that was read is missing, an undamaged block is
   listed, or a write.
 - **Verified by:** `badblocks_gbmap::suspect`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (b81c02a3).
+- **Status:** Tested on v3-integration (b81c02a3, f09acb9d). Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-BAD-17
@@ -2402,8 +2502,8 @@ if it does not, or if it needs repairing again in the same mount.
 - **Fail:** a block that failed twice is reused, or a clean block is marked
   bad.
 - **Verified by:** `repair::reuse`, `repair::twice`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (f09acb9d).
+- **Status:** Tested on v3-integration (f09acb9d; mdirs since e78b4263,
+  mtree nodes since 7aa70764). Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 ### 6.6 Metadata (META)
@@ -2450,27 +2550,27 @@ metadata block.
   relies on "upper layers" to limit commit size (`lfs3.c:8772-8777`); they do
   not. The error code to use is open question Q3.
 - **Measure:** return value, asserts, emubd prog counts.
-- **Pass:** a NEW fuzz over block sizes {512, 1024, 4096}, name lengths 1 to
+- **Pass:** a fuzz over block sizes {512, 1024, 4096}, name lengths 1 to
   `name_limit` and attribute sizes 0 to `block_size` gets 0 or an error code
   from `lfs3.h` for every `lfs3_mkdir`, `lfs3_file_opencfg` with
   `LFS3_O_CREAT`, `lfs3_rename` and `lfs3_setattr`, with no assert, and
   `lfs3_fs_ck` returns 0 afterwards, in B-DEF. An operation whose metadata
-  fits a block but whose mtree B-tree split leaves the commit no room in
-  the half it goes to also gets 0 or `LFS3_ERR_NOSPC`: `mtree::commit_too_big`
-  passes with seed 637 at `ERASE_SIZE` 512 (issue #25) in B-DEF, B-YGB
-  and B-BIG, and with `LFS3_NO_ASSERT`.
+  fits a block but whose mtree B-tree split leaves the commit no room in the
+  half it goes to also gets 0 or `LFS3_ERR_NOSPC`: `mtree::commit_too_big`
+  passes with seed 637 at `ERASE_SIZE` 512 (issue #25) in B-DEF, B-YGB and
+  B-BIG, and with `LFS3_NO_ASSERT`.
 - **Fail:** an assert, or a check failure.
 - **Verified by:** `mtree::commit_too_big` (NEW-41), with seed 637 at
   `ERASE_SIZE` 512 for D-9. See LFS3-DIR-02 and LFS3-ATTR-05 for the cases
   reproduced.
-- **Status:** Tested on `v3-integration` (d428d7b8 for 1-meta 0.2,
-  e38b42ae for D-9): `mtree::commit_too_big` passes in B-DEF, B-YGB and
-  B-BIG and under ASan and UBSan, and with `-DSEED='range(4096)'` at all
-  three block sizes no run fails in B-DEF (`-Pnone`, and `-Plinear` with
-  atomic power loss), B-YGB, B-BIG or with `LFS3_NO_ASSERT` (`-Pnone`).
-  Before e38b42ae, seed 637 at `ERASE_SIZE` 512 tripped
-  `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in an mtree B-tree split during
-  `lfs3_mkdir`, in all 8 of its permutations (D-9, issue #25).
+- **Status:** Tested on v3-integration (d428d7b8 for 1-meta 0.2, e38b42ae
+  for D-9): `mtree::commit_too_big` passes in B-DEF, B-YGB and B-BIG and
+  under ASan and UBSan, and with `-DSEED='range(4096)'` at all three block
+  sizes no run fails in B-DEF (`-Pnone`, and `-Plinear` with atomic power
+  loss), B-YGB, B-BIG or with `LFS3_NO_ASSERT` (`-Pnone`). Before e38b42ae,
+  seed 637 at `ERASE_SIZE` 512 tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)`
+  in an mtree B-tree split during `lfs3_mkdir`, in all 8 of its permutations
+  (D-9, issue #25).
 - **When:** every CI run.
 
 #### LFS3-META-04
@@ -2481,12 +2581,15 @@ revision count, on hosts of either byte order.
 - **Source:** Stated: `lfs3.c:7765-7767` ("most recent block has the most
   recent revision count").
 - **Measure:** which block `lfs3_mdir_fetch` selects.
-- **Pass:** all suites pass on A-32BE in B-DEF, and a NEW internal case with
+- **Pass:** all suites pass on A-32BE in B-DEF, and an internal case with
   revision counts 0x0f80006d and 0x1000006d selects the second.
 - **Fail:** the older block is selected.
-- **Verified by:** NEW; all suites on A-32BE.
-- **Status:** Known defect (1-meta 0.3: `lfs3.c:7864` reads into `revs[0]`,
-  `7868` converts `revs[i]`).
+- **Verified by:** all suites on A-32BE (the CI job `test` on mips and
+  powerpc); `mtree::fetch_revorder` (NEW-42).
+- **Status:** Tested on v3-integration (ec3e6550, a8d4af89): the default
+  suite passed on mips and powerpc in CI run 36985477685. Known defect at
+  `b10efaa` (1-meta 0.3: `lfs3.c:7864` read into `revs[0]`, `7868` converted
+  `revs[i]`).
 - **When:** every CI run.
 
 #### LFS3-META-05
@@ -2573,15 +2676,17 @@ on-disk state after any failed metadata commit.
   error"); `lfs3_fs_revertgdelta` at `lfs3.c:9464-9467`.
 - **Measure:** `lfs3_fs_cksum` before and after the failed call; mount
   result after a later successful commit.
-- **Pass:** NEW cases that fail a commit through its final sync (emubd
-  extension, LFS3-FAIL-18) and through a stuck anchor (as in
-  `badblocks::mrootanchor_wear`) find `lfs3_fs_cksum` unchanged by the failed
-  call, and after one more successful commit the image mounts, in B-DEF.
-- **Fail:** the checksum changed, or the later mount fails with a gcksum
-  mismatch.
-- **Verified by:** NEW.
-- **Status:** Known defect (3-alloc B3: `lfs3.c:9316`, `9336` and `9346`
-  return without reverting).
+- **Pass:** `badblocks::mrootanchor_stuck` fails a commit through a stuck
+  anchor and finds `lfs3_fs_cksum` unchanged by the failed call;
+  `badblocks::badsync` fails the sync after a commit was programmed and
+  finds the commit kept, in RAM as on disk (LFS3-FAIL-18); in both, after
+  one more successful commit the image mounts and checks, in B-DEF.
+- **Fail:** RAM and disk disagree after the failed call, or the later mount
+  fails with a gcksum mismatch.
+- **Verified by:** `badblocks::mrootanchor_stuck`, `badblocks::badsync`
+  (NEW-18).
+- **Status:** Tested on v3-integration (bd5bb8c2, e6543a82, 5eaedd05). Known
+  defect at `b10efaa` (3-alloc B3: three returns skipped the gstate revert).
 - **When:** every CI run.
 
 #### LFS3-META-11
@@ -2593,11 +2698,13 @@ a gbmap delta from an mdir fails.
   (`lfs3.c:7722-7725`).
 - **Measure:** return value of mount (and of split or drop) with READERROR on
   an mdir that carries a gbmap delta.
-- **Pass:** a NEW case in B-YGB gets `LFS3_ERR_CORRUPT` from mount, with no
+- **Pass:** a case in B-YGB gets `LFS3_ERR_CORRUPT` from mount, with no
   sanitizer report.
 - **Fail:** mount succeeds with wrong gbmap state, or a sanitizer report.
-- **Verified by:** NEW.
-- **Status:** Known defect (1-meta 0.5: `lfs3.c:7744-7755`).
+- **Verified by:** `mount::readerror` (NEW-43), which fails every read of a
+  mount in turn, including the GBMAPDELTA lookup.
+- **Status:** Tested on v3-integration (b2ae1491). Known defect at `b10efaa`
+  (1-meta 0.5: `lfs3.c:7744-7755`).
 - **When:** every CI run.
 
 #### LFS3-META-12
@@ -2664,13 +2771,14 @@ extensions atomic under power loss.
 - **Source:** Derived: new blocks stay unreferenced until the parent commit,
   with a sync first (`lfs3.c:9198-9304`).
 - **Measure:** reentrant case results.
-- **Pass:** NEW reentrant variants of `mtree::split_fuzz`,
-  `mtree::drop_fuzz`, `mtree::relocate_fuzz` and `mtree::extend*` pass under
-  `-Plinear` in B-DEF.
+- **Pass:** reentrant variants of `mtree::split_fuzz`, `mtree::drop_fuzz`,
+  `mtree::relocate_fuzz` and `mtree::extend*` pass under `-Plinear` in
+  B-DEF.
 - **Fail:** any permutation fails.
-- **Verified by:** indirectly by `dirs::*`, `powerloss::*` and
-  `relocations::*_pl_fuzz`; NEW.
-- **Status:** Partly tested (`test_mtree` has no reentrant case).
+- **Verified by:** `mtree::split_pl`, `drop_pl`, `relocate_pl` and
+  `extend_pl` (NEW-07); indirectly `dirs::*`, `powerloss::*` and
+  `relocations::*_pl_fuzz`.
+- **Status:** Tested on v3-integration (f51aaa5c), with PLB-TORN.
 - **When:** every CI run.
 
 #### LFS3-META-16
@@ -2685,8 +2793,9 @@ littlefs shall pass the metadata suites at every geometry in G-ALL.
   geometry of G-ALL in B-DEF.
 - **Fail:** any permutation fails.
 - **Verified by:** as listed.
-- **Status:** Partly tested (only 4096-byte blocks, and 32768 in
-  `test_rbyd`).
+- **Status:** Partly tested. CI runs only 4096-byte blocks (and 32768 in
+  `test_rbyd`); the nightly job `test-geometry` (da14f0ea) runs G-ALL but
+  has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-META-17
@@ -2743,12 +2852,13 @@ write would end beyond `file_limit`, measured from where the write lands
 - **Source:** Stated: `lfs3.h:660-665` (file_limit "must be respected");
   `lfs3.c:14123-14126`.
 - **Measure:** return value and resulting size.
-- **Pass:** a NEW case with `file_limit=1000` finds: write 900, rewind,
-  append 500 gives `LFS3_ERR_FBIG`; seek to 1000 on an empty `O_APPEND` file,
-  write 10 gives 10; in B-DEF.
+- **Pass:** a case with `file_limit=1000` finds: write 900, rewind, append
+  500 gives `LFS3_ERR_FBIG`; seek to 1000 on an empty `O_APPEND` file, write
+  10 gives 10; in B-DEF.
 - **Fail:** the file exceeds `file_limit`, or FBIG for a write that fits.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B2).
+- **Verified by:** `fwrite::append_fbig` (NEW-34).
+- **Status:** Tested on v3-integration (c630f695). Known defect at `b10efaa`
+  (2-files B2).
 - **When:** every CI run.
 
 #### LFS3-FILE-04
@@ -2759,12 +2869,12 @@ littlefs shall return the number of bytes available, and not assert, from
 - **Source:** Stated: `lfs3.h:1585-1590` ("Returns the number of bytes
   read").
 - **Measure:** return value.
-- **Pass:** a NEW case reads with size 0xffffffff from positions 0 and 10 of
-  a 100-byte file and gets 100 and 90, in B-DEF.
+- **Pass:** a case reads with size 0xffffffff from positions 0 and 10 of a
+  100-byte file and gets 100 and 90, in B-DEF.
 - **Fail:** an assert or another value.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B14: asserts `pos + size <= 0x7fffffff`,
-  `lfs3.c:12983`).
+- **Verified by:** `files::read_big` (NEW-35).
+- **Status:** Tested on v3-integration (443c0090). Known defect at `b10efaa`
+  (2-files B14: asserted `pos + size <= 0x7fffffff`, `lfs3.c:12983`).
 - **When:** every CI run.
 
 #### LFS3-FILE-05
@@ -2850,14 +2960,14 @@ an append after `lfs3_file_fruncate`.
 - **Source:** Stated: data-block relocation on a bad prog rewrites the
   crystal (`lfs3.c:13644-13662`, commit `664d99d`).
 - **Measure:** file content and size after the append, a sync and remount.
-- **Pass:** a NEW case (prog_size 16; write 2000 bytes, sync, fruncate to
-  1900, sync, mark the data block bad with PROGERROR, append 64 bytes, sync)
-  reads back the expected 1964 bytes after remount, in B-DEF and B-NA.
+- **Pass:** a case (prog_size 16; write 2000 bytes, sync, fruncate to 1900,
+  sync, mark the data block bad with PROGERROR, append 64 bytes, sync) reads
+  back the expected 1964 bytes after remount, in B-DEF and B-NA.
 - **Fail:** wrong content or size, an assert, or `LFS3_ERR_CORRUPT`.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B1: `block_pos` wraps below zero, the
-  rewrite copies nothing, and the file reads back with size -100 and then
-  `LFS3_ERR_CORRUPT`).
+- **Verified by:** `badblocks::fruncate_append` (NEW-21).
+- **Status:** Tested on v3-integration (036267f1). Known defect at `b10efaa`
+  (2-files B1: `block_pos` wrapped below zero, the rewrite copied nothing,
+  and the file read back with size -100 and then `LFS3_ERR_CORRUPT`).
 - **When:** every CI run.
 
 #### LFS3-FILE-11
@@ -2869,12 +2979,13 @@ appending to goes bad after data was written to it.
   (`lfs3.c:13715-13756`), which the bad-block suites do not reach because
   they mark blocks bad before the test starts.
 - **Measure:** file content after remount.
-- **Pass:** a NEW case (write, sync, mark the file's last data block bad with
+- **Pass:** a case (write, sync, mark the file's last data block bad with
   PROGERROR and with ERASEERROR, append, sync) reads back the expected data,
   with `PROG_SIZE` in {1, 16}, in B-DEF.
 - **Fail:** wrong content or an error.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `badblocks::resume_append` (NEW-20).
+- **Status:** Tested on v3-integration (84764375; with `PROG_SIZE` 256 since
+  effb33ca).
 - **When:** every CI run.
 
 #### LFS3-FILE-12
@@ -2946,11 +3057,11 @@ cache cannot be allocated, and leave no handle registered.
 
 - **Source:** Stated: `lfs3.h:94`; `lfs3.c:12621`.
 - **Measure:** return value; `lfs3_unmount` succeeds afterwards.
-- **Pass:** a NEW case with a failing allocator gets `LFS3_ERR_NOMEM` and can
+- **Pass:** a case with a failing allocator gets `LFS3_ERR_NOMEM` and can
   unmount, with no leak reported by valgrind, in B-DEF.
 - **Fail:** any other result, a leak, or an assert at unmount.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `files::open_nomem` (NEW-72).
+- **Status:** Tested on v3-integration (f5e26811).
 - **When:** every CI run.
 
 #### LFS3-FILE-17
@@ -2980,10 +3091,9 @@ overflows a signed 32-bit integer.
 - **Fail:** any error, wrong content, a traversal whose entries do not tile
   the file, or a sanitizer report.
 - **Verified by:** `fwrite::filemax` and `fwrite::filemax_fuzz` (NEW-73).
-- **Status:** Tested on `v3-integration` (82ab4f07, b5888089): both cases
-  pass in B-DEF, B-YGB and B-BIG, and the whole suite runs with no
-  sanitizer report in B-DEF and B-BIG; CI has no sanitizer job yet
-  (issue #17).
+- **Status:** Tested on v3-integration (82ab4f07, b5888089): both cases pass
+  in B-DEF, B-YGB and B-BIG, and under `make test-sanitize` in B-DEF and
+  B-BIG (jobs `test-sanitize` and `test-sanitize-biggest`, 41165ec9).
   Before, under UBSan, 16 of 24 permutations of `fwrite::filemax` and 2024
   of 2400 of `fwrite::filemax_fuzz` overflowed `int32_t` in
   `lfs3_rbyd_estimate` or `lfs3_btree_traverse`, and in B-DEF 299 of
@@ -3043,12 +3153,12 @@ close returns an error.
 - **Source:** Stated: `lfs3.h:1535` ("Releases any allocated resources,
   even if there is an error").
 - **Measure:** the handle list and `lfs3_unmount` after a failing close.
-- **Pass:** a NEW case makes the sync inside close fail with NOSPC and with a
+- **Pass:** a case makes the sync inside close fail with NOSPC and with a
   bad block, then unmounts without an assert and without a leak, in B-DEF.
 - **Fail:** an assert at unmount, or a leak.
-- **Verified by:** NEW; `alloc::nospc_files` covers the NOSPC path
-  partially.
-- **Status:** Partly tested.
+- **Verified by:** `files::close_error` (NEW-74); `alloc::nospc_files`
+  covers the NOSPC path partially.
+- **Status:** Tested on v3-integration (a210e06b).
 - **When:** every CI run.
 
 #### LFS3-FILE-22
@@ -3089,11 +3199,12 @@ append alternately and sync.
   block; the one that programs first must take it from the other
   (`lfs3.c:13415-13423`).
 - **Measure:** content after each sync, and after remount.
-- **Pass:** a NEW case with two handles, each appending 16 bytes and syncing
-  in turn, with `PROG_SIZE` in {1, 16}, matches the model, in B-DEF.
+- **Pass:** a case with two handles, each appending 16 bytes and syncing in
+  turn, with `PROG_SIZE` in {1, 16}, matches the model, in B-DEF.
 - **Fail:** any byte differs.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `fsync::append_alternate` (NEW-75).
+- **Status:** Tested on v3-integration (69d52750; with `PROG_SIZE` 256 since
+  effb33ca).
 - **When:** every CI run.
 
 #### LFS3-FILE-25
@@ -3119,12 +3230,12 @@ and `lfs3_file_fruncate`.
 
 - **Source:** Stated: `lfs3.h:660-665`.
 - **Measure:** return values at and beyond the limit.
-- **Pass:** NEW variants of `fwrite::fbig`, `fwrite::truncate_fbig` and
+- **Pass:** variants of `fwrite::fbig`, `fwrite::truncate_fbig` and
   `fwrite::fruncate_fbig` with `file_limit` in {1, 1000, 65536} pass in
   B-DEF.
 - **Fail:** a file grows beyond the limit, or an operation within it fails.
-- **Verified by:** NEW. The existing cases use `LFS3_FILE_MAX` only.
-- **Status:** Untested.
+- **Verified by:** `fwrite::file_limit` (NEW-76).
+- **Status:** Tested on v3-integration (a2765a43).
 - **When:** every CI run.
 
 #### LFS3-FILE-27
@@ -3156,8 +3267,8 @@ file cache when a write flushes a full cache.
 - **Fail:** any byte or size differs.
 - **Verified by:** `fwrite::append_tail`, `fwrite::append_tail_nospc`,
   `powerloss::append_unsynced_pl`.
-- **Status:** Untested at `b10efaa`. Tested on `v3-integration`
-  (`effb33ca`, `32eb36e7`).
+- **Status:** Tested on v3-integration (effb33ca, 32eb36e7). Untested at
+  `b10efaa`.
 - **When:** every CI run.
 
 ### 6.8 Sync model and stickynotes (SYNC)
@@ -3232,13 +3343,13 @@ littlefs shall mark a file handle desynced whenever `lfs3_file_write`,
 - **Source:** Stated: `lfs3.h:1568-1569` ("If an error occurs during a write
   operation, the file is implicitly marked as desynchronized").
 - **Measure:** whether a later close commits the handle.
-- **Pass:** a NEW case makes each call fail (NOSPC, FBIG, a bad block) and
-  finds that the following close leaves the disk unchanged, in B-DEF.
+- **Pass:** a case makes each call fail (NOSPC, FBIG, a bad block) and finds
+  that the following close leaves the disk unchanged, in B-DEF.
 - **Fail:** the close commits.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B8: errors from the graft and allocator
-  checkpoint in truncate and fruncate return without desyncing,
-  `lfs3.c:14738-14747`, `14828-14837`).
+- **Verified by:** `badblocks::truncate_desync` (NEW-38).
+- **Status:** Tested on v3-integration (3f3d1e05). Known defect at `b10efaa`
+  (2-files B8: errors from the graft and allocator checkpoint in truncate
+  and fruncate returned without desyncing).
 - **When:** every CI run.
 
 #### LFS3-SYNC-06
@@ -3290,7 +3401,7 @@ whose file was removed, and `LFS3_ERR_NOENT` from `lfs3_file_resync` on it.
 littlefs shall leave a filesystem that passes `lfs3_fs_ck` when a handle
 that returned a write error is later synced successfully. The content of the
 range the failed write touched is unspecified. If the failed write left the
-handle torn, `lfs3_file_sync` refuses it with `LFS3_ERR_INVAL` and
+handle torn, `lfs3_file_sync` refuses it with `LFS3_ERR_BADFD` and
 `lfs3_file_resync` returns it to the last sync (LFS3-ERR-03).
 
 - **Source:** Stated: #1111 "Better recovery from runtime errors" ("file
@@ -3309,10 +3420,11 @@ handle torn, `lfs3_file_sync` refuses it with `LFS3_ERR_INVAL` and
   failed range match the model, in B-DEF and B-BIG with the prog-once check.
 - **Fail:** the check fails, or bytes outside the range differ.
 - **Verified by:** `badblocks::error_then_sync`.
-- **Status:** Tested on v3-integration (75eeba26). The case found D-3 and
-  D-4, fixed in `4968164e` (a retried crystallization progged over its own
-  progs after `LFS3_ERR_IO`) and `ce2a68d6` (a remove failed with
-  `LFS3_ERR_NOSPC` on a nearly full disk when an mdir had to split).
+- **Status:** Tested on v3-integration (75eeba26; torn handles return
+  `LFS3_ERR_BADFD` since d4211ea5). The case found D-3 and D-4, fixed in
+  4968164e (a retried crystallization progged over its own progs after
+  `LFS3_ERR_IO`) and ce2a68d6 (a remove failed with `LFS3_ERR_NOSPC` on a
+  nearly full disk when an mdir had to split).
 - **When:** every CI run.
 
 #### LFS3-SYNC-10
@@ -3464,13 +3576,14 @@ earlier error, and leave the disk as of the last successful sync.
 
 littlefs shall leave a handle syncable after an error in an append whose
 graft replaces only the file's last entry: `lfs3_file_sync` then commits
-the file with the appends that succeeded, and does not return
-`LFS3_ERR_INVAL`.
+the file with the appends that succeeded, and does not refuse it as torn
+(`LFS3_ERR_BADFD`).
 
 - **Source:** Derived: a graft that replaces several entries commits once
   per entry, because the entries can be in different leaves, and an error
   between those commits tears the handle (`LFS3_o_TORN`): sync returns
-  `LFS3_ERR_INVAL` until `lfs3_file_resync` (LFS3-ERR-03). An append that
+  `LFS3_ERR_BADFD` (`LFS3_ERR_INVAL` before d4211ea5) until
+  `lfs3_file_resync` (LFS3-ERR-03). An append that
   coalesces with the file's last fragment replaces only that entry, and
   what it appends lands in the same leaf, so it needs one commit
   (Appendix B.5 C). A logger appending with errors then never sees a torn
@@ -3481,12 +3594,12 @@ the file with the appends that succeeded, and does not return
   16-byte appends, `BADBLOCK_BEHAVIOR` PROGERROR, ERASEERROR and
   READERROR, `PROG_SIZE` 1 and 16) gets 0 from every sync, and reads back
   the old content followed by whole appends, in B-DEF.
-- **Fail:** sync returns `LFS3_ERR_INVAL`, or the content differs.
+- **Fail:** sync returns `LFS3_ERR_BADFD`, or the content differs.
 - **Verified by:** `badblocks::append_torn`; for power loss,
   `powerloss::append_pl` and `powerloss::append_unsynced_pl`.
-- **Status:** Known defect at `b10efaa` and `fd3157e3`, where
-  `badblocks::append_torn` gets `LFS3_ERR_INVAL` with READERROR at
-  `PROG_SIZE` 16. Tested on `v3-integration` (`554e89f9`).
+- **Status:** Tested on v3-integration (554e89f9). Known defect at `b10efaa`
+  and at fd3157e3, where `badblocks::append_torn` got `LFS3_ERR_INVAL` with
+  READERROR at `PROG_SIZE` 16.
 - **When:** every CI run.
 
 ### 6.9 Directories and paths (DIR)
@@ -3519,12 +3632,16 @@ it accepts.
   `LFS3_ASSERT(err != LFS3_ERR_RANGE)` at `lfs3.c:8777`. `lfs3_set` with the
   same names works.
 - **Measure:** return value and asserts.
-- **Pass:** a NEW case runs `lfs3_mkdir` with names of 1 to 255 bytes on
-  512-byte and 1024-byte blocks and gets 0 or an error code from `lfs3.h`
-  (open question Q3), with no assert, in B-DEF.
+- **Pass:** `dirs::name_limit` runs `lfs3_mkdir`, file creation and
+  `lfs3_rename` with names of 64 to 255 bytes on 512-, 1024- and 4096-byte
+  blocks, and `mtree::commit_too_big` with names of 1 to `name_limit` bytes;
+  every call returns 0 or `LFS3_ERR_NAMETOOLONG`, with no assert, in B-DEF.
 - **Fail:** an assert.
-- **Verified by:** NEW. `paths::namejustlongenough` runs at 4096 only.
-- **Status:** Known defect (1-meta 0.2).
+- **Verified by:** `dirs::name_limit`, `mtree::commit_too_big`
+  (NEW-41).
+- **Status:** Tested on v3-integration (d428d7b8, e38b42ae). Q3 is decided:
+  names are capped at `block_size/2 - 124` bytes (`LFS3_ERR_NAMETOOLONG`).
+  Known defect at `b10efaa` (1-meta 0.2), and D-9 until e38b42ae.
 - **When:** every CI run.
 
 #### LFS3-DIR-03
@@ -3569,12 +3686,13 @@ descendants.
 - **Source:** Derived: POSIX `rename` returns `EINVAL` here; otherwise the
   subtree is detached from the root and its entries occupy metadata forever.
 - **Measure:** return value; `lfs3_stat` of both paths; directory listing.
-- **Pass:** a NEW case (`mkdir a`, `mkdir a/x`, `rename("a", "a/b")`) gets
+- **Pass:** a case (`mkdir a`, `mkdir a/x`, `rename("a", "a/b")`) gets
   `LFS3_ERR_INVAL`, and `a` and `a/x` still exist, in B-DEF.
 - **Fail:** any other result.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R1: the rename returns 0, `a` and `a/b`
-  both give `LFS3_ERR_NOENT`, and `lfs3_fs_ck` returns 0).
+- **Verified by:** `dirs::mv_subtree` (NEW-32).
+- **Status:** Tested on v3-integration (067ebe7e). Known defect at `b10efaa`
+  (4-api R1: the rename returned 0, `a` and `a/b` both gave
+  `LFS3_ERR_NOENT`, and `lfs3_fs_ck` returned 0).
 - **When:** every CI run.
 
 #### LFS3-DIR-06
@@ -3670,9 +3788,10 @@ move it.
   B-YGB and B-BIG.
 - **Fail:** any other sequence.
 - **Verified by:** `dread::seek_tell` (NEW-33).
-- **Status:** Tested on `v3-integration` (233ff491). Known defect at
-  `b10efaa` (1-meta 0.1: `off - 2` wraps at `lfs3.c:12241`); later, seek
-  still counted orphaned stickynotes that read skips (issue #12).
+- **Status:** Tested on v3-integration (cc4acb99, 233ff491). Known defect at
+  `b10efaa` (1-meta 0.1: `off - 2` wrapped at `lfs3.c:12241`); until
+  233ff491, seek still counted orphaned stickynotes that read skips
+  (issue #12).
 - **When:** every CI run.
 
 #### LFS3-DIR-12
@@ -3865,16 +3984,24 @@ littlefs shall define a maximum attribute size and return an error code
 from `lfs3.h`, without asserting and without changing the disk, from
 `lfs3_setattr` and from a file sync with a larger attribute.
 
-- **Source:** Derived from LFS3-META-03. `lfs3.h` documents no limit; v2
-  had `LFS_ATTR_MAX` and returned `LFS_ERR_NOSPC`.
+- **Source:** Derived from LFS3-META-03. `lfs3.h` documented no limit; v2
+  had `LFS_ATTR_MAX` and returned `LFS_ERR_NOSPC`. Q3 is decided (d428d7b8):
+  no fixed maximum, an attribute must fit in a metadata block with its
+  entry's name and other attributes, and one that doesn't gets
+  `LFS3_ERR_NOSPC`, as `lfs3_setattr`'s comment in `lfs3.h` says.
 - **Measure:** return value, asserts, emubd prog count.
-- **Pass:** a NEW case sets attributes of 0 to `block_size` bytes on root
-  and on a file, at block sizes 512 and 4096, and every call returns 0 or the
-  documented error, with no assert, in B-DEF.
+- **Pass:** `attrs::setattr_huge` and `attrs::fattr_huge` set attributes of
+  a quarter to a whole block on a file, a stickynote, a directory and the
+  root until they no longer fit, and `mtree::commit_too_big` sets attributes
+  of 0 to `block_size` bytes at block sizes 512, 1024 and 4096; every call
+  returns 0 or `LFS3_ERR_NOSPC`, with no assert, and the filesystem stays
+  writable and consistent, in B-DEF.
 - **Fail:** an assert, an undocumented code, or a partial write.
-- **Verified by:** NEW. `attrs::*` go up to 513 bytes.
-- **Status:** Known defect (4-api R3: 2500 bytes on 4096-byte blocks asserts
-  at `lfs3.c:9006`; with `LFS3_NO_ASSERT` 5000 bytes returns
+- **Verified by:** `attrs::setattr_huge`, `attrs::fattr_huge`,
+  `mtree::commit_too_big` (NEW-41).
+- **Status:** Tested on v3-integration (d428d7b8, 42e26e7e). Known defect at
+  `b10efaa` (4-api R3: 2500 bytes on 4096-byte blocks asserted at
+  `lfs3.c:9006`; with `LFS3_NO_ASSERT` 5000 bytes returned
   `LFS3_ERR_RANGE`).
 - **When:** every CI run.
 
@@ -3905,7 +4032,8 @@ littlefs shall store the attributes of all 256 type values independently.
 - **Fail:** any type reads another type's value.
 - **Verified by:** NEW. Whether reserved types should be refused is open
   question Q9.
-- **Status:** Untested.
+- **Status:** Untested. Whether reserved types should be refused is open
+  question Q9.
 - **When:** every CI run.
 
 #### LFS3-ATTR-08
@@ -3975,12 +4103,14 @@ littlefs shall accept a file-attached attribute with flags
 
 - **Source:** Stated: `lfs3.h:165-173` (the flags combine).
 - **Measure:** open result.
-- **Pass:** a NEW case opens a file with such an attribute and reads it, in
+- **Pass:** a case opens a file with such an attribute and reads it, in
   B-DEF.
 - **Fail:** an assert.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B11: the check reuses the file-flag
-  helper, and `LFS3_A_LAZY` equals `LFS3_O_CREAT`, `lfs3.c:12810-12816`).
+- **Verified by:** `attrs::fattr_rdonly` with `MODE` `LFS3_A_RDONLY |
+  LFS3_A_LAZY` (NEW-39).
+- **Status:** Tested on v3-integration (2c4576bd). Known defect at `b10efaa`
+  (2-files B11: the check reused the file-flag helper, and `LFS3_A_LAZY`
+  equals `LFS3_O_CREAT`).
 - **When:** every CI run.
 
 #### LFS3-ATTR-13
@@ -4015,16 +4145,16 @@ application set it when the attribute does not exist.
 - **Measure:** buffer contents after open, after `lfs3_setattr` of a
   shorter value, and after another handle syncs a shorter value; valgrind
   over `test_attrs`.
-- **Pass:** `attrs::fattr_zerofill` (NEW-131) finds zeros past the
+- **Pass:** `attrs::fattr_zerofill` (NEW-153) finds zeros past the
   attribute and the application's bytes when the attribute is missing,
   with and without `size`, in B-DEF, B-YGB and B-BIG, and
   `test.py --valgrind -Pnone` over the CI valgrind suites reports nothing.
 - **Fail:** a non-zero byte past the attribute, a changed buffer for a
   missing attribute, or a valgrind report.
-- **Verified by:** `attrs::fattr_zerofill` (NEW-131); the CI valgrind job.
-- **Status:** Tested on `v3-integration` (245b84c9), and the CI valgrind
-  suite set passes. Before, open and the updates from `lfs3_setattr` and
-  other handles' syncs left the bytes past the attribute untouched, and 9
+- **Verified by:** `attrs::fattr_zerofill` (NEW-153); the CI valgrind job.
+- **Status:** Tested on v3-integration (245b84c9), and the CI valgrind suite
+  set passes. Before, open and the updates from `lfs3_setattr` and other
+  handles' syncs left the bytes past the attribute untouched, and 9
   `attrs::fattr_*` cases with `MODE=2, MUTSIZE=0` failed under valgrind
   (issue #2).
 - **When:** every CI run.
@@ -4079,12 +4209,13 @@ larger than `file_limit`, and leave the file unchanged.
 - **Source:** Stated: `lfs3.h:660-665` (file_limit "must be respected by
   other littlefs drivers").
 - **Measure:** return value and the file afterwards.
-- **Pass:** a NEW case with `file_limit=100` gets `LFS3_ERR_FBIG` for 101 and
+- **Pass:** a case with `file_limit=100` gets `LFS3_ERR_FBIG` for 101 and
   8192 bytes, and the old value remains, in B-DEF.
 - **Fail:** the value is stored.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R7: both calls return 0; the file then
-  fails `lfs3_file_seek(..., 0, LFS3_SEEK_END)` with `LFS3_ERR_INVAL`).
+- **Verified by:** `kv::set_fbig` (NEW-36).
+- **Status:** Tested on v3-integration (d88ee2fc). Known defect at `b10efaa`
+  (4-api R7: both calls returned 0; the file then failed
+  `lfs3_file_seek(..., 0, LFS3_SEEK_END)` with `LFS3_ERR_INVAL`).
 - **When:** every CI run.
 
 #### LFS3-KV-05
@@ -4208,12 +4339,14 @@ have been removed.
 
 - **Source:** Derived: a full filesystem must be recoverable by deleting.
 - **Measure:** results of remove and of the following write.
-- **Pass:** a NEW case fills the disk until `LFS3_ERR_NOSPC`, removes half
-  the files, and writes a new file of the freed size, in B-DEF.
+- **Pass:** a case fills the disk until `LFS3_ERR_NOSPC`, removes half the
+  files, and writes a new file of the freed size, in B-DEF.
 - **Fail:** the remove or the write fails.
-- **Verified by:** NEW. `badblocks::error_then_sync` removes files from a
-  full disk with 0 to all of their blocks freed.
-- **Status:** Untested.
+- **Verified by:** `alloc::nospc_recover` (NEW-29).
+  `badblocks::error_then_sync` also removes files from a full disk with 0 to
+  all of their blocks freed.
+- **Status:** Tested on v3-integration (d24e8fd6, with the fixes 60026203
+  and ce2a68d6).
 - **When:** every CI run.
 
 #### LFS3-ALLOC-05
@@ -4225,11 +4358,13 @@ gbmap.
   call rmgbmap"). Every commit checkpoints first, and a checkpoint may need
   new blocks to repopulate the gbmap (3-alloc B10).
 - **Measure:** result of remove, and of `lfs3_fs_rmgbmap`, at NOSPC.
-- **Pass:** a NEW case fills a gbmap filesystem until `LFS3_ERR_NOSPC`, then
+- **Pass:** a case fills a gbmap filesystem until `LFS3_ERR_NOSPC`, then
   `lfs3_remove` of a file returns 0, in B-YGB and in B-BIG.
 - **Fail:** the remove fails with `LFS3_ERR_NOSPC`.
-- **Verified by:** NEW.
-- **Status:** Untested (suspected, 3-alloc B10).
+- **Verified by:** `alloc::nospc_gbmap` (NEW-30), `gbmap::nospc_remove`.
+- **Status:** Tested on v3-integration (eba40790, 7c3daa3a). At `b10efaa` a
+  NOSPC from gbmap repopulation blocked removes on a full disk (3-alloc
+  B10); it now falls back to the lookahead.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-06
@@ -4269,13 +4404,15 @@ first allocator checkpoint of a mount.
   the gbmap commit during pre-erase, decrements it past zero (3-alloc B2).
 - **Measure:** `LFS3_ERR_NOSPC` detection after mount with
   `LFS3_M_PREERASE` and without `LFS3_M_LOOKAHEAD` on a nearly full disk.
-- **Pass:** a NEW case gets `LFS3_ERR_NOSPC` from the first write that does
-  not fit, within 2 × `block_count` allocations, in B-BIG.
+- **Pass:** a case gets `LFS3_ERR_NOSPC` from the first write that does not
+  fit, within 2 × `block_count` allocations, in B-BIG.
 - **Fail:** the allocator loops, or hands out a block allocated in the same
   pre-erase commit.
-- **Verified by:** NEW.
-- **Status:** Untested (the underflow is certain from the code; reaching it
-  was not confirmed).
+- **Verified by:** `gc::preerase_ckpoint` (NEW-31),
+  `gc::preerase_ckpoint_full`.
+- **Status:** Tested on v3-integration (fe1a00d3, 195f05e2): pre-erase
+  allocated before the mount's first checkpoint, which is how the wrap was
+  reached.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-09
@@ -4289,7 +4426,8 @@ inside the known window.
   `GBMAP=true` pass in B-YGB and B-BIG.
 - **Fail:** a block outside the window, or in use, is allocated.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-YGB and B-BIG (jobs `test-yes-gbmap` and
+  `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-10
@@ -4303,7 +4441,7 @@ all blocks, merging equal neighbours and splitting ranges on update.
 - **Pass:** `gbmap::set_*` and `gbmap::set_ecksum_*` pass in B-YGB.
 - **Fail:** any check fails.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-YGB (job `test-yes-gbmap`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-11
@@ -4316,14 +4454,15 @@ littlefs shall repopulate the gbmap at a checkpoint when at most
   known state"; "0 only repopulates the gbmap when empty").
 - **Measure:** whether a checkpoint repopulates, for `known` equal to the
   threshold and for a threshold of 0 with `known` 0.
-- **Pass:** a NEW internal case with `LOOKGBMAP_THRESH` in {0, 1,
+- **Pass:** an internal case with `LOOKGBMAP_THRESH` in {0, 1,
   `BLOCK_COUNT/4`} sees a repopulation in both situations, in B-YGB.
 - **Fail:** no repopulation.
-- **Verified by:** NEW. The suites never vary `LOOKGBMAP_THRESH`.
-- **Status:** Known defect (3-alloc B11: the code tests
-  `known < min(thresh, block_count)`, `lfs3.c:10800-10802`, so a threshold of
-  0 never repopulates at a checkpoint). Either the code or the comment must
-  change.
+- **Verified by:** `gbmap::lookgbmap_thresh` (NEW-51).
+- **Status:** Tested on v3-integration (5bc6dcf8, e34b5d52): the code now
+  tests `known <= thresh`, as `lfs3.h` documents (decision in issue #11).
+  Known defect at `b10efaa` (3-alloc B11: the code tested `known <
+  min(thresh, block_count)`, so a threshold of 0 never repopulated at a
+  checkpoint).
 - **When:** every CI run.
 
 #### LFS3-ALLOC-12
@@ -4338,9 +4477,12 @@ inside its known window, a block that the committed filesystem references.
   under `-Plinear` with PLB-TORN, with a NEW internal check of the gbmap
   against a traversal after each remount.
 - **Fail:** the check finds such a block.
-- **Verified by:** as listed; NEW check.
-- **Status:** Partly tested (the reentrant cases run with the gbmap only in
-  gbmap builds; no case compares the gbmap with a traversal).
+- **Verified by:** as listed; `powerloss::gbmap_pl` (NEW-06) has the
+  internal check.
+- **Status:** Partly tested. `powerloss::gbmap_pl` (7fed4f64) compares the
+  gbmap with a traversal after every remount, with PLB-ALL, in B-BIG. The
+  other reentrant cases run in B-YGB on every push (job `test-yes-gbmap`)
+  without that comparison; their `lfs3_fs_ck` would not see the fault.
 - **When:** nightly.
 
 #### LFS3-ALLOC-13
@@ -4356,7 +4498,8 @@ littlefs shall enable the gbmap with `lfs3_fs_mkgbmap`, returning
   `LFS3_YES_GBMAP`.
 - **Fail:** any other result.
 - **Verified by:** as listed. The header comment is LFS3-DOC-07.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF
+  and B-YGB.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-14
@@ -4371,7 +4514,8 @@ littlefs shall disable the gbmap with `lfs3_fs_rmgbmap`, returning
   `LFS3_GBMAP` and without `LFS3_YES_GBMAP`.
 - **Fail:** any other result.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF
+  and B-YGB.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-15
@@ -4382,13 +4526,15 @@ the gbmap, and read-only in any build.
 - **Source:** Stated: `LFS3_WCOMPAT_GBMAP` (`lfs3.h:945`) with the wcompat
   rules of #1111 "compat flag system".
 - **Measure:** mount results across builds.
-- **Pass:** a NEW cross-build case: an image with a gbmap mounts RDWR in
-  B-YGB and in a `LFS3_GBMAP` build, gives `LFS3_ERR_NOTSUP` for RDWR and 0
-  for `LFS3_M_RDONLY` in B-DEF; an image without a gbmap mounts RDWR in
-  B-DEF and in a `LFS3_GBMAP` build.
+- **Pass:** a cross-build case: an image with a gbmap mounts RDWR in B-YGB
+  and in a `LFS3_GBMAP` build, gives `LFS3_ERR_NOTSUP` for RDWR and 0 for
+  `LFS3_M_RDONLY` in B-DEF; an image without a gbmap mounts RDWR in B-DEF
+  and in a `LFS3_GBMAP` build.
 - **Fail:** any other result.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `compat::gbmap_exchange` through `make test-compat-gbmap`
+  (NEW-79).
+- **Status:** Tested on v3-integration (c9410b20, 55878ff9), in the CI job
+  `test-compat-gbmap` (1c768762).
 - **When:** every CI run.
 
 #### LFS3-ALLOC-16
@@ -4400,12 +4546,12 @@ the free pool by the next repopulation.
   window; the design relies on the next repopulation to reclaim them
   (3-alloc F3, commits `316ca1c` and `92620d3`).
 - **Measure:** `lfs3_fs_usage` over a long run with a fixed file set.
-- **Pass:** a NEW case rewrites the same files 10,000 times in B-YGB and
-  finds `lfs3_fs_usage` bounded (no growth after the first 1,000 rewrites
-  beyond 2 blocks).
+- **Pass:** a case rewrites the same files 10,000 times in B-YGB and finds
+  `lfs3_fs_usage` bounded (no growth after the first 1,000 rewrites beyond 2
+  blocks).
 - **Fail:** usage keeps growing.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `gbmap::leak` (NEW-80).
+- **Status:** Tested on v3-integration (9dae2680).
 - **When:** nightly.
 
 #### LFS3-ALLOC-17
@@ -4415,11 +4561,13 @@ number of distinct blocks in use.
 
 - **Source:** Stated: `lfs3.h:1744-1750` ("best effort ... may be larger").
 - **Measure:** return value against a traversal of distinct blocks.
-- **Pass:** a NEW case compares the value with the distinct-block count from
+- **Pass:** a case compares the value with the distinct-block count from
   `lfs3_trv_read` over `files::*` style workloads, in B-DEF and B-YGB.
 - **Fail:** a smaller value, or a negative value other than an error.
-- **Verified by:** `grow::*` (only `>= 0`); NEW.
-- **Status:** Partly tested.
+- **Verified by:** `alloc::health` (NEW-146), which compares `lfs3_fs_usage`
+  with the blocks a traversal finds; `grow::*` (only `>= 0`).
+- **Status:** Tested on v3-integration (ad8752d1), in B-DEF, B-YGB and
+  B-BIG.
 - **When:** every CI run.
 
 ### 6.13 Pre-erase (PRE)
@@ -4444,7 +4592,7 @@ allocation window, erasing free blocks during gc.
   {0xff, 0x00, -1} in B-BIG.
 - **Fail:** any case fails.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-PRE-02
@@ -4455,12 +4603,12 @@ and the block's erased-state checksum still matches.
 - **Source:** Stated: #1111 "Pre-erased block tracking" ("reduce the latency
   [of] file writes in the critical path"); `lfs3.c:11227-11246`.
 - **Measure:** emubd erase count during writes after gc pre-erased.
-- **Pass:** `gc::preerase_*` erase-count checks pass in B-BIG, and a NEW case
+- **Pass:** `gc::preerase_*` erase-count checks pass in B-BIG, and a case
   finds zero erases of pre-erased blocks during 100 subsequent block
   allocations.
 - **Fail:** a pre-erased block is erased again at allocation.
-- **Verified by:** as listed; NEW.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Verified by:** as listed; `gc::preerase_noerase` (NEW-81).
+- **Status:** Tested on v3-integration (cc6fb187), in B-BIG.
 - **When:** every CI run.
 
 #### LFS3-PRE-03
@@ -4471,28 +4619,36 @@ recorded as erased whose erased-state checksum no longer matches.
 - **Source:** Stated: commit `35a1ac9` (a mismatch means "a prog was
   attempted, then power was lost"); `lfs3.c:11227-11246`.
 - **Measure:** emubd prog and erase counts of the block.
-- **Pass:** a NEW case flips a bit in a pre-erased block's first prog unit,
+- **Pass:** a case flips a bit in a pre-erased block's first prog unit,
   allocates, and finds the block skipped, in B-BIG.
 - **Fail:** the block is programmed or erased in that allocation.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `gc::preerase_mismatch` (NEW-23).
+- **Status:** Tested on v3-integration (9e01ee32), in B-BIG.
 - **When:** every CI run.
 
 #### LFS3-PRE-04
 
-littlefs shall treat blocks recorded as erased as in use when mounted
-without `LFS3_M_REVPERTURB`.
+littlefs shall erase a block recorded as erased before programming it,
+and otherwise treat it as free, when mounted without `LFS3_M_REVPERTURB`.
 
 - **Source:** Stated: commit `e3bca2b` (cross-mode mounts are safe but waste
-  the pre-erasure); `lfs3.c:11069-11083`.
+  the pre-erasure); `lfs3.c:11069-11083`. Decided in this fork (bebf55ba,
+  issue #11): treating the erased ranges as in use made a mount without
+  `LFS3_M_REVPERTURB` after a gc pre-erase walk the whole window and fail
+  with `LFS3_ERR_NOSPC` on a disk about 10% full, so they are free in every
+  mode, and erased again before use.
 - **Measure:** emubd prog counts of pre-erased blocks.
-- **Pass:** a NEW case pre-erases with `LFS3_M_REVPERTURB`, remounts without
-  it, fills the disk, and finds no pre-erased block programmed without an
-  erase, in B-BIG.
-- **Fail:** a pre-erased block is programmed without an erase.
-- **Verified by:** NEW. `mount::t_preerase` always remounts with
-  `LFS3_M_REVPERTURB`.
-- **Status:** Untested.
+- **Pass:** `gc::preerase_norevperturb` pre-erases with `LFS3_M_REVPERTURB`,
+  remounts without it, fills the disk, and finds every pre-erased block it
+  programmed erased first, and some used; `powerloss::gc_crossmode_pl_fuzz`
+  alternates both kinds of mount under power loss without an early
+  `LFS3_ERR_NOSPC`, in B-BIG.
+- **Fail:** a pre-erased block is programmed without an erase, or the disk
+  fills early.
+- **Verified by:** `gc::preerase_norevperturb` (NEW-24),
+  `powerloss::gc_crossmode_pl_fuzz`.
+- **Status:** Tested on v3-integration (7cf235bd, 5f100274, bebf55ba), as
+  restated.
 - **When:** every CI run.
 
 #### LFS3-PRE-05
@@ -4505,13 +4661,15 @@ pre-erase or during the gbmap commit that records it.
   pre-erase"), which no test checks.
 - **Measure:** mount result, `lfs3_fs_ck`, and emubd programs of blocks that
   were not erased since their last program.
-- **Pass:** NEW reentrant cases that call `lfs3_fs_gc` with
-  `LFS3_GC_PREERASE` between writes pass under `-Plinear` with PLB-TORN in
-  B-BIG, with an emubd check that fails any prog to a region already
-  programmed since its last erase.
+- **Pass:** reentrant cases that call `lfs3_fs_gc` with `LFS3_GC_PREERASE`
+  between writes pass under `-Plinear` with PLB-TORN in B-BIG, with an emubd
+  check that fails any prog to a region already programmed since its last
+  erase.
 - **Fail:** any permutation fails, or the check fires.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::preerase_pl_fuzz` (NEW-11), with the
+  prog-once check.
+- **Status:** Tested on v3-integration (b037389d), with PLB-ALL and torn
+  tails, in B-BIG.
 - **When:** nightly.
 
 #### LFS3-PRE-06
@@ -4523,13 +4681,13 @@ pre-erase flag return 0.
 - **Source:** Derived: allocation skips a block whose erase fails
   (`lfs3.c:11251-11257`); pre-erase should do the same.
 - **Measure:** return values with an ERASEERROR block in the known window.
-- **Pass:** a NEW case (a free block marked ERASEERROR) gets 0 from each call,
+- **Pass:** a case (a free block marked ERASEERROR) gets 0 from each call,
   and later gc calls make progress past the block, in B-BIG.
 - **Fail:** any call returns the error, or gc stops at the block.
-- **Verified by:** NEW.
-- **Status:** Known defect (3-alloc B1: `lfs3_alloc_preerase` returns the
-  erase error without advancing, `lfs3.c:11416-11419`, so every later gc
-  call fails at the same block).
+- **Verified by:** `badblocks::preerase` (NEW-22).
+- **Status:** Tested on v3-integration (3ceb48b1, 6e7c4852). Known defect at
+  `b10efaa` (3-alloc B1: `lfs3_alloc_preerase` returned the erase error
+  without advancing, so every later gc call failed at the same block).
 - **When:** every CI run.
 
 #### LFS3-PRE-07
@@ -4541,12 +4699,12 @@ window before programming data into it.
   `lfs3.c:11297-11328`. Data blocks cannot perturb their first bytes the way
   metadata blocks do.
 - **Measure:** gbmap window on disk at the time of the first data prog.
-- **Pass:** a NEW reentrant case of large writes after gc pre-erase passes
-  under `-Plinear` with PLB-TORN, with an internal check that the on-disk
-  window excludes the block at its first prog, in B-BIG.
+- **Pass:** a reentrant case of large writes after gc pre-erase passes under
+  `-Plinear` with PLB-TORN, with an internal check that the on-disk window
+  excludes the block at its first prog, in B-BIG.
 - **Fail:** the check fires or any permutation fails.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `powerloss::preerase_pl_fuzz` (NEW-11).
+- **Status:** Tested on v3-integration (b037389d), in B-BIG.
 - **When:** nightly.
 
 #### LFS3-PRE-08
@@ -4557,11 +4715,11 @@ erase silently did nothing.
 - **Source:** Derived: with ERASENOOP the recorded erased-state checksum
   covers old content and matches later (3-alloc §5a row 4).
 - **Measure:** operation results and content.
-- **Pass:** a NEW variant of `badblocks::region_spam_file_fuzz` with gc
+- **Pass:** a variant of `badblocks::region_spam_file_fuzz` with gc
   pre-erase and `BADBLOCK_BEHAVIOR=4` passes in B-BIG.
 - **Fail:** wrong content or an error while good blocks remain.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `badblocks::preerase_erasenoop` (NEW-25).
+- **Status:** Tested on v3-integration (72291a51), in B-BIG.
 - **When:** every CI run.
 
 #### LFS3-PRE-09
@@ -4588,10 +4746,10 @@ log, without erasing it first, after a torn program that left the first
 - **Verified by:** `powerloss_p1::tear_tail`, `powerloss::append_pl`,
   `powerloss::preerase_pl_fuzz`; every `powerloss::*` case also runs with
   torn tails.
-- **Status:** Untested at `b10efaa` (3-alloc B17). Tested on
-  `v3-integration` (`57493587`, `c9511dfe`); before `57493587`
+- **Status:** Tested on v3-integration (57493587, c9511dfe); before 57493587
   `test_powerloss` failed 2990 of 2998 permutations at `PROG_SIZE` 1 under
-  TORNTAIL. What the wider checksums cost is in Appendix B.4.
+  TORNTAIL. What the wider checksums cost is in Appendix B.4. Untested at
+  `b10efaa` (3-alloc B17).
 - **When:** every CI run.
 
 ### 6.14 Garbage collection and traversals (GC)
@@ -4613,8 +4771,8 @@ about one block.
   `GC_STEPS` in {0, 1, 4}.
 - **Fail:** a call does more work than the bound.
 - **Verified by:** as listed; NEW bound.
-- **Status:** Partly tested (compiled out of B-DEF; no per-call bound is
-  checked).
+- **Status:** Partly tested. The cases run in B-BIG (job `test-biggest`),
+  but no per-call bound is checked.
 - **When:** every CI run.
 
 #### LFS3-GC-02
@@ -4644,12 +4802,12 @@ leave clear every `LFS3_I_*` work flag the call was asked to work on.
 - **Fail:** a call exceeds the bound, or returns with a requested work flag
   still set.
 - **Verified by:** `gc::steps_unbounded`, `gc::compact_unshrinkable`.
-- **Status:** Known defect at `b10efaa` (#5): with the gbmap, pre-erase and
-  lookahead, 16 of 384 permutations of `gc::steps_unbounded` never return,
-  because each gbmap repopulation and the sync after it allocate from the
-  few free blocks and ask for another repopulation; and an mdir that
-  compaction cannot shrink is compacted, and relocated, on every pass.
-  Tested on `v3-integration` (b55ca37f, 6a1535f6).
+- **Status:** Tested on v3-integration (b55ca37f, 6a1535f6). Known defect at
+  `b10efaa` (issue #5): with the gbmap, pre-erase and lookahead, 16 of 384
+  permutations of `gc::steps_unbounded` never returned, because each gbmap
+  repopulation and the sync after it allocated from the few free blocks and
+  asked for another repopulation; and an mdir that compaction could not
+  shrink was compacted, and relocated, on every pass.
 - **When:** every CI run.
 
 #### LFS3-GC-03
@@ -4665,7 +4823,7 @@ lookahead, pre-erase, compact, ckmeta, ckdata), and clear the matching
   in B-BIG.
 - **Fail:** a flag stays set after its work, or clears early.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-GC-04
@@ -4679,7 +4837,7 @@ filesystem between gc calls.
 - **Pass:** `gc::*_mutation` and `gc::mutation*` pass in B-BIG.
 - **Fail:** work never completes under steady mutation.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF.
 - **When:** every CI run.
 
 #### LFS3-GC-05
@@ -4706,11 +4864,16 @@ every exit path.
   (`lfs3.c:16824-16825`); a traversal left on the handle list dangles once
   the call returns (3-alloc R3).
 - **Measure:** the handle list after each call.
-- **Pass:** a NEW internal check after every `lfs3_fs_ck` in `ck::*` and
-  `gc::*` finds no handle beyond those the test opened, in B-BIG.
+- **Pass:** `gc::ck_no_dangling` runs `lfs3_fs_ck` with every combination of
+  work and check flags, with and without faults, while other handles are
+  open, and `gc::mkconsistent_ck_grm` on the path that stopped with its
+  traversal open; afterwards `lfs3->handles` holds only the handles the test
+  opened, in B-DEF and B-BIG.
 - **Fail:** a stack traversal remains on the list.
-- **Verified by:** NEW.
-- **Status:** Untested (suspected, 3-alloc R3; reachability unclear).
+- **Verified by:** `gc::ck_no_dangling` (NEW-83), `gc::mkconsistent_ck_grm`.
+- **Status:** Tested on v3-integration (69ad2cd6, 5c2c0fdc). At `b10efaa`
+  `lfs3_fs_ck` could return with its stack traversal still linked (3-alloc
+  R3).
 - **When:** every CI run.
 
 #### LFS3-GC-07
@@ -4813,10 +4976,10 @@ fails.
   `mount::t_preerase` pass in B-BIG.
 - **Fail:** the work is not done, or a failure is not reported.
 - **Verified by:** as listed.
-- **Status:** Partly tested (`t_lookgbmap` and `t_preerase` compiled out of
-  B-DEF; `format_flags` runs 32 of 8192 permutations there). In B-BIG, mounts
-  with `LFS3_M_PREERASE` and `LFS3_M_CKMETAPARITY` but without
-  `LFS3_M_CKFETCHES` fail because of D-2
+- **Status:** Tested on v3-integration: the B-DEF cases on every push,
+  `t_lookgbmap` and `t_preerase` in B-BIG (job `test-biggest`). At `b10efaa`
+  mounts in B-BIG with `LFS3_M_PREERASE` and `LFS3_M_CKMETAPARITY` but
+  without `LFS3_M_CKFETCHES` failed because of D-2, fixed in f90e1323
   (LFS3-INT-23).
 - **When:** every CI run.
 
@@ -4879,8 +5042,8 @@ each time; and `lfs3.h` shall recommend a value.
   second read is found with 2 and 3 passes, in B-YGB and B-BIG.
 - **Fail:** fewer reads, or the second-read failure missed with 2 passes.
 - **Verified by:** `repair::passes`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (f09acb9d).
+- **Status:** Tested on v3-integration (f09acb9d). Not implemented at
+  `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-GC-18
@@ -4903,8 +5066,8 @@ read passes; and `lfs3.h` shall recommend a value.
   pass with 1 and 3 failed reads and `ck_retries` 3.
 - **Fail:** another result.
 - **Verified by:** `repair::data_lost`, `repair::data`, `repair::btree`.
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (f09acb9d).
+- **Status:** Tested on v3-integration (f09acb9d). Not implemented at
+  `b10efaa`.
 - **When:** every CI run.
 
 ### 6.15 Format, mount, grow, compatibility and versioning (MOUNT)
@@ -4920,7 +5083,8 @@ littlefs shall format, and then mount, a device of any geometry that
   geometry of G-ALL in B-DEF and B-YGB.
 - **Fail:** any failure.
 - **Verified by:** as listed.
-- **Status:** Partly tested (one geometry by default).
+- **Status:** Partly tested. CI formats one geometry; the nightly job
+  `test-geometry` (da14f0ea) runs G-ALL but has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-MOUNT-02
@@ -4944,15 +5108,17 @@ littlefs shall refuse, before any block device operation, to format a
 device with fewer than 2 blocks, or fewer than 3 with `LFS3_F_GBMAP`.
 
 - **Source:** Derived: format writes blocks 0 and 1, and 2 for the gbmap
-  (`lfs3.c:16129-16284`). Whether the refusal is an assert or
-  `LFS3_ERR_INVAL` is open question Q14.
+  (`lfs3.c:16129-16284`). Q14 is decided: the refusal is an assert in
+  `lfs3_format`, before any I/O, and `lfs3.h` documents the minimum
+  (`block_count`).
 - **Measure:** return value or assert; emubd operation counts.
-- **Pass:** a NEW case with `block_count` 1 (and 2 with `LFS3_F_GBMAP`) finds
+- **Pass:** a case with `block_count` 1 (and 2 with `LFS3_F_GBMAP`) finds
   the refusal with no erase or prog issued, in B-DEF and B-YGB.
 - **Fail:** any erase or prog before the refusal.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R28: with `block_count` 1, format erases
-  and writes block 0, then asserts in the bd wrapper, `lfs3.c:570`).
+- **Verified by:** `mount::format_tiny` (NEW-44), a death test.
+- **Status:** Tested on v3-integration (dda5cc34, 67f5b135, 395fdfa2). Known
+  defect at `b10efaa` (4-api R28: with `block_count` 1, format erased and
+  wrote block 0, then asserted in the bd wrapper).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-04
@@ -5042,13 +5208,14 @@ know.
   rcompat; the driver looks for unknown tags only from 0x013b upwards
   (`lfs3.c:15750-15764`).
 - **Measure:** mount result.
-- **Pass:** a NEW internal case commits each of 0x0100, 0x0130, 0x0132,
-  0x0133, 0x013b and 0x0142 to the mroot and gets `LFS3_ERR_NOTSUP` for each,
-  in B-DEF.
+- **Pass:** an internal case commits each of 0x0100, 0x0130, 0x0132, 0x0133,
+  0x013b and 0x0142 to the mroot and gets `LFS3_ERR_NOTSUP` for each, in
+  B-DEF.
 - **Fail:** any of them mounts.
-- **Verified by:** NEW. `mount::incompat_unknown_config` uses 0x0142 only.
-- **Status:** Known defect (1-meta 0.4: 0x0100, 0x0130, 0x0132 and 0x0133
-  mount).
+- **Verified by:** `mount::incompat_unknown_config`, extended to the tags
+  below 0x013b and to config tags with bit 7 set.
+- **Status:** Tested on v3-integration (ae774718, 005fea66). Known defect at
+  `b10efaa` (1-meta 0.4: 0x0100, 0x0130, 0x0132 and 0x0133 mounted).
 - **When:** before v3-beta.
 
 #### LFS3-MOUNT-10
@@ -5074,12 +5241,12 @@ littlefs shall fail `lfs3_mount` when the final mroot has no geometry.
   interpreted. At `b10efaa` the result is `LFS3_ERR_INVAL`
   (`lfs3.c:15664-15670`); open question Q22 asks which code it should be.
 - **Measure:** mount result.
-- **Pass:** a NEW internal case that removes the geometry tag gets a
-  negative result, in B-DEF.
+- **Pass:** an internal case that removes the geometry tag gets a negative
+  result, in B-DEF.
 - **Fail:** the mount succeeds.
 - **Verified by:** `mount::no_geometry`.
-- **Status:** Untested at `b10efaa`; tested on `v3-integration` (e9aeb8b2),
-  which returns `LFS3_ERR_CORRUPT` (Q22).
+- **Status:** Tested on v3-integration (e9aeb8b2), which returns
+  `LFS3_ERR_CORRUPT` (Q22 decided). Untested at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-MOUNT-12
@@ -5124,12 +5291,17 @@ zero-initialised `lfs3_t`.
 - **Source:** Derived: `lfs3_t` is commonly static, and `lfs3.h:1410-1419`
   sets no other precondition.
 - **Measure:** mount result.
-- **Pass:** a NEW B-RO test mounts images from `mount::simple` with a
-  zeroed and with a 0xff-filled `lfs3_t`, and both succeed.
+- **Pass:** `make test-rdonly` mounts the images B-DEF and B-YGB write, in
+  B-RO and B-YES-RDONLY, with a zeroed and with a 0xff-filled `lfs3_t`, and
+  both succeed.
 - **Fail:** either mount fails.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R5: the name and file limits are compared
-  before they are set; a zeroed `lfs3_t` gets `LFS3_ERR_NOTSUP`).
+- **Verified by:** `make test-rdonly` (NEW-46): `runners/rdonly_runner.c` in
+  B-RO and B-YES-RDONLY mounts the images B-DEF and B-YGB write, into an
+  `lfs3_t` filled with 0x00 and with 0xff.
+- **Status:** Tested on v3-integration (83f8cdea, c2dfab01, 98cb8476), in
+  the CI job `test-rdonly` (ff25409a). Known defect at `b10efaa` (4-api R5:
+  the name and file limits were compared before they were set, so a zeroed
+  `lfs3_t` got `LFS3_ERR_NOTSUP`).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-15
@@ -5153,12 +5325,14 @@ buffer it allocated, when `lfs3_mount` fails.
 
 - **Source:** Derived: a failed mount must not make things worse.
 - **Measure:** emubd prog and erase counts; valgrind.
-- **Pass:** a NEW case runs every `mount::incompat_*` failure and a gcksum
+- **Pass:** a case runs every `mount::incompat_*` failure and a gcksum
   mismatch with counters and valgrind, and finds no prog, no erase and no
   leak, in B-DEF.
 - **Fail:** any prog, erase or leak.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `mount::fail_nowrite`, which runs 18 mount failures,
+  read-write and read-only, with and without mount-time work; `mount::nomem`
+  for the buffers.
+- **Status:** Tested on v3-integration (52246be8, d18d0ac8).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-17
@@ -5168,15 +5342,16 @@ with `LFS3_M_RDONLY`, whatever calls are made.
 
 - **Source:** Stated: `lfs3.h:245` ("Mount the filesystem as read only").
 - **Measure:** emubd prog, erase and sync counters over the whole mount.
-- **Pass:** a NEW case opens a file `LFS3_O_RDONLY` with an `LFS3_A_RDWR`
+- **Pass:** a case opens a file `LFS3_O_RDONLY` with an `LFS3_A_RDWR`
   attribute, desyncs it, calls `lfs3_file_sync`, runs traversals and
   `lfs3_fs_ck`, and finds all counters unchanged, in B-DEF.
 - **Fail:** any counter increases.
-- **Verified by:** NEW.
-- **Status:** Known defect (2-files B3: `lfs3_file_sync` has no read-only
-  guard, `lfs3.c:14553-14608`; a probe issued one prog on an
-  `LFS3_M_RDONLY` mount). Syncing read-only handles on a read-write mount is
-  open question Q1.
+- **Verified by:** `mount::rdonly_nowrite` (NEW-37),
+  `attrs::fattr_rdonly_file`, `fsync::desync_wdrs`.
+- **Status:** Tested on v3-integration (db987a31, 51436f17). Q1 is decided
+  (db987a31): syncing a read-only handle resyncs it and writes nothing.
+  Known defect at `b10efaa` (2-files B3: a probe issued one prog on an
+  `LFS3_M_RDONLY` mount).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-18
@@ -5201,13 +5376,16 @@ filesystem is mounted read-only, including in `LFS3_RDONLY` builds.
 
 - **Source:** Stated: `lfs3.h:300` ("Mounted read only").
 - **Measure:** `fsinfo.flags`.
-- **Pass:** a NEW case finds the flag set after `lfs3_mount` with
+- **Pass:** a case finds the flag set after `lfs3_mount` with
   `LFS3_M_RDONLY` in B-DEF, and after any mount in B-RO.
 - **Fail:** the flag is clear.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R25: an `LFS3_RDONLY` build mounted with
-  flags 0 reports 0x3000). Reporting write-side work flags on a read-only
-  mount is open question Q16.
+- **Verified by:** `runners/rdonly_runner.c` through `make test-rdonly`,
+  which fails any read-only mount that doesn't report the flag; B-DEF cases
+  with `LFS3_M_RDONLY`.
+- **Status:** Tested on v3-integration (83f8cdea, c2dfab01). Known defect at
+  `b10efaa` (4-api R25: an `LFS3_RDONLY` build mounted with flags 0 reported
+  0x3000). Reporting write-side work flags on a read-only mount is open
+  question Q16.
 - **When:** every CI run.
 
 #### LFS3-MOUNT-20
@@ -5233,13 +5411,13 @@ littlefs shall return `LFS3_ERR_INVAL`, and change nothing, from
   blocks that do not exist, and makes the image unmountable with the same
   configuration (`lfs3.c:15688-15693`).
 - **Measure:** return value; `lfs3_fs_stat`; emubd bounds.
-- **Pass:** a NEW case calls `lfs3_fs_grow(128)` on a 64-block
-  configuration and gets `LFS3_ERR_INVAL`, with the block count still 64, in
-  B-DEF.
+- **Pass:** a case calls `lfs3_fs_grow(128)` on a 64-block configuration and
+  gets `LFS3_ERR_INVAL`, with the block count still 64, in B-DEF.
 - **Fail:** any other result.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R4: the call returns 0, later writes
-  erase block 64, and the next mount fails with `LFS3_ERR_NOTSUP`).
+- **Verified by:** `grow::invalid` (NEW-47).
+- **Status:** Tested on v3-integration (613ccac8, 818b61a4). Known defect at
+  `b10efaa` (4-api R4: the call returned 0, later writes erased block 64,
+  and the next mount failed with `LFS3_ERR_NOTSUP`).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-22
@@ -5250,12 +5428,15 @@ littlefs shall keep the allocator within the old block count after
 - **Source:** Derived: the failure path restores the block count but not
   the allocation window (`lfs3.c:16985-16997`, `10886-10897`; 3-alloc B6).
 - **Measure:** blocks allocated after the failed grow.
-- **Pass:** a NEW case makes grow fail after the window has moved into the
-  new range, then fills the disk, and finds no block at or beyond the old
-  count, in B-DEF and B-YGB.
+- **Pass:** a case makes grow fail after the window has moved into the new
+  range, then fills the disk, and finds no block at or beyond the old count,
+  in B-DEF and B-YGB.
 - **Fail:** such a block is allocated, or an assert fires.
-- **Verified by:** NEW.
-- **Status:** Untested (suspected, 3-alloc B6).
+- **Verified by:** `grow::failed`.
+- **Status:** Tested on v3-integration (9d1a6df4; since 5eaedd05 it fails
+  progs spread over the grow, because a failed sync now keeps the grow). At
+  `b10efaa` a failed grow left the allocation window past the old block
+  count (3-alloc B6).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-23
@@ -5297,12 +5478,11 @@ it.
 - **Source:** Derived: #1111 "Wait, a disk breaking change?"; a v2 image
   must not be damaged by a v3 driver.
 - **Measure:** mount result; emubd prog and erase counters.
-- **Pass:** a NEW case mounts a v2.11 image (checked in as a fixture) and
-  gets `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` with no prog or erase, in
-  B-DEF.
+- **Pass:** a case mounts a v2.11 image (checked in as a fixture) and gets
+  `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` with no prog or erase, in B-DEF.
 - **Fail:** the image mounts, or is written.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `mount::v2_image`.
+- **Status:** Tested on v3-integration (48077278).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-26
@@ -5351,8 +5531,8 @@ accept either, and need a death-test harness where they rely on an assert.
 
 littlefs shall format, mount and pass the file suites with a `struct
 lfs3_cfg` in which only the block device callbacks, `read_size`,
-`prog_size`, `block_size`, `block_count`, `rcache_size`, `pcache_size` and
-`lookahead_size` are set and every other field is zero.
+`prog_size`, `block_size`, `block_count`, `rcache_size`, `pcache_size`,
+`fcache_size` and `lookahead_size` are set and every other field is zero.
 
 - **Source:** Stated: `lfs3.h:1400-1402` ("The config struct must be zeroed
   for defaults"). The TODOs at `lfs3.h:667-668, 686-691` note that some
@@ -5362,10 +5542,12 @@ lfs3_cfg` in which only the block device callbacks, `read_size`,
   `FRAGMENT_SIZE`, `CRYSTAL_THRESH`, `FCACHE_SIZE`, `BLOCK_RECYCLES` and the
   gc thresholds all 0, in B-DEF.
 - **Fail:** any failure or hang.
-- **Verified by:** NEW define set.
-- **Status:** Known defect (2-files B12: `fragment_size` 0 makes the
-  fragment write path loop without progress, committing on every
-  iteration).
+- **Verified by:** `mount::zeroed_cfg` (NEW-48).
+- **Status:** Tested on v3-integration (e18003a2, da4ec17c), as restated for
+  Q15: `fcache_size` must be set (LFS3-CFG-07), and a zero `fragment_size`
+  is valid only with `crystal_thresh` 0 or 1, which a zeroed configuration
+  has. Known defect at `b10efaa` (2-files B12: `fragment_size` 0 looped
+  without progress).
 - **When:** every CI run.
 
 #### LFS3-CFG-02
@@ -5426,10 +5608,11 @@ littlefs shall check `gc_compact_thresh` (0, -1, or `block_size/2` to
   (`lfs3.c:10339-10350`), but checked only with `LFS3_GC`
   (`lfs3.c:15139-15147`).
 - **Measure:** assert or error for 1 and for `block_size + 1`.
-- **Pass:** a NEW death test finds both refused in B-DEF and B-BIG.
+- **Pass:** a death test finds both refused in B-DEF and B-BIG.
 - **Fail:** either is accepted in B-DEF.
-- **Verified by:** NEW.
-- **Status:** Known defect (1-meta 7.14).
+- **Verified by:** `gc::compact_thresh_check` (NEW-49), a death test.
+- **Status:** Tested on v3-integration (6152d1bb, 696a539e). Known defect at
+  `b10efaa` (1-meta 7.14).
 - **When:** every CI run.
 
 #### LFS3-CFG-06
@@ -5449,19 +5632,19 @@ mounted.
 
 #### LFS3-CFG-07
 
-littlefs shall treat `fcache_size` 0 as "no file cache" and open files
-without calling `lfs3_malloc(0)`.
+littlefs shall refuse an `fcache_size` of 0 in `lfs3_init`, unless
+`LFS3_NO_MALLOC` is defined, so that it never calls `lfs3_malloc(0)`.
 
-- **Source:** Proposal. `lfs3_get` already opens with a zero-size cache and
-  a sentinel buffer (`lfs3.c:14997-15001`); `lfs3_file_open` with
-  `fcache_size` 0 calls `lfs3_malloc(0)`, which returns NULL on some C
-  libraries (4-api 4.1). See open question Q15.
-- **Measure:** open result; reads and writes.
-- **Pass:** `files::*` and `fwrite::*` pass with `FCACHE_SIZE=0`, and an
-  allocator whose `malloc(0)` returns NULL, in B-DEF.
-- **Fail:** `LFS3_ERR_NOMEM` or a failure.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Source:** Stated: `lfs3.h` (`fcache_size`: "Must be non-zero unless
+  LFS3_NO_MALLOC is defined"). Q15 is decided (da4ec17c): `lfs3_malloc(0)`
+  may fail, so 0 is refused rather than read as "no file cache".
+- **Measure:** assert, and calls to `lfs3_malloc`.
+- **Pass:** a death test with `fcache_size` 0 and no `fcache_buffer` finds
+  it refused in `lfs3_init`, before any `lfs3_malloc`, in B-DEF.
+- **Fail:** it is accepted, or `lfs3_malloc(0)` is called.
+- **Verified by:** NEW: `fwrite::fcache_zero` (NEW-86), unblocked by the Q15
+  decision.
+- **Status:** Untested (implemented as an assert, da4ec17c).
 - **When:** every CI run.
 
 #### LFS3-CFG-08
@@ -5509,8 +5692,9 @@ describes: 0, 1, less than `prog_size`, `block_size`, more than
 - **Fail:** any permutation fails, or a check reports an undamaged block
   corrupt.
 - **Verified by:** as listed, NEW-133.
-- **Status:** Partly tested (512 and -1 only; NEW-133 checks
-  `crystal_thresh` 0, 1 and 8 with `prog_size` 16 on `v3-rc`, `a12705da`).
+- **Status:** Partly tested: 512 and -1, and `crystal_thresh` 0, 1 and 8
+  with `prog_size` 16 in `ck::ckdata_unaligned` (NEW-133, aa18164d);
+  `block_size` and more are not run.
 - **When:** nightly.
 
 #### LFS3-CFG-11
@@ -5590,16 +5774,17 @@ part way, and shall never program bytes a failed write left in its caches.
   returning 0, and `badblocks::graft_torn` passes, in B-DEF, B-YGB and
   B-BIG.
 - **Fail:** the check fires, a data checksum mismatches, or an assert.
-- **Verified by:** NEW-12 (emubd check, all suites);
-  `badblocks::crystal_ioerror`; `badblocks::graft_torn`;
+- **Verified by:** `make test-progonce` (NEW-12: every suite with the emubd
+  prog-once check); `badblocks::crystal_ioerror`; `badblocks::graft_torn`;
   `powerloss_p1::tear_tail` and `badblocks::error_then_sync` (progs failing
   part way through a write) run with the check.
-- **Status:** Partly tested on `v3-integration` (0c531757):
+- **Status:** Tested on v3-integration (0c531757, b75e9ae5):
   `badblocks::crystal_ioerror` and `badblocks::graft_torn` pass in B-DEF,
-  B-YGB and B-BIG. Before, a failed crystallization left its data block
-  marked erased past the bytes it had programmed, and the next one flushed
-  the failed attempt's prog cache into its own checksum (issue #3). The
-  all-suite run with the check enabled (NEW-12) is not part of this.
+  B-YGB and B-BIG, and the whole suite passes with the check in the CI job
+  `test-progonce` (1c768762). Before 0c531757, a failed crystallization left
+  its data block marked erased past the bytes it had programmed, and the
+  next one flushed the failed attempt's prog cache into its own checksum
+  (issue #3).
 - **When:** every CI run.
 
 #### LFS3-CFG-16
@@ -5615,8 +5800,8 @@ allocation for -1).
   B-BIG.
 - **Fail:** a repopulation at the wrong point.
 - **Verified by:** as listed.
-- **Status:** Partly tested (compiled out of B-DEF; the default define is
-  -1).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF;
+  the default define is -1.
 - **When:** every CI run.
 
 #### LFS3-CFG-17
@@ -5630,8 +5815,8 @@ littlefs shall repopulate the gbmap during gc when at most
   `BLOCK_COUNT/2`, -1} in B-BIG.
 - **Fail:** a repopulation at the wrong point.
 - **Verified by:** as listed. The header text is LFS3-DOC-09.
-- **Status:** Partly tested (compiled out of B-DEF; the default define is
-  -1).
+- **Status:** Tested in B-BIG (job `test-biggest`). Compiled out of B-DEF;
+  the default define is -1.
 - **When:** every CI run.
 
 ### 6.17 Resource bounds (RES)
@@ -5649,8 +5834,9 @@ littlefs shall not call `lfs3_malloc` when the caller supplies
   fails the test when called, passes in B-DEF; and B-NM builds and passes the
   same.
 - **Fail:** any allocator call.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `alloc::static_buffers` (NEW-87), with the runner's
+  allocator hooks counting `lfs3_malloc`.
+- **Status:** Tested on v3-integration (83908fc9).
 - **When:** every CI run.
 
 #### LFS3-RES-02
@@ -5665,8 +5851,11 @@ littlefs shall not grow `sizeof(lfs3_t)` and the other structures in
   base branch.
 - **Pass:** CI posts the difference for B-DEF, B-RO, B-YGB and B-BIG.
 - **Fail:** no report, or an increase that the PR does not explain.
-- **Verified by:** NEW: CI size job (LFS3-CI-06).
-- **Status:** Untested.
+- **Verified by:** the `sizes` steps of the CI job `test` (J-SIZE, NEW-118),
+  posted as commit statuses by `status.yml`.
+- **Status:** Partly tested. The `test` job measures `lfs3.structs.csv` per
+  architecture on every run (162b05f7); the statuses have not yet been seen
+  on a pull request (issue #17).
 - **When:** every CI run.
 
 #### LFS3-RES-03
@@ -5679,8 +5868,10 @@ reported in the pull request.
 - **Measure:** `make lfs3.stack.csv` (GCC `-fcallgraph-info`) on thumb.
 - **Pass:** CI posts the difference for B-DEF, B-RO, B-YGB and B-BIG.
 - **Fail:** no report, or an increase that the PR does not explain.
-- **Verified by:** NEW: CI size job.
-- **Status:** Untested.
+- **Verified by:** the `sizes` steps of the CI job `test` (J-SIZE, NEW-118).
+- **Status:** Partly tested. The `test` job measures `lfs3.stack.csv` and
+  `lfs3.ctx.csv` on every run (162b05f7); the statuses have not yet been
+  seen on a pull request (issue #17).
 - **When:** every CI run.
 
 #### LFS3-RES-04
@@ -5694,8 +5885,10 @@ reported in the pull request.
   `LFS3_NO_ASSERT`.
 - **Pass:** CI posts the difference for B-DEF, B-RO, B-YGB and B-BIG.
 - **Fail:** no report, or an increase that the PR does not explain.
-- **Verified by:** NEW: CI size job.
-- **Status:** Untested.
+- **Verified by:** the `sizes` steps of the CI job `test` (J-SIZE, NEW-118).
+- **Status:** Partly tested. The `test` job measures `lfs3.code.csv` and
+  `lfs3.data.csv` on every run (162b05f7); the statuses have not yet been
+  seen on a pull request (issue #17).
 - **When:** every CI run.
 
 #### LFS3-RES-05
@@ -5708,8 +5901,9 @@ static stack analysis cannot bound.
 - **Pass:** every public function has a finite maximum stack in B-DEF and
   B-BIG.
 - **Fail:** any function is reported unbounded.
-- **Verified by:** NEW: CI size job.
-- **Status:** Untested.
+- **Verified by:** the stack report of the CI job `test` (J-SIZE, NEW-118).
+- **Status:** Partly tested. `scripts/stack.py` runs on every push
+  (162b05f7), but nothing fails the job on an unbounded result.
 - **When:** every CI run.
 
 #### LFS3-RES-06
@@ -5719,13 +5913,15 @@ littlefs shall free only the buffers it allocated when `lfs3_format` or
 
 - **Source:** Stated: `lfs3.h:94`; `lfs3.c:15175-15222` and `15400-15418`.
 - **Measure:** crash and leak reports with a failing allocator.
-- **Pass:** a NEW case fails the first, second and third allocation in turn,
-  with `lfs3_t` filled with 0xab, and gets `LFS3_ERR_NOMEM` with no crash and
-  no leak under valgrind, in B-DEF.
+- **Pass:** a case fails the first, second and third allocation in turn,
+  with `lfs3_t` filled with 0xab, and gets `LFS3_ERR_NOMEM` with no crash
+  and no leak under valgrind, in B-DEF.
 - **Fail:** a crash, an invalid free, or a leak.
-- **Verified by:** NEW.
-- **Status:** Known defect (4-api R8: a failure of the first or second
-  allocation frees pointers that were never set).
+- **Verified by:** `mount::nomem` (NEW-50), which fails each allocation in
+  turn and checks for leaks.
+- **Status:** Tested on v3-integration (90c12e41, d18d0ac8). Known defect at
+  `b10efaa` (4-api R8: a failure of the first or second allocation freed
+  pointers that were never set).
 - **When:** every CI run.
 
 #### LFS3-RES-07
@@ -5736,12 +5932,13 @@ blocks.
 - **Source:** Stated: #1114 (2025-06-23): the driver "is currently limited
   to 2^31-1 for both file size and block count (though untested)".
 - **Measure:** results on a sparse block device (kiwibd or a sparse emubd).
-- **Pass:** a NEW case with `block_count = 2^31 - 1` and 512-byte blocks
+- **Pass:** a case with `block_count = 2^31 - 1` and 512-byte blocks
   formats, mounts, writes 1000 files spread over the address range, remounts
   and reads them back, in B-DEF and B-YGB.
 - **Fail:** any failure.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `mount::max_blocks` (NEW-88), on the sparse RAM block
+  device.
+- **Status:** Tested on v3-integration (2210fabc, 7c148738).
 - **When:** before v3-beta.
 
 #### LFS3-RES-08
@@ -5752,12 +5949,12 @@ littlefs shall need, for each open file, no memory beyond the
 - **Source:** Derived: #1111 "Efficient inline files, no more RAM
   constraints".
 - **Measure:** allocator calls during file operations.
-- **Pass:** a NEW case with a counting allocator finds exactly one
-  allocation of `fcache_size` per `lfs3_file_open`, and none during reads,
-  writes and syncs, in B-DEF.
+- **Pass:** a case with a counting allocator finds exactly one allocation of
+  `fcache_size` per `lfs3_file_open`, and none during reads, writes and
+  syncs, in B-DEF.
 - **Fail:** any other allocation.
-- **Verified by:** NEW.
-- **Status:** Untested.
+- **Verified by:** `alloc::static_buffers` (NEW-87).
+- **Status:** Tested on v3-integration (83908fc9).
 - **When:** every CI run.
 
 ### 6.18 Performance (PERF)
@@ -5879,8 +6076,9 @@ does not compact metadata.
   syncs, in B-DEF.
 - **Fail:** more than 2.
 - **Verified by:** NEW.
-- **Status:** Known defect (measured: 7 calls per small append and sync
-  with `prog_size` 16, and 4 with `prog_size` 1; 2-files B18, Appendix B.2).
+- **Status:** Known defect at `b10efaa` (measured: 7 calls per small append
+  and sync with `prog_size` 16, and 4 with `prog_size` 1; 2-files B18,
+  Appendix B.2). Not measured again on v3-integration; NEW-120 would.
 - **When:** nightly.
 
 #### LFS3-PERF-08
@@ -5901,9 +6099,10 @@ and without the gbmap and pre-erase.
 - **Fail:** any permutation is above it.
 - **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
   Appendix B.1.
-- **Status:** Partly tested at `b10efaa` (measured outside the suite).
-  Tested on `v3-integration` (`32eb36e7`): at most 10.6 erases per minute
-  (`prog_size` 256), against v2's 62.7 (Appendix B.1).
+- **Status:** Tested on v3-integration (32eb36e7; measured again at
+  9a2148ff): at most 10.8 erases per minute (`prog_size` 256, with the
+  gbmap), against v2's 62.7 (Appendix B.1). Partly tested at `b10efaa`
+  (measured outside the suite).
 - **When:** nightly.
 
 #### LFS3-PERF-09
@@ -5923,12 +6122,12 @@ and without the gbmap and pre-erase.
 - **Fail:** any permutation is above it.
 - **Verified by:** `bench_wlog_fresh`, against the v2.11.3 figures of
   Appendix B.1.
-- **Status:** Known defect at `b10efaa` (measured, M-3: with `prog_size`
-  256 v3 does 89.5 erases per minute against v2's 80.7), and at
-  `fd3157e3` (86.7). Tested on `v3-integration` (`ec0733b8`, `554e89f9`,
-  `32eb36e7`, Appendix B.5 B, C and D): the worst permutation does 48.5
+- **Status:** Tested on v3-integration (ec0733b8, 554e89f9, 32eb36e7;
+  Appendix B.5 B, C and D): at 9a2148ff the worst permutation does 48.5
   erases per minute (`prog_size` 256) against v2's 80.7, and
-  `bench_wlog_fresh` fails if any exceeds v2.
+  `bench_wlog_fresh` fails if any exceeds v2. Known defect at `b10efaa`
+  (measured, M-3: with `prog_size` 256 v3 did 89.5 erases per minute against
+  v2's 80.7), and at fd3157e3 (86.7).
 - **When:** nightly.
 
 #### LFS3-PERF-10
@@ -5950,11 +6149,11 @@ logging starts.
 - **Fail:** a call performs two or more erases.
 - **Verified by:** `bench_wlog_fresh`. Measured (M-2): longest call 51 ms,
   one erase.
-- **Status:** Partly tested at `b10efaa` (measured outside the suite).
-  Tested on `v3-integration` (`32eb36e7`): every pre-erase permutation, at
-  both rates and every `prog_size`, has at most one erase in a call, which
-  `bench_wlog_fresh` asserts, and its longest call is 49.6 to 53.8 ms
-  (Appendix B.1).
+- **Status:** Tested on v3-integration (32eb36e7; measured again at
+  9a2148ff): every pre-erase permutation, at both rates and every
+  `prog_size`, has at most one erase in a call, which `bench_wlog_fresh`
+  asserts, and its longest call is 49.6 to 53.9 ms (Appendix B.1). Partly
+  tested at `b10efaa` (measured outside the suite).
 - **When:** nightly.
 
 #### LFS3-PERF-11
@@ -6032,9 +6231,10 @@ littlefs shall document, next to `prog_size` and `pcache_size` in
   10%.
 - **Verified by:** review against `bench_wlog_fresh` and
   `bench_wlog_narrow`.
-- **Status:** Not implemented at `b10efaa`. Met on `v3-integration`: the
-  comments on `prog_size` and `pcache_size` give the figures of Appendix
-  B.1 and B.4, and DESIGN.md's worked example repeats them.
+- **Status:** Tested by review on v3-integration (4bd6302c, 5c3fe951): the
+  comments on `prog_size` and `pcache_size` give the figures of Appendix B.1
+  and B.4, and DESIGN.md's worked example repeats them. Not implemented at
+  `b10efaa`.
 - **When:** before v3-beta.
 
 ### 6.19 Thread safety (THR)
@@ -6071,11 +6271,11 @@ while it holds the lock, including when one public function uses another.
   outside it.
 - **Verified by:** NEW-89 (`threadsafe::*`), and every suite under `make
   test-threadsafe`, job test-threadsafe.
-- **Status:** Known defect (4-api R19: `lfs3.c` never calls them).
-  Fixed and tested on `v3-r8` (`ecf44d33`): `make test-threadsafe` passes
-  668,220 of 668,220 cases with the runner's checks, `threadsafe::*`
-  included, which failed before at the first block device read, outside
-  any lock, as every case of every suite did.
+- **Status:** Tested on v3-integration (ecf44d33): `make test-threadsafe`
+  passes 668,220 of 668,220 cases with the runner's checks, `threadsafe::*`
+  included, which failed before at the first block device read, outside any
+  lock, as every case of every suite did. Known defect at `b10efaa` (4-api
+  R19: `lfs3.c` never called them).
 - **When:** every CI run.
 
 #### LFS3-THR-02
@@ -6112,10 +6312,10 @@ shall give their action and the state after them.
 - **Fail:** any other result.
 - **Verified by:** NEW-89; `scripts/ckerrs.py` over the recordings of job
   test-threadsafe; review of ERRORS.md.
-- **Status:** Known defect (4-api R19). Fixed and tested on `v3-r8`
-  (`ecf44d33`): `threadsafe::lock_fails` and `threadsafe::unlock_fails`
-  pass, and `scripts/ckerrs.py` over the B-TS recordings sees the lock
-  and unlock codes from all 48 functions of that build, with 0 errors.
+- **Status:** Tested on v3-integration (ecf44d33): `threadsafe::lock_fails`
+  and `threadsafe::unlock_fails` pass, and `scripts/ckerrs.py` over the B-TS
+  recordings sees the lock and unlock codes from all 48 functions of that
+  build, with 0 errors. Known defect at `b10efaa` (4-api R19).
 - **When:** every CI run.
 
 #### LFS3-THR-03
@@ -6153,10 +6353,10 @@ define it no code, stack or RAM.
 - **Fail:** any difference.
 - **Verified by:** comparison at the commit that implements the lock;
   J-SIZE reports the B-DEF and B-TS code sizes on every run.
-- **Status:** Not implemented at `b10efaa`, which has no lock. Met on
-  `v3-r8` (`ecf44d33`): `.text` is byte for byte that of `424c91f2` in all
-  14 builds; B-TS costs 1,528 bytes on thumb (39,540 to 41,068), 1,796
-  with `LFS3_BIGGEST`.
+- **Status:** Tested by comparison on v3-integration (ecf44d33): `.text` is
+  byte for byte that of 424c91f2 in all 14 builds; B-TS costs 1,528 bytes on
+  thumb (39,540 to 41,068), 1,796 with `LFS3_BIGGEST`. Not implemented at
+  `b10efaa`, which has no lock.
 - **When:** every CI run.
 
 ### 6.20 Build configurations (BUILD)
@@ -6172,10 +6372,11 @@ and clang under `-std=c99 -Wall -Wextra -pedantic`.
 - **Pass:** B-DEF compiles with `-Werror` under GCC and clang on A-64LE, and
   under the cross compilers for A-32LE and A-32BE.
 - **Fail:** any warning or error.
-- **Verified by:** NEW: CI build jobs.
-- **Status:** Partly tested (GCC on Linux has 0 warnings; at `b10efaa` every
-  build had a `-Warray-bounds` warning, F-3; the Makefile's GCC-only flags
-  break clang, 5-verif §3.2).
+- **Verified by:** the CI jobs `test` (GCC, `CFLAGS=-Werror`, on x86_64,
+  thumb, mips and powerpc) and `test-clang`.
+- **Status:** Tested on v3-integration (ba31df75, 1ee68320, 162b05f7). At
+  `b10efaa` every build had a `-Warray-bounds` warning (F-3), and the
+  Makefile's GCC-only flags broke clang (5-verif §3.2).
 - **When:** every CI run.
 
 #### LFS3-BUILD-02
@@ -6187,8 +6388,10 @@ littlefs shall compile with `LFS3_BIGGEST`.
 - **Measure:** compiler result.
 - **Pass:** B-BIG compiles with `-Werror` under GCC and clang.
 - **Fail:** any error or warning.
-- **Verified by:** NEW: CI build job.
-- **Status:** Known defect (F-2; fixed on v3-fixes).
+- **Verified by:** the CI job `test-biggest` (GCC, `-Werror`).
+- **Status:** Partly tested. B-BIG builds with GCC and `-Werror` on every
+  push (e4c046b5, 162b05f7), and with clang locally (`make test-sanitize` on
+  macOS); no CI job builds it with clang. Known defect at `b10efaa` (F-2).
 - **When:** every CI run.
 
 #### LFS3-BUILD-03
@@ -6201,7 +6404,9 @@ littlefs shall compile with `LFS3_CKDATACKSUMS`, alone and with
 - **Pass:** both builds compile with `-Werror`.
 - **Fail:** any error or warning.
 - **Verified by:** NEW: CI build job.
-- **Status:** Known defect (F-2; fixed on v3-fixes).
+- **Status:** Partly tested. `LFS3_CKDATACKSUMS` builds within B-BIG on
+  every push (e4c046b5); the combination with `LFS3_RDONLY` compiled at
+  cc461256, but no job builds it (NEW-53). Known defect at `b10efaa` (F-2).
 - **When:** every CI run.
 
 #### LFS3-BUILD-04
@@ -6216,8 +6421,9 @@ littlefs shall compile with `LFS3_RDONLY` combined with each of
 - **Pass:** each build compiles with `-Werror`.
 - **Fail:** any error or warning.
 - **Verified by:** NEW: CI build matrix.
-- **Status:** Known defect (4-api R6: `RDONLY` with `CKMETAPARITY`, with
-  `GBMAP` and with `GC` fail to compile).
+- **Status:** Partly tested. cc461256 fixed `RDONLY` with `CKMETAPARITY`,
+  `GBMAP`, `GC` and `BIGGEST`, and the combinations compiled then; no job
+  builds them (NEW-53). Known defect at `b10efaa` (4-api R6).
 - **When:** every CI run.
 
 #### LFS3-BUILD-05
@@ -6230,8 +6436,9 @@ littlefs shall compile with `LFS3_PMUL_CRC32C`.
 - **Pass:** the build compiles with `-Werror` and passes `ck::crc32c*`.
 - **Fail:** any error, warning or failure.
 - **Verified by:** NEW: CI build job; `ck::crc32c*`.
-- **Status:** Known defect (1-meta 0.7b: `lfs3_fromle32_` is undefined at
-  `lfs3_util.c:210`).
+- **Status:** Partly tested. a2a3117d fixed the build, which compiled then;
+  no job builds it or runs `ck::crc32c*` with it (NEW-53). Known defect at
+  `b10efaa` (1-meta 0.7b).
 - **When:** every CI run.
 
 #### LFS3-BUILD-06
@@ -6246,8 +6453,10 @@ littlefs shall compile with each debug option: `LFS3_DBGRBYDFETCHES`,
 - **Pass:** each build compiles.
 - **Fail:** any error.
 - **Verified by:** NEW: CI build matrix.
-- **Status:** Known defect (2-files B6: `LFS3_DBGBTREECOMMITS` uses members
-  that moved, `lfs3.c:6969-6983`).
+- **Status:** Partly tested. d827c60e fixed `LFS3_DBGBTREECOMMITS`, and
+  `LFS3_DBGRBYDBALANCE` builds in the nightly `make test-balance`
+  (35d965ef); no job builds the others (NEW-53). Known defect at `b10efaa`
+  (2-files B6).
 - **When:** every CI run.
 
 #### LFS3-BUILD-07
@@ -6276,8 +6485,8 @@ default utility code, when `LFS3_CFG` is defined.
   `lfs3_util.o` without the default crc32c and leb128 code.
 - **Fail:** the default code is emitted.
 - **Verified by:** NEW.
-- **Status:** Known defect (4-api R20: `lfs3_util.c:11` checks
-  `LFS3_CONFIG`).
+- **Status:** Untested. 7e5796c6 makes `lfs3_util.c` check `LFS3_CFG`; no
+  build checks it. Known defect at `b10efaa` (4-api R20).
 - **When:** every CI run.
 
 #### LFS3-BUILD-09
@@ -6293,8 +6502,8 @@ C library string functions.
 - **Pass:** a NEW unit case finds identical results.
 - **Fail:** any difference.
 - **Verified by:** NEW.
-- **Status:** Known defect (4-api R21: the `lfs3_strspn` fallback is wrong
-  for sets of two or more characters; every current caller passes "/").
+- **Status:** Untested. afcabca0 fixed the `lfs3_strspn` fallback; no case
+  compares it with the C library. Known defect at `b10efaa` (4-api R21).
 - **When:** every CI run.
 
 #### LFS3-BUILD-10
@@ -6310,9 +6519,10 @@ declare for the build configuration.
   B-BIG.
 - **Fail:** any extra symbol.
 - **Verified by:** NEW.
-- **Status:** Known defect (2-files B10: `lfs3_file_opencfg_` is external;
-  4-api R22: `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the
-  header hides it).
+- **Status:** Untested. e2ae786a made `lfs3_file_opencfg_` static, and
+  71a6f970 stopped defining `lfs3_file_open` under `LFS3_NO_MALLOC`, which
+  `make test-nomalloc` builds; no symbol check exists. Known defect at
+  `b10efaa` (2-files B10, 4-api R22).
 - **When:** every CI run.
 
 #### LFS3-BUILD-11
@@ -6326,8 +6536,9 @@ littlefs shall define every public function with the prototype that
   `long` (for example arm-none-eabi).
 - **Fail:** a conflicting-types error.
 - **Verified by:** NEW: CI build job.
-- **Status:** Known defect (2-files B9: `lfs3_file_rewind` is declared `int`
-  and defined `lfs3_soff_t`).
+- **Status:** Untested. 64e5ae37 fixed `lfs3_file_rewind`'s return type; no
+  job builds for a target where `int32_t` is `long`. Known defect at
+  `b10efaa` (2-files B9).
 - **When:** every CI run.
 
 #### LFS3-BUILD-12
@@ -6354,12 +6565,13 @@ littlefs shall pass the test suite in B-BIG.
 - **Measure:** runner results.
 - **Pass:** `make test` with `LFS3_BIGGEST=1` exits 0.
 - **Fail:** any failure.
-- **Verified by:** all suites.
-- **Status:** Known defect (F-2: B-BIG does not build at `b10efaa`, and is
-  never run in upstream CI. Built on v3-fixes and run here (1,083,265
-  permutations, Appendix B.3), 1275 permutations of `mount::flags` and
-  `mount::format_flags` fail because of D-2, and an AddressSanitizer build
-  finds 1-meta 0.7c in about 150 `btree::find*` permutations).
+- **Verified by:** all suites, in the CI job `test-biggest`.
+- **Status:** Tested on v3-integration: 1,135,378 of 1,135,378 permutations
+  pass at 3aa6ae9f, and the job runs on every push. Known defect at
+  `b10efaa` (F-2: B-BIG did not build; built on v3-fixes, 1275 permutations
+  of `mount::flags` and `mount::format_flags` failed because of D-2, and an
+  AddressSanitizer build found 1-meta 0.7c in about 150 `btree::find*`
+  permutations).
 - **When:** every CI run.
 
 #### LFS3-BUILD-14
@@ -6373,9 +6585,9 @@ littlefs shall pass the test suite in B-YGB.
 - **Pass:** `make test` with `LFS3_YES_GBMAP=1` exits 0.
 - **Fail:** any failure.
 - **Verified by:** all suites.
-- **Status:** Tested on `v3-integration` (e529bb20): the full suite passes
-  in B-YGB, after issues #3, #4 and #18; the `test-yes-gbmap` CI job runs
-  it.
+- **Status:** Tested on v3-integration (66afad78): the full suite passes in
+  B-YGB since issues #3, #4 and #18 (662,245 of 662,245 at 3aa6ae9f), and
+  the `test-yes-gbmap` CI job runs it.
 - **When:** every CI run.
 
 #### LFS3-BUILD-15
@@ -6390,7 +6602,8 @@ littlefs shall pass the test suite in every B-YES-x build.
   SYNC.
 - **Fail:** any failure.
 - **Verified by:** all suites.
-- **Status:** Untested.
+- **Status:** Untested. The nightly job `test-yes` (da14f0ea) runs each
+  B-YES-x build but has not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-BUILD-16
@@ -6413,13 +6626,12 @@ asserts compile out as in a release build while the tests keep theirs.
   runs it.
 - **Fail:** any failure, or an `LFS3_ASSERT` in `lfs3.c` or `lfs3_util.c`
   that still fires in B-NA.
-- **Verified by:** `make test-release` (NEW-133), `mount::noassert`.
-- **Status:** Tested on `v3-integration` (e529bb20). Before, the B-NA
-  runner didn't build (tests call `assert` from macros prettyasserts can't
-  rewrite, and `lfs3_util.h` includes `<assert.h>` only with asserts on),
-  and with that fixed every `LFS3_ASSERT` still trapped (issue #14). Death
-  tests, which expect littlefs to assert, are built only without
-  `LFS3_NO_ASSERT`.
+- **Verified by:** `make test-release` (NEW-155), `mount::noassert`.
+- **Status:** Tested on v3-integration (e529bb20). Before, the B-NA runner
+  didn't build (tests call `assert` from macros prettyasserts can't rewrite,
+  and `lfs3_util.h` includes `<assert.h>` only with asserts on), and with
+  that fixed every `LFS3_ASSERT` still trapped (issue #14). Death tests,
+  which expect littlefs to assert, are built only without `LFS3_NO_ASSERT`.
 - **When:** every CI run.
 
 #### LFS3-BUILD-17
@@ -6433,7 +6645,8 @@ littlefs shall pass the test suite in B-NB and in B-NS.
   `-DLFS3_NO_STRINGH`.
 - **Fail:** any failure.
 - **Verified by:** all suites.
-- **Status:** Untested.
+- **Status:** Partly tested. B-NB runs on every push (job
+  `test-no-builtins`); no job runs B-NS.
 - **When:** nightly.
 
 #### LFS3-BUILD-18
@@ -6459,12 +6672,13 @@ writes.
 - **Source:** Derived: the read-only build is used in bootloaders to read
   images written by the full driver (#1111 comments, 2025-05-29).
 - **Measure:** content read by B-RO.
-- **Pass:** a NEW case writes images with `files::*`, `dirs::*` and
-  `attrs::*` workloads in B-DEF and B-YGB, and B-RO reads every file,
-  directory and attribute back.
+- **Pass:** `make test-rdonly` writes images with the `files`, `dirs` and
+  `attrs` image cases in B-DEF and B-YGB, and the B-RO and B-YES-RDONLY
+  builds of `runners/rdonly_runner.c` read every file, directory and
+  attribute back.
 - **Fail:** any mount error or difference.
-- **Verified by:** NEW (the runner cannot drive B-RO today).
-- **Status:** Untested.
+- **Verified by:** `make test-rdonly` (NEW-46), CI job `test-rdonly`.
+- **Status:** Tested on v3-integration (c2dfab01, 98cb8476, ff25409a).
 - **When:** every CI run.
 
 #### LFS3-BUILD-20
@@ -6497,9 +6711,10 @@ littlefs shall run the default test suite on every push and pull request.
   on each pull request.
 - **Fail:** no such job, or the job cannot pass.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Known defect (2-files B19: the workflow is the 2022 v2 file
-  and cannot pass; for example `pip3 install toml` where the scripts need
-  `tomllib`, and `-P1`, which v3 rejects).
+- **Status:** Tested on v3-integration (162b05f7): `test.yml` runs `make
+  test` on every push and pull request, and passed in run 36985477685. Known
+  defect at `b10efaa` (2-files B19: the workflow was the 2022 v2 file and
+  could not pass).
 - **When:** every CI run.
 
 #### LFS3-CI-02
@@ -6513,7 +6728,9 @@ push and pull request.
 - **Pass:** jobs for thumb, mips and powerpc run `make test` under qemu.
 - **Fail:** any architecture missing, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Known defect (2-files B19).
+- **Status:** Tested on v3-integration (162b05f7, 211e4666): the `test` job
+  runs thumb, mips and powerpc under qemu, and passed in run 36985477685.
+  Known defect at `b10efaa` (2-files B19).
 - **When:** every CI run.
 
 #### LFS3-CI-03
@@ -6527,7 +6744,10 @@ request.
 - **Pass:** both jobs exist and pass.
 - **Fail:** either missing or failing.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Untested (no such job).
+- **Status:** Tested on v3-integration (162b05f7): jobs `test-biggest` and
+  `test-yes-gbmap`. `test-yes-gbmap` failed in run 36985477685, before
+  issues #2, #3, #4 and #18 were fixed; both suites pass in the CI image
+  now.
 - **When:** every CI run.
 
 #### LFS3-CI-04
@@ -6545,11 +6765,11 @@ undefined-behaviour sanitizers.
 - **Fail:** any job missing or failing.
 - **Verified by:** `.github/workflows/test.yml`: jobs `test-valgrind` and
   `test-sanitize` (`make test-sanitize`).
-- **Status:** Tested on `v3-integration` (41165ec9) in the CI image
-  (Ubuntu 24.04, GCC 13.3): the `test-valgrind` command passes (2,433
-  permutations), and `make test-sanitize` passes in B-DEF with
-  LeakSanitizer (see LFS3-GEN-03). `test-valgrind` also passed on GitHub
-  at 8fc4d1d0; `test-sanitize` has not run on GitHub yet.
+- **Status:** Tested on v3-integration (41165ec9) in the CI image (Ubuntu
+  24.04, GCC 13.3): the `test-valgrind` command passes (2,433 permutations),
+  and `make test-sanitize` passes in B-DEF with LeakSanitizer (see
+  LFS3-GEN-03). `test-valgrind` also passed on GitHub at 8fc4d1d0;
+  `test-sanitize` has not run on GitHub yet.
 - **When:** every CI run.
 
 #### LFS3-CI-05
@@ -6565,7 +6785,10 @@ schedule.
   and all pass.
 - **Fail:** any part missing or failing.
 - **Verified by:** NEW workflow.
-- **Status:** Untested (no such job).
+- **Status:** Untested. `nightly.yml` (da14f0ea, 5ff1a2d8) has jobs for
+  `-P'permute(1)'`, `-P'permute(2)'` on `test_dirs` only, and each
+  power-loss behaviour, but none for `-Plog`, and it has not run on GitHub
+  yet.
 - **When:** nightly.
 
 #### LFS3-CI-06
@@ -6579,8 +6802,10 @@ B-RO, B-YGB and B-BIG on every pull request.
   lfs3.ctx.csv lfs3.structs.csv` on thumb and posts the difference.
 - **Fail:** no report.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Known defect (2-files B19: the v2 size jobs use `LFS_*` macros
-  and `lfs.*.csv` targets).
+- **Status:** Partly tested. The `test` job measures the sizes of B-DEF,
+  B-RO, B-YGB, B-BIG and B-TS on every architecture on every push (162b05f7)
+  and hands them to `status.yml`; the statuses have not yet been seen on a
+  pull request (issue #17). Known defect at `b10efaa` (2-files B19).
 - **When:** every CI run.
 
 #### LFS3-CI-07
@@ -6596,8 +6821,9 @@ the change being reported in the pull request.
   explained in the pull request.
 - **Fail:** no report, or an unexplained reduction.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Known defect (2-files B19: the v2 coverage job builds
-  `lfs.cov.csv`).
+- **Status:** Partly tested. The `cov` job builds `lfs3.cov.csv` on every
+  push (162b05f7); the per-function difference has not yet been seen on a
+  pull request. Known defect at `b10efaa` (2-files B19).
 - **When:** every CI run.
 
 #### LFS3-CI-08
@@ -6613,10 +6839,10 @@ Linux and macOS.
   `scripts/test.py` emits no `SyntaxWarning` on Python 3.12.
 - **Fail:** any error or warning.
 - **Verified by:** NEW: CI job.
-- **Status:** Known defect (5-verif §0.6: `PERFBDGEN` passes
-  `--trace-freq`, which the scripts reject; `test.py -j` uses the Linux-only
-  `os.sched_getaffinity`; invalid escape sequences; `test_compat.toml`
-  names a runner flag that does not exist).
+- **Status:** Partly tested. 1ee68320 fixed `PERFBDGEN`'s trace flag and
+  9115a2ab the escape sequences; `test.py` still needs Linux for a bare
+  `-j`, which macOS's make 3.81 passes (TEST_PLAN.md §8.2). Known defect at
+  `b10efaa` (5-verif §0.6).
 - **When:** every CI run.
 
 #### LFS3-CI-09
@@ -6663,7 +6889,8 @@ schedule.
   `ERASE_VALUE` in {0xff, 0x00, -1}, in B-DEF and B-BIG, and all pass.
 - **Fail:** any part missing or failing.
 - **Verified by:** NEW workflow.
-- **Status:** Untested (no such job).
+- **Status:** Untested. The nightly jobs `test-geometry` and
+  `test-erase-value` (da14f0ea) exist but have not run on GitHub yet.
 - **When:** nightly.
 
 #### LFS3-CI-12
@@ -6686,10 +6913,10 @@ error-code check of LFS3-ERR-01.
   commands pass in the `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
 - **Fail:** a target without a job, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Untested at fd3157e3, where only `make test-rdonly` had a
-  job. On `v3-integration` (345c40f7, 1c768762) every target has a job and
-  passes in the `lfs3-ci` image; not yet run on GitHub. `make
-  test-threadsafe` has a job on `v3-r8` (`ecf44d33`).
+- **Status:** Tested in the `lfs3-ci` image on v3-integration (345c40f7,
+  1c768762, ecf44d33): every target has a job and passes; the jobs have not
+  run on GitHub yet. Untested at fd3157e3, where only `make test-rdonly` had
+  a job.
 - **When:** every CI run.
 
 #### LFS3-CI-13
@@ -6706,9 +6933,10 @@ GitHub still supports.
 - **Fail:** any `node20` or older.
 - **Verified by:** review, with `gh api
   repos/actions/<name>/contents/action.yml?ref=<version>`.
-- **Status:** Known defect at fd3157e3, where all three actions were at v4
-  (node20); fixed on `v3-integration` (d32274b9): `actions/checkout@v5`,
-  `actions/upload-artifact@v6`, `actions/download-artifact@v7`.
+- **Status:** Tested by review on v3-integration (d32274b9):
+  `actions/checkout@v5`, `actions/upload-artifact@v6`,
+  `actions/download-artifact@v7`. Known defect at fd3157e3, where all three
+  were at v4 (node20).
 - **When:** every CI run.
 
 ### 6.22 Documentation (DOC)
@@ -6726,7 +6954,9 @@ littlefs shall have a DESIGN.md that explains the v3 design.
   bad-block tracking) and has been open for review before v3-beta.
 - **Fail:** DESIGN.md still describes v2 at v3-beta.
 - **Verified by:** review.
-- **Status:** Not implemented (planned).
+- **Status:** Partly tested (review). DESIGN.md was rewritten for v3
+  (3fde3bd9) and has followed every feature added since; it has not yet been
+  open for review upstream.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-02
@@ -6745,7 +6975,12 @@ byte.
   the test suite writes.
 - **Fail:** any of these is missing, or the reader disagrees with littlefs.
 - **Verified by:** review; NEW: SPEC-based reader cross-check.
-- **Status:** Not implemented (planned).
+- **Status:** Partly tested (review). SPEC.md was rewritten for v3
+  (35c783cc) and has followed every format change since (c783a551, 185efae3,
+  979fd8c8); a decoder written from it was checked against the suite's
+  images while it was written (issue #13), and the debug scripts now reject
+  what the driver rejects (LFS3-DOC-20). The decoder is not in the tree, so
+  nothing runs it.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-03
@@ -6758,7 +6993,8 @@ littlefs shall have a README whose example uses the v3 API and compiles.
 - **Pass:** the example uses `lfs3_*` calls and compiles in CI.
 - **Fail:** the example is v2, or does not compile.
 - **Verified by:** NEW: CI job.
-- **Status:** Not implemented (planned).
+- **Status:** Partly tested. The README's example uses the v3 API; no CI job
+  compiles it.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-04
@@ -6773,8 +7009,9 @@ pre-erase needs `LFS3_GBMAP`, `LFS3_REVPERTURB` and a mount with
 - **Pass:** the comment names all three.
 - **Fail:** any is missing.
 - **Verified by:** review.
-- **Status:** Known defect (D-1: the comment at `lfs3.h:608-620` names only
-  the gbmap).
+- **Status:** Tested by review on v3-integration (eb073217): the comment
+  names the gbmap, `LFS3_M_REVPERTURB` and `LFS3_F_REVPERTURB`. Known defect
+  at `b10efaa` (D-1).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-05
@@ -6789,7 +7026,9 @@ they do.
   be used.
 - **Fail:** the comment says "Add debug info to revision counts".
 - **Verified by:** review.
-- **Status:** Known defect (3-alloc R8).
+- **Status:** Tested by review on v3-integration (eb073217): both flags read
+  "Perturb first bit in revision count", and the `gc_preerase_count` comment
+  says why pre-erase needs it. Known defect at `b10efaa` (3-alloc R8).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-06
@@ -6803,7 +7042,9 @@ flags that exist.
   `LFS3_I_CKDATA`.
 - **Fail:** it names `lfs3_gc_unck` or `LFS3_I_CANCKMETA`.
 - **Verified by:** review.
-- **Status:** Known defect (4-api R23).
+- **Status:** Tested by review on this branch: the comment named
+  `lfs3_gc_unck`, `LFS3_I_CANCKMETA` and `LFS3_I_CANCKDATA` until the
+  `lfs3.h` commit of issue #10. Known defect at `b10efaa` (4-api R23).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-07
@@ -6817,7 +7058,8 @@ and `lfs3_fs_rmgbmap` returns `LFS3_ERR_NOENT` when there is nothing to do.
 - **Pass:** the comments give the error codes.
 - **Fail:** they say "Does nothing".
 - **Verified by:** review.
-- **Status:** Known defect (3-alloc R8).
+- **Status:** Tested by review on v3-integration (eb073217, 9c9e8145). Known
+  defect at `b10efaa` (3-alloc R8).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-08
@@ -6835,8 +7077,8 @@ littlefs shall list, in the comment for `lfs3_info.type`, every type
   removes it (LFS3-SYNC-13).
 - **Fail:** it says "either LFS3_TYPE_REG or LFS3_TYPE_DIR".
 - **Verified by:** review.
-- **Status:** Known defect (4-api R23); fixed on `v3-integration`
-  (170f0110, issue #12).
+- **Status:** Tested by review on v3-integration (170f0110, issue #12).
+  Known defect at `b10efaa` (4-api R23).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-09
@@ -6849,7 +7091,8 @@ controls repopulation of the gbmap.
 - **Pass:** the last sentence speaks of the gbmap.
 - **Fail:** it says "repopulates the lookahead buffer".
 - **Verified by:** review.
-- **Status:** Known defect (3-alloc R8).
+- **Status:** Tested by review on v3-integration (eb073217). Known defect at
+  `b10efaa` (3-alloc R8).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-10
@@ -6863,7 +7106,8 @@ code uses.
 - **Pass:** the comment says 87.5% or `block_size - block_size/8`.
 - **Fail:** it says "~88%".
 - **Verified by:** review.
-- **Status:** Known defect (4-api R23).
+- **Status:** Partly tested (review). The comment says "~88%", rounding the
+  87.5% (`block_size - block_size/8`) the code uses (4-api R23).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-11
@@ -6879,7 +7123,10 @@ means to littlefs.
 - **Pass:** the `read` comment states the meaning.
 - **Fail:** it does not.
 - **Verified by:** review.
-- **Status:** Known defect (3-alloc R8).
+- **Status:** Tested by review on v3-integration (eb073217, 862e3695): the
+  comment says littlefs treats `LFS3_ERR_CORRUPT` from `read` as a checksum
+  mismatch, which is read again up to `ck_retries` times (LFS3-INT-26).
+  Known defect at `b10efaa` (3-alloc R8).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-12
@@ -6900,7 +7147,12 @@ hardware.
   silently fails is indistinguishable from a power loss.
 - **Fail:** any item is missing.
 - **Verified by:** review.
-- **Status:** Not implemented (planned).
+- **Status:** Partly tested (review). `lfs3.h` states the interrupted-prog
+  assumption with the width of the erased-state checksums (5e933e92,
+  57493587), the anchor's wear bound (4ac1a1bb), and that a failed read is
+  read again, not trusted as persistent (862e3695); the order of progs
+  within a block, the erased value and silent prog failures are not stated
+  in one place.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-13
@@ -6922,7 +7174,10 @@ littlefs shall document the limits of its error detection.
   check option that covers the source is enabled (LFS3-INT-24).
 - **Fail:** any item is missing.
 - **Verified by:** review.
-- **Status:** Not implemented (planned).
+- **Status:** Partly tested (review). DESIGN.md's "Global checksums" states
+  the rollback limits and `lfs3_fs_cksum`, and the degraded mount
+  (LFS3-DEG-03) and laundering (LFS3-INT-24) are described; there is no one
+  list of the limits.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-14
@@ -6938,7 +7193,9 @@ attribute types consistently in `lfs3.h` and the design documents.
   LFS3-ATTR-05.
 - **Fail:** they differ, or the size is missing.
 - **Verified by:** review.
-- **Status:** Known defect (4-api §1.7; see open question Q9).
+- **Status:** Open question (Q9). Q3 decided the size half: no fixed
+  maximum, `LFS3_ERR_NOSPC` (LFS3-ATTR-05), which `lfs3.h` states; the type
+  ranges still differ from #1111 (4-api §1.7).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-15
@@ -6984,7 +7241,9 @@ traversal, or remove the flag.
 - **Pass:** the comment matches the behaviour.
 - **Fail:** the comment promises pre-erase.
 - **Verified by:** review.
-- **Status:** Known defect (3-alloc R8).
+- **Status:** Tested by review on v3-integration (eb073217): the
+  `lfs3_trv_open` comment says `LFS3_T_PREERASE` is accepted and does
+  nothing. Known defect at `b10efaa` (3-alloc R8).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-18
@@ -7042,10 +7301,11 @@ driver rejects.
   (a commit the driver drops is not shown); an incompatible VERSION and a
   one-block mptr are rejected.
 - **Fail:** any check fails.
-- **Verified by:** `make test-dbg` (NEW-132).
-- **Status:** Tested on `v3-integration` (cc19a932): `make test-dbg`
-  passes 537 of 537 checks. The scripts at 3c0afc90 passed 248, the valid
-  images and the bit-7 commits they already kept (issue #13).
+- **Verified by:** `make test-dbg` (NEW-154).
+- **Status:** Tested on v3-integration (cc19a932): `make test-dbg` passes
+  537 of 537 checks, in the CI job `test-dbg`. The scripts at 3c0afc90
+  passed 248, the valid images and the bit-7 commits they already kept
+  (issue #13).
 - **When:** every CI run.
 
 ### 6.23 Error handling for unattended systems (ERR)
@@ -7080,12 +7340,12 @@ code the function can return.
 - **Verified by:** `scripts/ckerrs.py` over the recordings of the CI jobs
   test, test-biggest, test-yes-gbmap and test-threadsafe (`make test-errs`
   locally).
-- **Status:** Not implemented at `b10efaa`; tested on `v3-integration`
-  (14f90293, 9c9e8145): over the B-DEF, B-YGB and B-BIG suites the runner
-  records 135 (function, code) pairs and every one is listed. Before the
-  lists, the check found 85 undocumented pairs in the default suite. On
-  `v3-r8` (`ecf44d33`) every paragraph names `lock` and `unlock`, and the
-  B-TS recordings, 215 pairs, are listed too.
+- **Status:** Tested on v3-integration (14f90293, 9c9e8145, ecf44d33): over
+  the B-DEF, B-YGB and B-BIG suites the runner records 135 (function, code)
+  pairs and every one is listed; with `LFS3_THREADSAFE` every paragraph
+  names `lock` and `unlock`, and the B-TS recordings, 215 pairs, are listed
+  too. Before the lists, the check found 85 undocumented pairs in the
+  default suite. Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-ERR-02
@@ -7103,8 +7363,8 @@ code: Retry, Rebuild or Fail.
 - **Fail:** a code without an action, or with an action that depends on
   which call returned it.
 - **Verified by:** review of [ERRORS.md](ERRORS.md).
-- **Status:** Not implemented at `b10efaa`; documented on `v3-integration`
-  (40b9e33e). The root keeps `LFS3_ERR_BUSY` (Q25, decided).
+- **Status:** Tested by review on v3-integration (40b9e33e, edbce5f8). The
+  root keeps `LFS3_ERR_BUSY` (Q25, decided). Not implemented at `b10efaa`.
 - **When:** before v3-beta.
 
 #### LFS3-ERR-03
@@ -7128,14 +7388,12 @@ returned it.
   without a geometry tag returns `LFS3_ERR_CORRUPT`.
 - **Fail:** a code with two meanings.
 - **Verified by:** review; `badblocks::graft_torn`, `mount::no_geometry`.
-- **Status:** Known defect on `v3-integration` (fd3157e3): `lfs3_file_sync`
-  returned `LFS3_ERR_INVAL` for a handle torn by a failed multi-commit write
-  (until `lfs3_file_resync`), and `lfs3_mount` returned `LFS3_ERR_INVAL`
-  for an mroot without a geometry tag, while `LFS3_ERR_INVAL` otherwise
-  means a caller bug. Fixed and tested on `v3-integration` (d4211ea5,
-  e9aeb8b2).
-  Appends that replace only the file's last entry no longer tear
-  (LFS3-SYNC-20).
+- **Status:** Tested on v3-integration (d4211ea5, e9aeb8b2). Known defect at
+  fd3157e3: `lfs3_file_sync` returned `LFS3_ERR_INVAL` for a handle torn by
+  a failed multi-commit write (until `lfs3_file_resync`), and `lfs3_mount`
+  returned `LFS3_ERR_INVAL` for an mroot without a geometry tag, while
+  `LFS3_ERR_INVAL` otherwise means a caller bug. Appends that replace only
+  the file's last entry no longer tear (LFS3-SYNC-20).
 - **When:** before v3-beta.
 
 #### LFS3-ERR-04
@@ -7183,9 +7441,9 @@ the state shall be the one documented.
   - a torn handle: LFS3-ERR-07.
 - **Fail:** an observed state the documentation doesn't describe.
 - **Verified by:** the cases above, and `errs::ioerror`.
-- **Status:** Partly tested at `b10efaa`, where the states were documented
-  for sync and close only; documented in ERRORS.md and tested on
-  `v3-integration` (3c7a175e, cb80d770, 40b9e33e).
+- **Status:** Tested on v3-integration (3c7a175e, cb80d770, 40b9e33e), with
+  the states in ERRORS.md. Partly tested at `b10efaa`, where the states were
+  documented for sync and close only.
 - **When:** every CI run.
 
 #### LFS3-ERR-05
@@ -7219,12 +7477,11 @@ the device reported bad.
   turned into another code, or into an older state.
 - **Verified by:** `mount::readerror` and `errs::ioerror` (IO);
   `mount::readerror`, `mount::readerror_mounted` (CORRUPT, LFS3-INT-26).
-- **Status:** Partly tested. The IO half holds on `v3-integration` without
-  a change to the code, tested by `errs::ioerror` (3c7a175e); the CORRUPT
-  half is issue #6 (LFS3-INT-26). At `6f80e646` a read error in a
-  configuration's name or file limit at mount returned
-  `LFS3_ERR_NOTSUP`, as if the limit were too large. The CORRUPT half
-  tested on `v3-r21` (`862e3695`).
+- **Status:** Tested on v3-integration (3c7a175e, 862e3695). The IO half
+  held without a change to the code (`errs::ioerror`); the CORRUPT half was
+  issue #6 (LFS3-INT-26). At 6f80e646 a read error in a configuration's name
+  or file limit at mount still returned `LFS3_ERR_NOTSUP`, as if the limit
+  were too large.
 - **When:** every CI run.
 
 #### LFS3-ERR-06
@@ -7239,15 +7496,12 @@ internal code from a public function.
   them.
 - **Fail:** any observation.
 - **Verified by:** the hook and check of LFS3-ERR-01.
-- **Status:** Known defect at `b10efaa` (RANGE reached the API from
-  oversized commits; fixed on `v3-integration`, d428d7b8, 42e26e7e).
-  Tested as a general property on `v3-integration` (9c9e8145). D-9
-  (issue #25) is fixed on `v3-integration` (e38b42ae): a B-tree split
-  that leaves its commit no room now splits again at the commit or
-  returns `LFS3_ERR_NOSPC`, where it returned `LFS3_ERR_RANGE` behind an
-  assert, and with `LFS3_NO_ASSERT` `lfs3_btree_commit` took the RANGE for
-  a full root and tried a new root on block after block through the
-  whole disk.
+- **Status:** Tested on v3-integration (9c9e8145, e38b42ae). Known defect at
+  `b10efaa`: RANGE reached the API from oversized commits (fixed in
+  d428d7b8, 42e26e7e), and from an mtree B-tree split that left its commit
+  no room (D-9, issue #25), where with `LFS3_NO_ASSERT` `lfs3_btree_commit`
+  took the RANGE for a full root and tried a new root on block after block
+  through the whole disk.
 - **When:** every CI run.
 
 #### LFS3-ERR-07
@@ -7278,8 +7532,8 @@ release such a handle without writing.
 - **Fail:** any of the calls returns data, a size or a position, or
   writes, or resync doesn't recover the handle.
 - **Verified by:** `badblocks::graft_torn`.
-- **Status:** Known defect on `v3-integration` (fd3157e3), see Source;
-  fixed and tested on `v3-integration` (d4211ea5).
+- **Status:** Tested on v3-integration (d4211ea5). Known defect at fd3157e3,
+  see Source.
 - **When:** every CI run.
 
 ### 6.24 Graceful degradation (DEG)
@@ -7316,11 +7570,13 @@ power loss during the mount-time repair itself.
 - **Fail:** a completed sync missing after a remount, with or without an
   error, outside the residual cases of the mode.
 - **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
-  `dirs::rm_many_2layers`.
-- **Status:** Tested on `v3-rc` (`a12705da`): with `LFS3_M_SETTLE` NEW-08 loses
-  no completed sync in 14,626 power losses and NEW-130 none; by default
-  NEW-08 counts 55 residual losses in 11,832 power losses and NEW-130
-  loses `lfs3_set`'s commit in 3 of 8 seeds, both residual cases.
+  `dirs::rm_many_2layers` (behaviour 4 with `LFS3_M_SETTLE`).
+- **Status:** Tested on v3-integration (c783a551, a12705da): with
+  `LFS3_M_SETTLE` NEW-08 loses no completed sync in 14,626 power losses and
+  NEW-130 none; by default NEW-08 counts 55 residual losses in 11,832 power
+  losses and NEW-130 loses `lfs3_set`'s commit in 3 of 8 seeds, both
+  residual cases. At `b10efaa` a synced `lfs3_set` was lost without an error
+  in 27 to 29 of 64 mounts (issue #1).
 - **When:** every CI run (behaviours 0-5), nightly with permute(1).
 
 #### LFS3-DEG-02
@@ -7349,9 +7605,9 @@ its blocks unreferenced.
 - **Fail:** an error on another file beyond the above, wrong data, or a
   damaged file that can't be removed or still references blocks.
 - **Verified by:** `badblocks::confined_data` (NEW-143).
-- **Status:** Partly tested at `6f80e646` (reads return CORRUPT; removal
-  of a damaged file was untested). Tested on `v3-r21` (`dced877c`),
-  without a change to the code.
+- **Status:** Tested on v3-integration (dced877c), without a change to the
+  code. Partly tested at 6f80e646 (reads returned CORRUPT; removing a
+  damaged file was untested).
 - **When:** every CI run.
 
 #### LFS3-DEG-03
@@ -7403,8 +7659,8 @@ return `LFS3_ERR_CORRUPT`. A read-write mount, or a mount with
   error, or a read-write mount that succeeds.
 - **Verified by:** `mount::degraded` (NEW-142), `mount::fail_nowrite`,
   `ck::rollback`, `mount::readerror` (NEW-140).
-- **Status:** Not implemented at `6f80e646`; tested on `v3-r21`
-  (`862e3695`).
+- **Status:** Tested on v3-integration (14fb798c, 862e3695). Not implemented
+  at 6f80e646; Q6 is settled by this requirement.
 - **Limits:** a pair one of whose blocks doesn't read is taken from the
   block that does, which may be the older, and the mount reports it; an
   mroot with no block that checks, or a damaged
@@ -7447,10 +7703,9 @@ write needs a scan.
   free block, any other error, or a write to a referenced block.
 - **Verified by:** `badblocks::alloc_with_damage` (NEW-144),
   `badblocks::live_readerror`, `badblocks::confined_data`.
-- **Status:** Known defect (3-alloc R7). At `6f80e646` a gbmap
-  repopulation that met the damage failed the write that checkpointed
-  the allocator, and every write after it. Fixed and tested on `v3-r21`
-  (`320dc4a8`).
+- **Status:** Tested on v3-integration (320dc4a8). Known defect at 6f80e646
+  (3-alloc R7): a gbmap repopulation that met the damage failed the write
+  that checkpointed the allocator, and every write after it.
 - **When:** every CI run.
 
 #### LFS3-DEG-05
@@ -7472,16 +7727,17 @@ block than the block already holds, so that it always makes progress.
 - **Fail:** `LFS3_ERR_NOSPC` or an assert from a removal.
 - **Verified by:** `mtree::commit_too_big`, `gbmap::nospc_remove`,
   `alloc::nospc_recover`.
-- **Status:** Known defect at `b10efaa`; fixed and tested on
-  `v3-integration` (eba40790, 60026203, f29b8985, 0535a265, 501eda31,
-  819e1a10): `mtree::commit_too_big` passes in B-DEF, B-YGB and B-BIG and
-  under ASan and UBSan in B-DEF, and with `-DSEED='range(4096)'` no
-  removal fails in B-DEF (`-Pnone`, and `-Plinear` with atomic power
-  loss), B-YGB and B-BIG (`-Pnone`). Before 819e1a10, 44 of those 12,288
-  runs failed in B-DEF (D-8, issue #23): 42 with `LFS3_ERR_NOSPC` from
-  `lfs3_removeattr("/")`, 1 with `LFS3_ERR_NOSPC` from `lfs3_remove`, and
-  1 where an `lfs3_remove` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)`
-  in the mtree's B-tree split. One run still fails, in a mkdir (D-9).
+- **Status:** Tested on v3-integration (eba40790, 60026203, f29b8985,
+  0535a265, 501eda31, 819e1a10): `mtree::commit_too_big` passes in B-DEF,
+  B-YGB and B-BIG and under ASan and UBSan in B-DEF, and with
+  `-DSEED='range(4096)'` no removal fails in B-DEF (`-Pnone`, and `-Plinear`
+  with atomic power loss), B-YGB and B-BIG (`-Pnone`). Before 819e1a10, 44
+  of those 12,288 runs failed in B-DEF (D-8, issue #23): 42 with
+  `LFS3_ERR_NOSPC` from `lfs3_removeattr("/")`, 1 with `LFS3_ERR_NOSPC` from
+  `lfs3_remove`, and 1 where an `lfs3_remove` tripped `LFS3_ASSERT(err !=
+  LFS3_ERR_RANGE)` in the mtree's B-tree split. The sweep's one other
+  failure, a mkdir, was D-9, fixed in e38b42ae (LFS3-META-03). Known defect
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-06
@@ -7498,10 +7754,10 @@ littlefs shall shrink its capacity as blocks go bad, returning
   block missing from the count.
 - **Verified by:** `badblocks_gbmap::exhaustion`, `badblocks_gbmap::reading`,
   `badblocks_gbmap::overflow`, `exhaustion::spam_file_pl_fuzz`.
-- **Status:** Not implemented at `b10efaa`; tested with the gbmap on
-  `v3-integration` (9d6b2fd1). Without the gbmap a bad block is retried each
-  time the allocator reaches it (LFS3-BAD-15), and capacity still ends in
-  NOSPC (LFS3-FAIL-11).
+- **Status:** Tested with the gbmap on v3-integration (9d6b2fd1, edc41794).
+  Without the gbmap a bad block is retried each time the allocator reaches
+  it (LFS3-BAD-15), and capacity still ends in NOSPC (LFS3-FAIL-11). Not
+  implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-07
@@ -7514,7 +7770,7 @@ littlefs shall stay readable after it can no longer write.
   correctly, in B-DEF, B-YGB and B-BIG.
 - **Fail:** the mount or a read fails.
 - **Verified by:** `exhaustion::readback`.
-- **Status:** Tested on `v3-integration` (NEW-15).
+- **Status:** Tested on v3-integration (51b30dd1, NEW-15).
 - **When:** every CI run.
 
 #### LFS3-DEG-08
@@ -7561,13 +7817,12 @@ anchor pair's erases shall stay within the bound in `lfs3.h`:
 - **Verified by:** `badblocks::gbmap_root` (NEW-147),
   `relocations::anchor_wear` (NEW-148), `badblocks::gbmap_readerror`,
   `badblocks::live_readerror`, `badblocks::gbmap_format`.
-- **Status:** Known defect (3-alloc R9). At `6f80e646` writes returned
-  `LFS3_ERR_CORRUPT` once they needed a gbmap that didn't read
-  (`badblocks::gbmap_readerror` expected it), the repair was
-  `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`, which `LFS3_YES_GBMAP` builds
-  lack, and the anchor's wear had no stated bound. Fixed and tested on
-  `v3-r21` (`73001c31`); the anchor's bound tested on `v3-r21`
-  (`4ac1a1bb`).
+- **Status:** Tested on v3-integration (73001c31, 4ac1a1bb, 185efae3). Known
+  defect at 6f80e646 (3-alloc R9): writes returned `LFS3_ERR_CORRUPT` once
+  they needed a gbmap that didn't read (`badblocks::gbmap_readerror`
+  expected it), the repair was `lfs3_fs_rmgbmap` and `lfs3_fs_mkgbmap`,
+  which `LFS3_YES_GBMAP` builds lack, and the anchor's wear had no stated
+  bound.
 - **When:** every CI run.
 
 #### LFS3-DEG-09
@@ -7594,9 +7849,8 @@ and the good blocks left to write; `lfs3_fs_nextbad` and
   no bad or suspect blocks, and the rest free, in B-DEF, B-YGB and B-BIG.
 - **Fail:** a mismatch, or a free count larger than what can be written.
 - **Verified by:** `repair::health`, `alloc::health` (NEW-146).
-- **Status:** Not implemented at `b10efaa`; the lists and the usage
-  tested on `v3-integration` (f09acb9d); there was no single call at
-  `6f80e646`. `lfs3_fs_health` tested on `v3-r21` (`ad8752d1`).
+- **Status:** Tested on v3-integration (f09acb9d for the lists and the
+  usage, ad8752d1 for `lfs3_fs_health`). Not implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-10
@@ -7653,20 +7907,13 @@ the salvage mount (LFS3-DEG-16).
 - **Verified by:** `repair::data`, `repair::data_lost`, `repair::btree`,
   `repair::gbmap`, `repair::mdir`, `repair::mdir_twice`,
   `repair::mtree`; `gbmap::rmmkgbmap`.
-- **Status:** Partly met. Not implemented at `b10efaa`; the repairing
-  check is tested on `v3-integration` (f09acb9d); mdirs are settled
-  instead of moved, tested on `v3-rc` (`e78b4263`), only when the other
-  block reads as older, since at `6f80e646` a fetch that couldn't read the
-  newer block fell back to the older one without an error (issue #6,
-  LFS3-INT-26). mtree nodes were not moved at `6f80e646`, that needed a
-  commit through the mtree and the mroot, as gbmap nodes have; one that
-  needed a retry stayed listed as suspect. Moved and tested on `v3-r21`
-  (`7aa70764`); the gbmap rebuilt at the next write on `v3-r21`
-  (`73001c31`). A damaged metadata pair, a
-  directory's entries, had no repair in place at `v3-r21` (`195ed2ef`):
-  the degraded read-only mount (LFS3-DEG-03) copied out what read before
-  a reformat; Q27 is decided, the repair is LFS3-DEG-16, tested on
-  `v3-r21` (`3aa6ae9f`).
+- **Status:** Tested on v3-integration: the repairing check moves data
+  blocks, B-tree nodes and gbmap nodes (f09acb9d), settles an mdir whose
+  active block is suspect into its other block when that block reads as
+  older (e78b4263), and moves mtree nodes (7aa70764); the gbmap is rebuilt
+  at the next write (73001c31); a damaged metadata pair is rewritten or
+  dropped by `LFS3_M_SALVAGE` (3aa6ae9f, Q27 decided, LFS3-DEG-16). Not
+  implemented at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-11
@@ -7696,7 +7943,8 @@ except at most one at close, and no erase of its own.
 - **Fail:** a session commit without the mark, a mark left after a clean
   close, or an erase at close.
 - **Verified by:** NEW-131, `badblocks::ioerror`.
-- **Status:** Tested on `v3-rc` (`a12705da`).
+- **Status:** Tested on v3-integration (c783a551, a12705da). Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-12
@@ -7726,7 +7974,8 @@ no such pair.
 - **Fail:** a completed sync lost outside the residual cases, or a write at
   a mount with nothing to repair.
 - **Verified by:** NEW-08, NEW-130, NEW-131.
-- **Status:** Tested on `v3-rc` (`a12705da`).
+- **Status:** Tested on v3-integration (c783a551, a12705da). Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-13
@@ -7750,7 +7999,8 @@ since the last mount that settled it, and every pair showing a power loss.
   without a write.
 - **Verified by:** NEW-08, NEW-130, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`.
-- **Status:** Tested on `v3-rc` (`a12705da`).
+- **Status:** Tested on v3-integration (c783a551, a12705da). Not implemented
+  at `b10efaa`.
 - **When:** every CI run.
 
 #### LFS3-DEG-14
@@ -7799,8 +8049,9 @@ newer one that failed only a read and reads whole when read again.
   lost to a read that failed.
 - **Verified by:** NEW-08, NEW-130, NEW-131, NEW-05, NEW-06, NEW-11,
   `dirs::rm_many_2layers`, `mtree::commit_too_big`, NEW-137, NEW-138.
-- **Status:** Tested on `v3-rc` (`a12705da`); the failed-read clauses
-  tested on `v3-rc` (`e78b4263`).
+- **Status:** Tested on v3-integration (c783a551, a12705da; the failed-read
+  clauses e78b4263, where `powerloss::settle_newer` and `settle_rderr` had
+  failed 10 of 12 permutations).
 - **When:** every CI run.
 
 #### LFS3-DEG-15
@@ -7820,7 +8071,7 @@ crystallizes them into a new block, in every build, not only with
 - **Fail:** the append succeeds, or the flip reads back under a valid
   checksum.
 - **Verified by:** NEW-132.
-- **Status:** Tested on `v3-rc` (`a12705da`).
+- **Status:** Tested on v3-integration (91d63160).
 - **When:** every CI run.
 
 #### LFS3-DEG-16
@@ -7897,185 +8148,172 @@ shall return 0 unless data blocks are damaged too.
   mount read-write or check after the salvage, or one that mounts without
   the flag before a salvage completes.
 - **Verified by:** NEW-149, NEW-150, NEW-151.
-- **Status:** Not implemented at `v3-r21` (`195ed2ef`); tested on
-  `v3-r21` (`3aa6ae9f`).
+- **Status:** Tested on v3-integration (3aa6ae9f). Not implemented at
+  195ed2ef.
 - **When:** every CI run.
 
 ## 7. Summary
 
-Counts by area and by status at `b10efaa`. T = Tested, P = Partly tested, U
-= Untested, N = Not implemented (planned), K = Known defect.
+Counts by area and by status on `v3-integration` at `9a2148ff`. T = Tested,
+P = Partly tested, U = Untested, N = Not implemented, Q = Open question,
+K = Known defect. `scripts/reqstatus.py REQUIREMENTS.md` prints this table
+from the Status fields (3.2), and with `-c v3-integration` checks that every
+commit they cite is on that branch.
 
-| Area | Code | Total | T | P | U | N | K |
-|---|---|---|---|---|---|---|---|
-| General and portability | GEN | 8 | 0 | 1 | 4 | 0 | 3 |
-| Power-loss resilience | PL | 27 | 8 | 4 | 14 | 0 | 1 |
-| Error detection and integrity | INT | 23 | 7 | 11 | 3 | 0 | 2 |
-| Flash failure handling | FAIL | 20 | 4 | 8 | 8 | 0 | 0 |
-| Bad-block tracking | BAD | 17 | 0 | 0 | 0 | 17 | 0 |
-| Metadata | META | 17 | 7 | 3 | 3 | 0 | 4 |
-| Files and data | FILE | 27 | 14 | 2 | 8 | 0 | 3 |
-| Sync model and stickynotes | SYNC | 20 | 15 | 2 | 1 | 0 | 2 |
-| Directories and paths | DIR | 20 | 16 | 0 | 1 | 0 | 3 |
-| Custom attributes | ATTR | 13 | 8 | 1 | 2 | 0 | 2 |
-| Key-value API | KV | 9 | 5 | 1 | 2 | 0 | 1 |
-| Block allocation | ALLOC | 17 | 4 | 7 | 5 | 0 | 1 |
-| Pre-erase | PRE | 9 | 0 | 2 | 6 | 0 | 1 |
-| Garbage collection and traversals | GC | 18 | 8 | 6 | 1 | 2 | 1 |
-| Format, mount, grow, compatibility | MOUNT | 27 | 10 | 4 | 6 | 1 | 6 |
-| Configuration validation | CFG | 17 | 1 | 6 | 8 | 0 | 2 |
-| Resource bounds | RES | 8 | 0 | 0 | 7 | 0 | 1 |
-| Performance | PERF | 14 | 0 | 4 | 7 | 1 | 2 |
-| Thread safety | THR | 3 | 0 | 0 | 1 | 0 | 2 |
-| Build configurations | BUILD | 20 | 0 | 1 | 9 | 0 | 10 |
-| Continuous integration | CI | 11 | 0 | 0 | 4 | 0 | 7 |
-| Documentation | DOC | 19 | 0 | 0 | 0 | 9 | 10 |
-| **All** | | **364** | **107** | **63** | **100** | **30** | **64** |
+| Area | Code | Total | T | P | U | N | Q | K |
+|---|---|---|---|---|---|---|---|---|
+| General and portability | GEN | 9 | 6 | 0 | 1 | 0 | 2 | 0 |
+| Power-loss resilience | PL | 27 | 23 | 2 | 2 | 0 | 0 | 0 |
+| Error detection and integrity | INT | 26 | 24 | 1 | 1 | 0 | 0 | 0 |
+| Flash failure handling | FAIL | 20 | 19 | 1 | 0 | 0 | 0 | 0 |
+| Bad-block tracking | BAD | 17 | 17 | 0 | 0 | 0 | 0 | 0 |
+| Metadata | META | 17 | 15 | 1 | 1 | 0 | 0 | 0 |
+| Files and data | FILE | 27 | 24 | 1 | 2 | 0 | 0 | 0 |
+| Sync model and stickynotes | SYNC | 20 | 18 | 2 | 0 | 0 | 0 | 0 |
+| Directories and paths | DIR | 20 | 19 | 0 | 1 | 0 | 0 | 0 |
+| Custom attributes | ATTR | 14 | 12 | 1 | 1 | 0 | 0 | 0 |
+| Key-value API | KV | 9 | 6 | 1 | 2 | 0 | 0 | 0 |
+| Block allocation | ALLOC | 17 | 15 | 2 | 0 | 0 | 0 | 0 |
+| Pre-erase | PRE | 9 | 9 | 0 | 0 | 0 | 0 | 0 |
+| Garbage collection and traversals | GC | 18 | 15 | 3 | 0 | 0 | 0 | 0 |
+| Format, mount, grow, compatibility and versioning | MOUNT | 27 | 20 | 4 | 2 | 1 | 0 | 0 |
+| Configuration validation | CFG | 17 | 6 | 4 | 7 | 0 | 0 | 0 |
+| Resource bounds | RES | 8 | 4 | 4 | 0 | 0 | 0 | 0 |
+| Performance | PERF | 14 | 4 | 2 | 7 | 0 | 0 | 1 |
+| Thread safety | THR | 4 | 3 | 0 | 1 | 0 | 0 | 0 |
+| Build configurations | BUILD | 20 | 5 | 6 | 9 | 0 | 0 | 0 |
+| Continuous integration | CI | 13 | 7 | 3 | 3 | 0 | 0 | 0 |
+| Documentation | DOC | 20 | 9 | 6 | 0 | 4 | 1 | 0 |
+| Error handling for unattended systems | ERR | 7 | 7 | 0 | 0 | 0 | 0 | 0 |
+| Graceful degradation | DEG | 16 | 16 | 0 | 0 | 0 | 0 | 0 |
+| **All** | | **396** | **303** | **44** | **40** | **5** | **3** | **1** |
 
-By level: 223 stated, 121 derived, 20 proposals. By When: 293 every CI run,
-44 nightly, 27 before v3-beta.
+By level: 224 stated, 128 derived, 44 proposals. By When: 323 every CI run,
+43 nightly, 30 before v3-beta.
 
-107 requirements (29%) are fully checked by a case that runs in the default
-build. 63 are partly checked, most often because the checking case is
-compiled out of the default build. 64 are known defects; Appendix A says
-which of them have fixes on our branches.
+303 requirements (77%) are fully checked by a case that runs on every push,
+or by review; 44 are partly checked. Of the 40 untested, most are build,
+configuration and performance checks that need a new job or bench
+assertion (section 9). Three wait on an open question: Q2 (LFS3-GEN-06),
+Q21 (LFS3-GEN-07) and Q9 (LFS3-DOC-14). One known defect remains,
+LFS3-PERF-07, measured at `b10efaa` and not measured again.
 
-The known defects, with the fixes that exist on our branches (Appendix A):
-
-| Requirement | Ref | Fix on our branches |
-|---|---|---|
-| LFS3-GEN-03 | 4-api R17, 1-meta 0.7c | 1-meta 0.7c: v3-fix-api `7f689b8`; F-1 and F-3: v3-fixes; R17: none |
-| LFS3-GEN-06 | 4-api R12 | none |
-| LFS3-GEN-08 | 4-api R4 | none |
-| LFS3-PL-27 | 4-api R27 | none |
-| LFS3-INT-20 | F-2 | v3-fixes `e4c046b` |
-| LFS3-INT-23 | D-2 | v3-fix-parity `f90e132` (`ck::ckparity_btree_append`) |
-| LFS3-META-03 | 1-meta 0.2, D-9 | 1-meta 0.2: v3-integration `d428d7b8`; D-9: v3-integration `e38b42ae` (issue #25) |
-| LFS3-META-04 | 1-meta 0.3 | none |
-| LFS3-META-10 | 3-alloc B3 | v3-fix-alloc `bd5bb8c` (`badblocks::mrootanchor_stuck`, `badblocks::badsync`; adds emubd `mkbadsync`) |
-| LFS3-META-11 | 1-meta 0.5 | none |
-| LFS3-FILE-03 | 2-files B2 | v3-fix-files `5500063` (`fwrite::append_fbig`) |
-| LFS3-FILE-04 | 2-files B14 | v3-fix-files `25cfa66` (`files::read_big`) |
-| LFS3-FILE-10 | 2-files B1 | v3-fix-files `b07be9e` (`badblocks::fruncate_append`) |
-| LFS3-SYNC-05 | 2-files B8 | v3-fix-files `8c5241d` (`badblocks::truncate_desync`) |
-| LFS3-SYNC-20 | `badblocks::append_torn` | v3-integration `554e89f9` |
-| LFS3-DIR-02 | 1-meta 0.2 | none |
-| LFS3-DIR-05 | 4-api R1 | v3-fix-api `067ebe7` (`dirs::mv_subtree`) |
-| LFS3-DIR-11 | 1-meta 0.1 | v3-fix-api `cc4acb9` (`dread::seek_tell`) |
-| LFS3-ATTR-05 | 4-api R3 | none |
-| LFS3-ATTR-12 | 2-files B11 | v3-fix-files `1783b37` |
-| LFS3-KV-04 | 4-api R7 | v3-fix-files `9c7deb7` (`kv::set_fbig`) |
-| LFS3-ALLOC-11 | 3-alloc B11 | none |
-| LFS3-PRE-06 | 3-alloc B1 | v3-fix-alloc `3ceb48b` (`badblocks::preerase`) |
-| LFS3-GC-02 | #5 | v3-integration (`gc::steps_unbounded`, `gc::compact_unshrinkable`) |
-| LFS3-MOUNT-03 | 4-api R28 | none |
-| LFS3-MOUNT-09 | 1-meta 0.4 | none |
-| LFS3-MOUNT-14 | 4-api R5 | none |
-| LFS3-MOUNT-17 | 2-files B3 | v3-fix-files `b923cd8` (`attrs::fattr_rdonly_file`, `fsync::desync_wdrs`) |
-| LFS3-MOUNT-19 | 4-api R25 | none |
-| LFS3-MOUNT-21 | 4-api R4 | none |
-| LFS3-CFG-01 | 2-files B12 | none |
-| LFS3-CFG-05 | 1-meta 7.14 | none |
-| LFS3-RES-06 | 4-api R8 | none |
-| LFS3-PERF-07 | measured | none |
-| LFS3-PERF-09 | measured, M-3, `bench_wlog_fresh` | v3-integration `ec0733b8`, `554e89f9`, `32eb36e7` (`bench_wlog_fresh`) |
-| LFS3-THR-01 | 4-api R19 | v3-r8 `ecf44d33` (`threadsafe::locks`, `make test-threadsafe`) |
-| LFS3-THR-02 | 4-api R19 | v3-r8 `ecf44d33` (`threadsafe::lock_fails`, `threadsafe::unlock_fails`) |
-| LFS3-BUILD-02 | F-2 | v3-fixes `e4c046b` |
-| LFS3-BUILD-03 | F-2 | v3-fixes `e4c046b` |
-| LFS3-BUILD-04 | 4-api R6 | none |
-| LFS3-BUILD-05 | 1-meta 0.7b | none |
-| LFS3-BUILD-06 | 2-files B6 | none |
-| LFS3-BUILD-08 | 4-api R20 | none |
-| LFS3-BUILD-09 | 4-api R21 | none |
-| LFS3-BUILD-10 | 2-files B10 | none |
-| LFS3-BUILD-11 | 2-files B9 | none |
-| LFS3-BUILD-13 | F-2 | F-2: v3-fixes `e4c046b`; D-2: v3-fix-parity `f90e132`; 1-meta 0.7c: v3-fix-api `7f689b8` |
-| LFS3-CI-01 | 2-files B19 | none |
-| LFS3-CI-02 | 2-files B19 | none |
-| LFS3-CI-04 | 2-files B19 | none |
-| LFS3-CI-06 | 2-files B19 | none |
-| LFS3-CI-07 | 2-files B19 | none |
-| LFS3-CI-08 | 5-verif §0.6 | escape sequences: v3-ci `dbbb5e6` |
-| LFS3-CI-09 | F-4 to F-8 | v3-fixes |
-| LFS3-DOC-04 | D-1 | none |
-| LFS3-DOC-05 | 3-alloc R8 | none |
-| LFS3-DOC-06 | 4-api R23 | none |
-| LFS3-DOC-07 | 3-alloc R8 | none |
-| LFS3-DOC-08 | 4-api R23 | none |
-| LFS3-DOC-09 | 3-alloc R8 | none |
-| LFS3-DOC-10 | 4-api R23 | none |
-| LFS3-DOC-11 | 3-alloc R8 | none |
-| LFS3-DOC-14 | 4-api §1.7 | none |
-| LFS3-DOC-17 | 3-alloc R8 | none |
+The first version of this document (`c27a2d46`) described `b10efaa`: 107
+requirements tested, 63 partly tested, 100 untested and 64 known defects
+(62 by Status; its table counted two more). Of those 62, 46 are now tested;
+9 are fixed but only partly tested (LFS3-BUILD-02 to BUILD-06, LFS3-CI-06
+to CI-08, LFS3-DOC-10), 4 fixed and untested (LFS3-BUILD-08 to BUILD-11),
+2 wait on a decision (LFS3-GEN-06, Q2; LFS3-DOC-14, Q9), and one,
+LFS3-PERF-07, has not been measured again. Appendix A names the fixing
+commit and test of every defect. 39 requirements were
+added since: GEN-09, INT-24 to INT-26, BAD-16, BAD-17, FILE-27, SYNC-20,
+ATTR-14, GC-17, GC-18, PERF-14, THR-04, CI-12, CI-13, DOC-20, ERR-01 to
+ERR-07 and DEG-01 to DEG-16.
 
 ## 8. Open questions
 
-These are behaviours where the code, `lfs3.h` and the roadmap do not settle
+These are behaviours where the code, `lfs3.h` and the roadmap did not settle
 the intent. The requirements that depend on them say so. Each question lists
-the options we see; none is chosen here.
+the options we saw. Where this fork has since chosen one, a **Decided**
+paragraph gives the choice, the commit, and the reason, which is one of the
+four principles the fork works to:
+
+1. littlefs runs unattended: every error needs a documented action for the
+   application and a stated state after it, and each code has one meaning.
+2. Graceful degradation: lose as little as possible, confine damage, keep
+   operating best-effort, report health, prefer the smallest repair.
+3. After a power loss complete files are clean and incomplete files dirty;
+   nothing new is built on the last writes of a dirty file before they are
+   re-established from bytes that pass their checksum.
+4. Reads can fail at low supply voltage, so a failed check does not prove
+   the media bad; retry and bad-block policy belong to the application.
+
+Every decision is one commit or a few, and open to the maintainer's review
+before it goes upstream. Section 8.1 lists the questions still open, and
+section 8.2 the decisions this fork took that had no question number.
 
 **Q1. `lfs3_file_sync` on a handle opened `LFS3_O_RDONLY`.** At `b10efaa` it
-commits the handle's snapshot like any other sync: a desynced reader can
+committed the handle's snapshot like any other sync: a desynced reader could
 revert a newer file to its stale contents, and writable file-attached
-attributes on a read-only file are written (2-files B3). Options: (a) return
+attributes on a read-only file were written (2-files B3). Options: (a) return
 an error (`LFS3_ERR_INVAL`, or a new read-only code); (b) return 0 and do
-nothing; (c) return 0 and resync the handle without writing, which is what
-our branch `v3-fix-files` (`b923cd8`) does, reading writable attributes on
-read-only files but never writing them, as v2 did; (d) keep the current
+nothing; (c) return 0 and resync the handle without writing; (d) keep the
 behaviour and document it. LFS3-MOUNT-17 holds under (a), (b) and (c).
 
-**Q2. Mutating calls on an `LFS3_M_RDONLY` mount.** They assert at
-`b10efaa` (`lfs3.c:16620`) and proceed with `LFS3_NO_ASSERT` (LFS3-GEN-06).
-Options: (a) keep the assert and document it as a precondition
-(LFS3-DOC-16); (b) return an error code, either an existing one
-(`LFS3_ERR_INVAL`, `LFS3_ERR_NOTSUP`) or a new read-only code; (c) both: an
-error code in all builds and an assert in debug builds.
+**Decided** (db987a31): (c). A sync never writes through a read-only handle;
+it resyncs, so a desynced reader catches up with the disk and receives
+updates again, as `lfs3.h` promises for sync. Writable attributes on
+read-only files are read and never written, as in v2. An error (a) would
+give a call that has nothing wrong to report an error to handle (principle
+1).
+
+**Q2. Mutating calls on an `LFS3_M_RDONLY` mount.** They assert
+(`lfs3_m_isrdonly`, checked by the death test `mount::rdonly_mutate`) and
+proceed with `LFS3_NO_ASSERT` (LFS3-GEN-06). Options: (a) keep the assert
+and document it as a precondition (LFS3-DOC-16); (b) return an error code,
+either an existing one (`LFS3_ERR_INVAL`, `LFS3_ERR_NOTSUP`) or a new
+read-only code; (c) both: an error code in all builds and an assert in
+debug builds. Open.
 
 **Q3. The error for an operation whose metadata cannot fit in an empty
-block.** Long names on small blocks and large attributes trip an assert
-(LFS3-META-03, DIR-02, ATTR-05). Options: (a) `LFS3_ERR_NAMETOOLONG` for
-names and `LFS3_ERR_NOSPC` for attributes, as v2 did; (b) `LFS3_ERR_RANGE`,
-which already leaks out with `LFS3_NO_ASSERT`, documented; (c) prevent the
-case at format by capping `name_limit` from `block_size`, and define a
-maximum attribute size (as v2's `LFS_ATTR_MAX`) checked by `lfs3_setattr`.
+block.** Long names on small blocks and large attributes tripped an assert
+at `b10efaa` (LFS3-META-03, DIR-02, ATTR-05). Options: (a)
+`LFS3_ERR_NAMETOOLONG` for names and `LFS3_ERR_NOSPC` for attributes, as v2
+did; (b) `LFS3_ERR_RANGE`, which leaked out with `LFS3_NO_ASSERT`,
+documented; (c) prevent the case at format by capping `name_limit` from
+`block_size`, and define a maximum attribute size (as v2's `LFS_ATTR_MAX`)
+checked by `lfs3_setattr`.
+
+**Decided** (d428d7b8, 42e26e7e): (a), with the name half of (c). Names
+are capped at `block_size/2 - 124` bytes and longer ones get
+`LFS3_ERR_NAMETOOLONG`; an attribute that doesn't fit beside its entry
+gets `LFS3_ERR_NOSPC`, with no fixed maximum. `LFS3_ERR_RANGE` is internal
+and never reaches the application (LFS3-ERR-06, principle 1).
 
 **Q4. rcompat matching.** `lfs3.h:920-926` says rcompat flags must be
 "understood". The code requires exact equality, so an image that uses fewer
 features than the driver writes (for example no mtree) is refused, even
 read-only (4-api R10). Options: (a) exact match, documented; (b) accept any
-subset of the flags the driver knows.
+subset of the flags the driver knows. Open.
 
-**Q5. A missing version tag.** It is read as version 0.0 at `b10efaa`
-(`lfs3.c:15572-15594`). Options: (a) accept, and document the default in
-SPEC.md; (b) refuse with `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP`.
+**Q5. A missing version tag.** It is read as version 0.0
+(`lfs3.c:15572-15594` at `b10efaa`). Options: (a) accept, and document the
+default in SPEC.md; (b) refuse with `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP`.
+Open.
 
-**Q6. A degraded mount.** A gcksum mismatch, an undecodable grm or gbmap, or
-an unreadable metadata block fails the mount or blocks all allocation, with
-no fallback ("TODO switch to read-only?", `lfs3.c:15921, 15948`; 4-api R11;
-3-alloc R7). Options: (a) keep the hard failure and document it
-(LFS3-DOC-13); (b) let `LFS3_M_RDONLY` mounts proceed and report the problem
-through an info flag; (c) add an explicit "salvage" mount flag. Settled by
-principle 2 (graceful degradation): (b), `LFS3_I_DEGRADED`, see
-LFS3-DEG-03 for why not (c).
+**Q6. A degraded mount.** At `b10efaa` a gcksum mismatch, an undecodable grm
+or gbmap, or an unreadable metadata block failed the mount or blocked all
+allocation, with no fallback ("TODO switch to read-only?",
+`lfs3.c:15921, 15948`; 4-api R11; 3-alloc R7). Options: (a) keep the hard
+failure and document it (LFS3-DOC-13); (b) let `LFS3_M_RDONLY` mounts
+proceed and report the problem through an info flag; (c) add an explicit
+"salvage" mount flag.
 
-**Q7. Is an open, never-synced file a child of its directory?** At
-`b10efaa` `lfs3_remove` of the directory returns `LFS3_ERR_NOTEMPTY`
-(1-meta F16). Options: (a) yes, as now, and document it; (b) no: remove the
-directory and make the handle a zombie, as removing an open file does.
+**Decided** (14fb798c, 862e3695, 3aa6ae9f): (b), and (c) as the repair. A
+read-only mount without check flags succeeds degraded and reports
+`LFS3_I_DEGRADED`, serving everything outside the damage (LFS3-DEG-03); a
+read-write mount still fails, and `LFS3_M_SALVAGE` is the explicit repair
+(Q27, LFS3-DEG-16). An unreachable unit must keep reading what it can
+(principle 2), and a repair that may lose data must be the application's
+call (principle 4).
+
+**Q7. Is an open, never-synced file a child of its directory?** `lfs3_remove`
+of the directory returns `LFS3_ERR_NOTEMPTY` (1-meta F16). Options: (a) yes,
+as now, and document it; (b) no: remove the directory and make the handle a
+zombie, as removing an open file does. Open.
 
 **Q8. `LFS3_O_SYNC` and `LFS3_O_FLUSH` with truncate and fruncate.** They do
 not sync or flush after `lfs3_file_truncate` and `lfs3_file_fruncate`
 ("note LFS3_O_SYNC does _not_ sync truncates", `tests/test_fsync.toml`).
 Options: (a) keep, and document that the flags apply to writes only;
-(b) apply them to every call that changes the file.
+(b) apply them to every call that changes the file. Open.
 
 **Q9. Reserved attribute types.** #1111 reserves 0x80-0xbf for standard
-attributes and suggests 0xc0-0xff for system attributes; `lfs3.h:766-768`
-says 0x80-0xff "May be assigned a standard attribute". The API accepts every
+attributes and suggests 0xc0-0xff for system attributes; `lfs3.h` says
+0x80-0xff "May be assigned a standard attribute". The API accepts every
 type. Options: (a) document the #1111 split and accept every type;
 (b) refuse the reserved range in `lfs3_setattr` and in file-attached
-attributes; (c) refuse only 0x80-0xbf.
+attributes; (c) refuse only 0x80-0xbf. Open.
 
 **Q10. `lfs3_remove` and `lfs3_rename` after a failed cleanup commit.** When
 the second commit (fixgrm) fails, the call logs a warning and returns 0; the
@@ -8084,100 +8322,141 @@ the right thing to do?", `lfs3.c:11822, 12004`; 4-api R26). Options: (a)
 return 0, as now, since the visible change is done and atomic; (b) return
 the error, although the operation has taken effect.
 
+**Decided** with Q26, which asks the same question: (a).
+
 **Q11. `LFS3_M_CKREADS`.** #1111 lists it as planned ("Closed checking of
 data during reads"). The tree has `LFS3_M_CKMETAPARITY` and
-`LFS3_M_CKDATACKSUMS` instead, and `tests/test_ck.toml:2725` mentions a
+`LFS3_M_CKDATACKSUMS` instead, and `tests/test_ck.toml` mentions a
 "ckredund" that would "finally close the ckread hole". Is CKREADS still
-planned, or superseded?
+planned, or superseded? Open; it is the maintainer's plan. LFS3-INT-19 and
+LFS3-INT-25 state what the existing checks find.
 
-**Q12. `LFS3_THREADSAFE`.** The header documents `lock` and `unlock`
-callbacks that `lfs3.c` never calls (LFS3-THR-01). Options: (a) implement
-them as in v2; (b) remove the option and leave locking to the application.
-Decided on 2026-10-05: (a), keep the option as `lfs3.h` declares it
-(LFS3-THR-01, LFS3-THR-02, LFS3-THR-04).
+**Q12. `LFS3_THREADSAFE`.** At `b10efaa` the header documented `lock` and
+`unlock` callbacks that `lfs3.c` never called (LFS3-THR-01). Options: (a)
+implement them as in v2; (b) remove the option and leave locking to the
+application.
+
+**Decided** on 2026-10-05 (7d6eac5d, ecf44d33): (a), keeping the option as
+`lfs3.h` declares it (LFS3-THR-01, LFS3-THR-02, LFS3-THR-04). Every public
+call takes the lock once; builds without the option are unchanged, so
+keeping it costs them nothing.
 
 **Q13. The scope of `lfs3_file_ck`.** It checks the file's B-tree and data
-blocks but not the file's own mdir entry or inline data (4-api R29). Options:
-(a) document the scope; (b) also re-fetch and check the file's mdir.
+blocks but not the file's own mdir entry or inline data (4-api R29).
+Options: (a) document the scope; (b) also re-fetch and check the file's
+mdir. Open.
 
 **Q14. How configuration errors are reported, and the minimum geometry.**
-Configuration is checked with asserts. Some invalid values are not checked
-at all (`block_count` below 2, a tiny `block_size`). Options: (a) asserts
-only, with every limit asserted in `lfs3_init` and documented; (b)
-`LFS3_ERR_INVAL` from `lfs3_format` and `lfs3_mount`. Separately: what are
-the minimum `block_size` and `block_count`?
+Configuration is checked with asserts. At `b10efaa` some invalid values were
+not checked at all (`block_count` below 2, a tiny `block_size`). Options:
+(a) asserts only, with every limit asserted in `lfs3_init` and documented;
+(b) `LFS3_ERR_INVAL` from `lfs3_format` and `lfs3_mount`. Separately: what
+are the minimum `block_size` and `block_count`?
 
-**Q15. `fcache_size` of 0.** It calls `lfs3_malloc(0)` at `b10efaa`.
+**Decided in part** (dda5cc34, 67f5b135): (a). Format asserts on fewer than
+2 blocks, or 3 with the gbmap, before any I/O, and `lfs3.h` documents the
+minimum. A configuration is fixed when the firmware is built, so an error a
+deployed unit could act on adds nothing an assert in development doesn't
+catch. The minimum `block_size` is still open (LFS3-CFG-03).
+
+**Q15. `fcache_size` of 0.** It called `lfs3_malloc(0)` at `b10efaa`.
 Options: (a) "no file cache", as `lfs3_get` already uses internally
 (LFS3-CFG-07); (b) refuse it; (c) use a documented default.
+
+**Decided** (da4ec17c): (b). `lfs3_init` asserts on `fcache_size` 0 without
+`LFS3_NO_MALLOC`, and on `fragment_size` 0 unless `crystal_thresh` is 0 or
+1, where fragments are never written; `lfs3.h` says so. `lfs3_malloc(0)`
+may fail or return a pointer to nothing, and a silent "no cache" would
+change the cost of every write.
 
 **Q16. Work flags on a read-only mount.** `lfs3_fs_stat` on an
 `LFS3_M_RDONLY` mount reports `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD` and
 `LFS3_I_COMPACT`, work that cannot run (4-api R25). Options: (a) clear them
 on read-only mounts; (b) keep them, as "work the image needs", and document
-it.
+it. Open. (`LFS3_I_RDONLY` itself is now always set, LFS3-MOUNT-19.)
 
 **Q17. Disabling the gbmap while bad blocks are recorded.** Bad-block
 records live in the gbmap, so `lfs3_fs_rmgbmap` drops them. Options:
 (a) refuse with `LFS3_ERR_BUSY`; (b) drop them and document it.
 `v3-integration` does (b): `lfs3.h` documents the loss, and
-`badblocks_gbmap::rmgbmap` tests it.
+`badblocks_gbmap::rmgbmap` tests it. Open: the choice was made when the
+tracking was written (9c0769c3), not decided, and principle 2 could argue
+for (a).
 
 **Q18. Bad blocks detected in read-only contexts, and the bad-block API.**
 The maintainer's own open question (#1111 "Bad block tracking"). Options for
 read-only contexts: (a) report the error only; (b) also count detections in
 RAM and report them in `lfs3_fs_stat`. API options: the calls proposed in
-LFS3-BAD-11 to BAD-14, or none beyond automatic tracking. `v3-integration`
-does (a), and records blocks that fail reads as suspect in RAM, writable or
-not, listed by `lfs3_fs_nextsuspect` (LFS3-BAD-16); its API is
-`lfs3_fs_mkbad`, `lfs3_fs_mkgood` and `lfs3_fs_nextbad`, and format takes
-known-bad blocks from the block device's errors (LFS3-BAD-14).
+LFS3-BAD-11 to BAD-14, or none beyond automatic tracking.
 
-**Q19. Torn programs beyond the first prog unit.** Pre-erase trusts an
+**Decided** (issues #9 and #19; 1e27e318, b81c02a3, ad8752d1): (a) for
+marks, which only a failed erase or prog makes and only a writable mount
+writes; blocks that fail reads are recorded as suspect in RAM, writable or
+not, listed by `lfs3_fs_nextsuspect` and counted by `lfs3_fs_health`
+(LFS3-BAD-16, LFS3-DEG-09). Suspects are never written to disk: there is no
+new gbmap state and no wcompat flag, so older drivers keep writing, and an
+application that wants a record keeps its own. The API is `lfs3_fs_mkbad`,
+`lfs3_fs_mkgood` and `lfs3_fs_nextbad`, and format places the gbmap root
+past bad blocks (LFS3-BAD-14). A failed read doesn't prove the media bad
+(principle 4), so it never makes a mark on its own.
+
+**Q19. Torn programs beyond the first prog unit.** Pre-erase trusted an
 erased-state checksum of the first `prog_size` bytes, but the first program
 of a new rbyd can be a `pcache_size` flush, and a torn program could leave
 the checksummed bytes erased while changing later ones (3-alloc B17). The
-rbyd ECKSUM has the same width. Options: (a) state the hardware assumption
+rbyd ECKSUM had the same width. Options: (a) state the hardware assumption
 (LFS3-DOC-12); (b) widen the checksum to the first flush size; (c) flush the
 first `prog_size` bytes of a new rbyd separately, before the rest.
-Answered: `v3-integration` does (b) (`57493587`). Erased-state checksums
-cover `pcache_size` bytes (at least 11, the largest tag littlefs programs
-on its own), rounded up to `prog_size` and clamped to the end of the
-block, for rbyd appends and pre-erased blocks alike. The format is
-unchanged, and a narrower checksum, from an older image or a smaller
-`pcache_size`, is not trusted. The hardware assumption left for
+
+**Answered** (57493587, c7e9213e): (b), now requirement LFS3-PRE-09.
+Erased-state checksums cover `pcache_size` bytes (at least 11, the largest
+tag littlefs programs on its own), rounded up to `prog_size` and clamped to
+the end of the block, for rbyd appends and pre-erased blocks alike. The
+format is unchanged, and a narrower checksum, from an older image or a
+smaller `pcache_size`, is not trusted. The hardware assumption left for
 LFS3-DOC-12 is that an interrupted program changes no bytes outside that
-program. Appendix B.4 measures the cost, which LFS3-PERF-14 asks `lfs3.h`
-to state.
+program. The cost is reads only: up to `pcache_size - prog_size` more bytes
+per fetch and per commit, 0-6% on the default benches, and on W-LOG 122 KiB
+a minute instead of 21 KiB; an older image costs one compaction per
+metadata log on its first writes (Appendix B.4, LFS3-PERF-14).
 
 **Q20. gc with no work flags.** `lfs3_fs_gc` with `gc_flags` 0 still
 pre-erases and commits the gbmap when nothing is pending
-(`lfs3.c:16748-16780`). Is that intended?
+(`lfs3.c:16748-16780` at `b10efaa`). Is that intended? Open.
 
 **Q21. Untrusted images.** Several decoders assert on on-disk values, which
 becomes undefined behaviour with `LFS3_NO_ASSERT` (LFS3-GEN-07). Is
 robustness against checksum-valid but malformed images in scope for v3?
+Open. Metadata that reads differently from its fetch, and bit-7 tags, now
+return `LFS3_ERR_CORRUPT` instead of asserting (LFS3-GEN-09).
 
 **Q22. The error for a missing geometry tag.** `LFS3_ERR_INVAL` at
 `b10efaa`; `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` would match the other
-mount failures (LFS3-MOUNT-11). LFS3-ERR-03 rules out INVAL, which means a
-caller bug. `v3-integration` (e9aeb8b2) returns `LFS3_ERR_CORRUPT`, as for
-a missing magic string: every v3 mroot has a geometry, so its absence is
-damage, not a feature this build lacks.
+mount failures (LFS3-MOUNT-11).
+
+**Decided** (e9aeb8b2): `LFS3_ERR_CORRUPT`, as for a missing magic string.
+Every v3 mroot has a geometry, so its absence is damage, not a feature this
+build lacks, and `LFS3_ERR_INVAL` means a caller bug (LFS3-ERR-03,
+principle 1).
 
 **Q23. Performance gates.** The PERF thresholds are ours. Which workloads
 and bounds does the project want to gate on? In particular, is
 "no more erases than v2 on a sync-heavy log" a goal at large `prog_size`
-(LFS3-PERF-09)? Meeting it at `prog_size` 256 needs a change to how
+(LFS3-PERF-09)? Meeting it at `prog_size` 256 needed a change to how
 littlefs writes an append-only file; Appendix B.5 measures the options.
-Answered for W-LOG: yes, at every `prog_size`. `v3-integration` adopts
-changes B, C and D of Appendix B.5; C and D bring LFS3-SYNC-20 and
-LFS3-FILE-27.
+
+**Decided for W-LOG** (f9581737): yes, at every `prog_size`. `v3-integration`
+adopts changes B, C and D of Appendix B.5 (ec0733b8, 554e89f9, 32eb36e7),
+which bring LFS3-SYNC-20 and LFS3-FILE-27, and `bench_wlog_fresh` fails if
+any permutation erases more than v2.11.3. Erases are what wear soldered
+flash out (principle 2). The other PERF bounds are still ours to propose.
 
 **Q24. Telling alpha formats apart.** Every alpha image claims version 0.0,
 so images from incompatible alpha commits cannot be told apart (4-api R24).
 Options: (a) accept this until v3-beta; (b) bump the minor version on every
-format change during the alpha.
+format change during the alpha. Open. This fork's format additions (the
+`DIRTY` tag, the settled generation and wcompat `SETTLED`) are guarded so
+that older v0.0 drivers either ignore them or refuse to write (SPEC.md).
 
 **Q25. `LFS3_ERR_BUSY` for the root.** `lfs3_remove` and `lfs3_rename` of
 the root return `LFS3_ERR_BUSY`, as Linux does; v2 returned
@@ -8189,9 +8468,9 @@ freeing the target, else Fail, which covers all three (LFS3-ERR-02);
 means "free the target and retry"; it changes about 30 assertions in
 `dirs`, `files` and `paths`.
 
-Decided in this fork: (a). BUSY keeps one meaning, "the target is in use",
-the root is permanently in use, and the code matches Linux, which the v3
-API and its tests already follow. Open to the maintainer's review.
+**Decided** (edbce5f8): (a). BUSY keeps one meaning, "the target is in
+use", the root is permanently in use, and the code matches Linux, which the
+v3 API and its tests already follow (principle 1).
 
 **Q26. Cleanup errors after remove and rename.** `lfs3_remove` of a
 directory and `lfs3_rename` commit, then clean up a grm; if the cleanup
@@ -8202,14 +8481,12 @@ it). Options: (a) keep it: the operation is complete and nothing is lost;
 device's fault is reported where it happened, and a retry then returns
 `LFS3_ERR_NOENT`.
 
-Decided in this fork: (a). The operation is complete and consistent on
+**Decided** (edbce5f8): (a). The operation is complete and consistent on
 disk, the pending cleanup is reported by `LFS3_I_MKCONSISTENT`, and the
 next write or `lfs3_fs_mkconsistent` retries it and returns its error if
 it fails again, so no fault goes unreported for long and the application
 never has to undo a success. It stays the one documented exception to
 LFS3-ERR-05, with its state in ERRORS.md, and `errs::ioerror` checks it.
-Open to the maintainer's review.
-
 
 **Q27. Repairing a damaged metadata pair in place.** A metadata pair that
 doesn't read or check makes read-write mounts fail (LFS3-DEG-03), so the
@@ -8222,181 +8499,102 @@ pending removes, rebuilds the gbmap, and removes, or gathers into a
 lost+found directory, the entries whose directory's bookmark was in the
 dropped mdir; (c) for a pair with one block that reads, an explicit call
 that rewrites the pair from that block, accepting that it may be older.
-Principles 2 and 4 say any of these must be the application's call, never
-automatic. Decided on 2026-10-05: "Rewrite, else drop", (c) where a block
-reads, else (b), removing the unreachable entries, as `LFS3_M_SALVAGE`
-(LFS3-DEG-16).
+
+**Decided** on 2026-10-05 (93e722b2, 3aa6ae9f): "Rewrite, else drop", (c)
+where a block reads, else (b), removing the unreachable entries, as the
+mount flag `LFS3_M_SALVAGE` (LFS3-DEG-16). A pair loses at most its commits
+since its last compaction, and only a pair no block reads is dropped
+(principle 2); the repair is never automatic (principles 2 and 4).
+
+### 8.1 Still open
+
+Q2 (mutating calls on a read-only mount), Q4 (rcompat matching), Q5 (a
+missing version tag), Q7 (open uncreated files in a directory being
+removed), Q8 (`LFS3_O_SYNC` with truncate), Q9 (reserved attribute types),
+Q11 (`LFS3_M_CKREADS`), Q13 (the scope of `lfs3_file_ck`), Q14's minimum
+`block_size`, Q16 (work flags on a read-only mount), Q17 (rmgbmap with
+bad blocks recorded), Q20 (gc with no work flags), Q21 (untrusted images)
+and Q24 (telling alpha formats apart).
+
+### 8.2 Decisions without a question number
+
+| Behaviour | Choice | Commit |
+|---|---|---|
+| `cfg->sync` fails after a commit was programmed | The commit stands, in RAM as on disk; the error is returned once, from the call (LFS3-FAIL-18) | 5eaedd05 |
+| Sync of a handle that a failed write left partly grafted (torn) | `LFS3_ERR_BADFD` until `lfs3_file_resync`; close writes nothing (LFS3-ERR-07) | 96883f8e, d4211ea5 |
+| `lfs3_info.type` of an open, never-synced file | `LFS3_TYPE_STICKYNOTE`, since reporting REG would hide that it isn't durable (LFS3-DOC-08) | 170f0110 |
+| A directory position | A count of the entries `lfs3_dir_read` returns (LFS3-DIR-11) | 233ff491 |
+| A file attribute shorter than its buffer | The rest of the buffer is zeroed, as v2 does (LFS3-ATTR-14) | 245b84c9 |
+| `lookgbmap_thresh` | The code matches `lfs3.h`: `<=`, and 0 only when empty (LFS3-ALLOC-11) | 5bc6dcf8 |
+| `lfs3_fs_grow` past the device, or shrinking | `LFS3_ERR_INVAL` (LFS3-MOUNT-21) | 613ccac8 |
+| A full disk with a gbmap | A NOSPC from gbmap repopulation falls back to lookahead, so removes work (LFS3-ALLOC-05) | eba40790 |
+| Pre-erased blocks on a mount without `LFS3_M_REVPERTURB` | Free, erased again before use (LFS3-PRE-04) | bebf55ba |
+| A remove whose pending grm cleanup doesn't fit | The remove proceeds; the cleanup is retried later | 501eda31 |
+| `gc_steps` -1 | Every gc and check call returns, and stops work that makes no progress (LFS3-GC-02) | b55ca37f, 6a1535f6 |
+| Tags with bit 7 set, read from disk | Accepted on read, as rejecting them at fetch would roll back silently; never copied into a new commit (`LFS3_ERR_CORRUPT`); a bit-7 config tag still gives `LFS3_ERR_NOTSUP` (LFS3-GEN-09) | 7d27de3d |
+| After a power loss | Complete files are clean, incomplete files dirty; a read-write mount settles the pairs at risk from checked bytes, by default those of dirty files, their path from the anchor and torn pairs, and with `LFS3_M_SETTLE` every pair written since the last mount (LFS3-DEG-11 to DEG-14) | c783a551 |
+| A failed read of a metadata pair | Read again up to `ck_retries` times; then the pair is damaged, never older; a read-only mount mounts degraded (LFS3-INT-26) | 862e3695 |
+| Retry and check policy | `ck_retries` (recommended 3) and `ck_passes` (recommended 2 after a power loss) are the application's (LFS3-GC-17, GC-18) | f09acb9d |
+| BMBAD marks and older drivers | No wcompat flag: marks are advisory, and an older driver treats a marked block as an unmarked bad block (LFS3-BAD-05) | 4f6d5ef8 |
+| A full bad-block queue | The two closest runs merge, marking the good blocks between them, rather than forgetting a failed block (LFS3-BAD-08) | edc41794 |
+| Every error code | One meaning, one recommended action (Retry, Rebuild or Fail) and a stated state after the error, in ERRORS.md (LFS3-ERR-01 to ERR-07) | 40b9e33e, 9c9e8145 |
 
 ## 9. Requirements that need new tests
 
-This section feeds the test plan. 9.1 lists the requirements whose Verified
-by field names a NEW test, case, check or job; the description is short, and
-the requirement's Pass condition is the exact specification. Where our
-branches already add a case, it is named. 9.2 lists the requirements that
-existing cases would check if they ran in another build, schedule or
-geometry. Documentation requirements checked by review are not listed.
+This section feeds the test plan. When this document described `b10efaa`,
+187 requirements named a new test, case, check or job in Verified by, and
+51 an existing test run in a new build, schedule or geometry. TEST_PLAN.md
+section 6 specifies those tests and maps each NEW-id to the case or make
+target that implements it. What follows is what is still missing on
+`v3-integration`: 9.1 lists the requirements whose test, case, check or
+job does not exist yet, and 9.2 those that need existing cases to run in
+another build, schedule or geometry. The description is short; the
+requirement's Pass condition is the exact specification. Documentation
+requirements checked by review are not listed.
 
-187 requirements need a new test (9.1) and 51 need an existing test run in a
-new environment (9.2).
+65 requirements still need a new test (9.1) and 18 an existing
+test in a new environment (9.2).
 
 ### 9.1 New tests
 
 | ID | Status | When | Test needed |
 |---|---|---|---|
-| LFS3-GEN-01 | Untested | every CI run | CI job: `make test` on thumb under qemu-arm |
-| LFS3-GEN-02 | Untested | every CI run | cross-endian image round trip, x86_64 and mips/powerpc |
-| LFS3-GEN-03 | Tested | every CI run (B-DEF), nightly (B-BIG) | `make test-sanitize`, jobs `test-sanitize` and `test-sanitize-biggest` (41165ec9) |
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
-| LFS3-GEN-05 | Partly | every CI run | runner wrapper that checks every negative return value |
-| LFS3-GEN-06 | Defect | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
-| LFS3-GEN-07 | Untested | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
-| LFS3-GEN-08 | Defect | every CI run | the LFS3-MOUNT-21 case, with bounds checks |
-| LFS3-GEN-09 | Tested | every CI run | `dirs::rm_many_2layers_metastable`, `ck::metastable_alts` in B-YGB, NEW-134 (7d27de3d) |
-| LFS3-PL-03 | Tested | nightly | `powerloss::metastable` (NEW-08) in both repair modes, B-BIG |
-| LFS3-PL-06 | Partly | every CI run | reentrant flush-without-sync case (explicit flush, `O_FLUSH`, `M_FLUSH`) |
-| LFS3-PL-11 | Partly | every CI run | reentrant `lfs3_setattr`/`lfs3_removeattr` on paths |
-| LFS3-PL-12 | Untested | every CI run | reentrant `lfs3_set` fuzz, values below and above the one-commit limit |
-| LFS3-PL-13 | Untested | every CI run | reentrant truncate/fruncate and sync, including write-then-fruncate |
-| LFS3-PL-14 | Untested | every CI run | reentrant random-overwrite fuzz with periodic syncs |
-| LFS3-PL-15 | Untested | nightly | reentrant small appends and syncs, `PROG_SIZE` 1, 16, 256, PLB-TORN |
-| LFS3-PL-16 | Untested | every CI run | reentrant multi-handle, desync and resync fuzz |
-| LFS3-PL-17 | Untested | every CI run | reentrant `O_SYNC` and `M_SYNC` writes |
-| LFS3-PL-19 | Untested | nightly | reentrant mkgbmap/rmgbmap |
-| LFS3-PL-20 | Untested | nightly | reentrant gc, `lfs3_fs_ck`, RDWR traversals, mount work flags |
-| LFS3-PL-22 | Untested | every CI run | reentrant format then mount |
-| LFS3-PL-25 | Untested | nightly | reentrant variants of `badblocks::region_*`/`alternating_*` |
-| LFS3-PL-26 | Tested | nightly | `exhaustion::spam_file_pl_fuzz` in B-YGB (afdf7f05) |
-| LFS3-INT-03 | Partly | every CI run | fill the erased region after each commit with every byte value |
-| LFS3-INT-04 | Untested | every CI run | flip a bit after the last commit; the next commit must compact |
-| LFS3-INT-06 | Partly | every CI run | deterministic rollback of a non-latest mdir; mount must fail |
+| LFS3-GEN-06 | Open question | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
+| LFS3-GEN-07 | Open question | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-INT-08 | Untested | every CI run | fuzz: `lfs3_fs_cksum` changes after every model-changing call |
-| LFS3-INT-09 | Partly | every CI run | deterministic rollback of the latest commit; checksum must differ |
-| LFS3-INT-13 | Partly | every CI run | bit flips in data blocks for `lfs3_file_ck` and `O_CKDATA` |
-| LFS3-INT-19 | Partly | every CI run | enable `CKMETAPARITY` in `ck::spam_*` |
-| LFS3-INT-21 | Partly | every CI run | replace an mdir with an older copy after mount; `lfs3_fs_ck` must fail |
-| LFS3-INT-22 | Untested | every CI run | bit flips in gbmap nodes |
-| LFS3-INT-26 | Tested | every CI run | `mount::readerror` with `LFS3_ERR_CORRUPT`, `mount::readerror_mounted` (NEW-140, NEW-141), on `v3-r21` (`862e3695`) |
-| LFS3-FAIL-04 | Untested | every CI run | READERROR on a live mdir, file B-tree node and gbmap node |
-| LFS3-FAIL-07 | Untested | nightly | PROGNOOP/ERASENOOP without CKPROGS: no unsynced data returned |
-| LFS3-FAIL-12 | Untested | every CI run | after end of life, read-only remount reads every synced file |
-| LFS3-FAIL-14 | Untested | every CI run | per-block erase bound for mdir relocation |
-| LFS3-FAIL-16 | Partly | every CI run | format with block 2 bad and `LFS3_F_GBMAP` |
-| LFS3-FAIL-17 | Untested | every CI run | READERROR on the source of a compaction, relocation and rewrite |
-| LFS3-FAIL-18 | Untested | every CI run | emubd fails the n-th sync (emubd `mkbadsync` exists on v3-fix-alloc) |
-| LFS3-FAIL-19 | Untested | every CI run | emubd returns `LFS3_ERR_IO` from the n-th operation |
-| LFS3-BAD-01 | Planned | every CI run | `badblocks_gbmap::recording`, `recording_mdir` (on `v3-integration`), `queue_full` (on `v3-rc`) |
-| LFS3-BAD-02 | Planned | every CI run | `badblocks_gbmap::recording`, `reading`, `alloc_skip` (on `v3-integration`) |
-| LFS3-BAD-03 | Planned | every CI run | `badblocks_gbmap::pl_fuzz`, `reading_inuse` (on `v3-integration`); only failed blocks marked, referenced ones included, `queue_inuse` (on `v3-rc`) |
-| LFS3-BAD-04 | Planned | every CI run | `badblocks_gbmap::rdonly` (on `v3-integration`) |
-| LFS3-BAD-05 | Planned | every CI run | `compat::gbmap_exchange` and `make test-compat-gbmap` (on `v3-integration`) |
-| LFS3-BAD-06 | Planned | every CI run | `badblocks_gbmap::reading`, `reading_inuse`, `grow` (on `v3-integration`) |
-| LFS3-BAD-07 | Planned | every CI run | `make test-nomalloc`: `badblocks_gbmap::*` with `LFS3_NO_MALLOC` |
-| LFS3-BAD-08 | Planned | every CI run | `badblocks_gbmap::overflow`, `queue_full`, `queue_inuse`, `queue_merge`: none forgotten (on `v3-rc`) |
-| LFS3-BAD-09 | Planned | every CI run | `badblocks_gbmap::exhaustion`, 1024 seeds: no erase of a dead block (on `v3-rc`) |
-| LFS3-BAD-10 | Planned | every CI run | `badblocks_gbmap::preerase` (on `v3-integration`) |
-| LFS3-BAD-11 | Planned | every CI run | `badblocks_gbmap::api`, `factory` (on `v3-integration`) |
-| LFS3-BAD-12 | Planned | every CI run | `badblocks_gbmap::api` (on `v3-integration`) |
-| LFS3-BAD-13 | Planned | every CI run | `badblocks_gbmap::api`, `api_ibadblocks` (on `v3-integration`) |
-| LFS3-BAD-14 | Planned | every CI run | `badblocks::gbmap_format` with block 2 bad; `badblocks_gbmap::factory` including block 2 |
-| LFS3-BAD-15 | Planned | every CI run | build check: no tracking symbols or RAM in B-DEF |
-| LFS3-BAD-16 | Planned | every CI run | `badblocks_gbmap::suspect`: blocks failing reads listed by `lfs3_fs_nextsuspect` |
-| LFS3-BAD-17 | Planned | every CI run | `repair::reuse`, `repair::twice`: reuse or mark bad after a repair |
-| LFS3-META-03 | Tested | every CI run | `mtree::commit_too_big`: fuzz over block size, name length and attribute size; no assert (d428d7b8, e38b42ae) |
-| LFS3-META-04 | Defect | every CI run | internal fetch-order case; all suites on A-32BE |
-| LFS3-META-10 | Defect | every CI run | failed commit by sync failure and by stuck anchor (`badblocks::mrootanchor_stuck`, `badblocks::badsync` on v3-fix-alloc) |
-| LFS3-META-11 | Defect | every CI run | READERROR on an mdir with a gbmap delta at mount |
-| LFS3-META-12 | Partly | every CI run | revision counts across the 2^32 wrap |
-| LFS3-META-14 | Untested | every CI run | orphans as the only entries of consecutive mdirs; mkconsistent |
-| LFS3-META-15 | Partly | every CI run | reentrant mtree split, drop, relocate, extend |
 | LFS3-META-17 | Untested | every CI run | internal check: estimate at least the compacted size |
 | LFS3-FILE-02 | Untested | every CI run | zero-size write changes nothing |
-| LFS3-FILE-03 | Defect | every CI run | `O_APPEND` with a small `file_limit` (`fwrite::append_fbig` on v3-fix-files) |
-| LFS3-FILE-04 | Defect | every CI run | read with size 0xffffffff (`files::read_big` on v3-fix-files) |
-| LFS3-FILE-10 | Defect | every CI run | fruncate, bad block, append (`badblocks::fruncate_append` on v3-fix-files) |
-| LFS3-FILE-11 | Untested | every CI run | data block goes bad after data was written; append |
-| LFS3-FILE-16 | Untested | every CI run | failing allocator at file open |
-| LFS3-FILE-17 | Tested | every CI run | `fwrite::filemax`, `fwrite::filemax_fuzz`, with UBSan in B-DEF and B-BIG (82ab4f07, b5888089) |
 | LFS3-FILE-18 | Untested | every CI run | holes allocate at most 2 blocks |
 | LFS3-FILE-19 | Partly | every CI run | handle size against `lfs3_stat` size around a sync |
-| LFS3-FILE-21 | Partly | every CI run | close with a failing sync releases the handle |
-| LFS3-FILE-24 | Untested | every CI run | two handles appending to one file in turn |
-| LFS3-FILE-26 | Untested | every CI run | `fwrite::*fbig` with `file_limit` 1, 1000, 65536 |
-| LFS3-FILE-27 | Untested | every CI run | appends with a tail kept cached: reads, sync, close, desync, truncate, fruncate, NOSPC, power loss (`fwrite::append_tail`, `fwrite::append_tail_nospc`, `powerloss::append_unsynced_pl` on v3-integration) |
-| LFS3-SYNC-05 | Defect | every CI run | each write-side call fails; close leaves the disk unchanged (`badblocks::truncate_desync` on v3-fix-files) |
-| LFS3-SYNC-09 | Untested | every CI run | errors injected into multi-entry overwrites, then sync and check |
 | LFS3-SYNC-10 | Partly | every CI run | `lfs3_stat` after flush |
 | LFS3-SYNC-16 | Partly | every CI run | close three or more uncreated handles; flag and cleanup |
-| LFS3-SYNC-20 | Defect | every CI run | appends that coalesce with the last fragment, each block in turn bad; sync never `LFS3_ERR_INVAL` (`badblocks::append_torn` on v3-integration) |
-| LFS3-DIR-02 | Defect | every CI run | `lfs3_mkdir` with names of 1 to 255 bytes at 512 and 1024-byte blocks |
-| LFS3-DIR-05 | Defect | every CI run | rename a directory into its own subtree (`dirs::mv_subtree` on v3-fix-api) |
-| LFS3-DIR-11 | Defect | every CI run | tell/seek round trip at every position (`dread::seek_tell` on v3-fix-api) |
 | LFS3-DIR-18 | Untested | every CI run | 32 empty directories in at most 4 blocks |
-| LFS3-ATTR-05 | Defect | every CI run | attributes of 0 to `block_size` bytes on root and file, 512 and 4096-byte blocks |
-| LFS3-ATTR-06 | Untested | every CI run | root attributes across remount and mroot extension |
 | LFS3-ATTR-07 | Untested | every CI run | all 256 attribute types on one file |
 | LFS3-ATTR-10 | Partly | every CI run | `buffer_size = LFS3_ERR_NOATTR` removes at sync |
-| LFS3-ATTR-12 | Defect | every CI run | open with `LFS3_A_RDONLY | LFS3_A_LAZY` (`attrs::fattr_rdonly` on v3-fix-files) |
-| LFS3-ATTR-14 | Tested | every CI run | zeros past a short attribute, `attrs::fattr_zerofill` (245b84c9) |
-| LFS3-KV-04 | Defect | every CI run | `lfs3_set` above `file_limit` (`kv::set_fbig` on v3-fix-files) |
 | LFS3-KV-05 | Partly | every CI run | `lfs3_get`/`lfs3_size` on a directory |
 | LFS3-KV-08 | Untested | every CI run | `lfs3_get` on an uncreated file |
 | LFS3-KV-09 | Untested | every CI run | one commit for a small new `lfs3_set` |
-| LFS3-ALLOC-04 | Untested | every CI run | fill to NOSPC, remove half, write again |
-| LFS3-ALLOC-05 | Untested | every CI run | fill a gbmap filesystem to NOSPC, then remove |
-| LFS3-ALLOC-08 | Untested | every CI run | allocation before the first checkpoint on a nearly full disk |
-| LFS3-ALLOC-11 | Defect | every CI run | `LOOKGBMAP_THRESH` 0, 1, `BLOCK_COUNT/4` |
 | LFS3-ALLOC-12 | Partly | nightly | gbmap against traversal after every remount |
-| LFS3-ALLOC-15 | Untested | every CI run | gbmap images across builds |
-| LFS3-ALLOC-16 | Untested | nightly | `lfs3_fs_usage` bounded over 10,000 rewrites with the gbmap |
-| LFS3-ALLOC-17 | Partly | every CI run | `lfs3_fs_usage` against distinct traversed blocks |
-| LFS3-PRE-02 | Partly | every CI run | no erase of pre-erased blocks at allocation |
-| LFS3-PRE-03 | Untested | every CI run | flipped bit in a pre-erased block: skipped |
-| LFS3-PRE-04 | Untested | every CI run | remount without `LFS3_M_REVPERTURB` |
-| LFS3-PRE-05 | Untested | nightly | reentrant gc pre-erase with an emubd prog-once check |
-| LFS3-PRE-06 | Defect | every CI run | ERASEERROR block in the known window (`badblocks::preerase` on v3-fix-alloc) |
-| LFS3-PRE-07 | Untested | nightly | reentrant data writes into pre-erased blocks, on-disk window check |
-| LFS3-PRE-08 | Untested | every CI run | ERASENOOP with pre-erase and CKPROGS |
-| LFS3-PRE-09 | Untested | nightly | emubd tear after the first `prog_size` bytes, `PCACHE_SIZE > PROG_SIZE` (`powerloss::append_pl`, `powerloss::preerase_pl_fuzz` on v3-integration) |
 | LFS3-GC-01 | Partly | every CI run | per-call work bound |
-| LFS3-GC-02 | Defect | every CI run | `GC_STEPS=-1` through and past NOSPC with every work flag; an mdir that compaction cannot shrink |
-| LFS3-GC-06 | Untested | every CI run | no handle left after `lfs3_fs_ck` |
 | LFS3-GC-11 | Partly | every CI run | block types from `LFS3_T_MTREEONLY` |
 | LFS3-GC-14 | Partly | every CI run | `GC_COMPACT_THRESH=-1` |
-| LFS3-GC-17 | Planned | every CI run | `repair::passes`: reads per block with `ck_passes` 1 to 3 |
-| LFS3-GC-18 | Planned | every CI run | `repair::retries`: READFLIP and MANUAL blocks with `ck_retries` 0 and 16 |
-| LFS3-MOUNT-03 | Defect | every CI run | `block_count` 1 (2 with the gbmap) refused before any bd operation |
-| LFS3-MOUNT-09 | Defect | before v3-beta | configuration tags 0x0100, 0x0130, 0x0132, 0x0133 |
-| LFS3-MOUNT-11 | Untested | every CI run | image without a geometry tag |
 | LFS3-MOUNT-12 | Partly | every CI run | format with `name_limit` 32 and `file_limit` 1000; `lfs3_fs_stat` |
 | LFS3-MOUNT-13 | Untested | before v3-beta | image without limit tags |
-| LFS3-MOUNT-14 | Defect | every CI run | B-RO mount with a zeroed `lfs3_t` |
-| LFS3-MOUNT-16 | Untested | every CI run | counters and valgrind on failed mounts |
-| LFS3-MOUNT-17 | Defect | every CI run | counters over a whole `LFS3_M_RDONLY` mount (`attrs::fattr_rdonly_file`, `fsync::desync_wdrs` on v3-fix-files) |
 | LFS3-MOUNT-18 | Partly | every CI run | counters around `lfs3_unmount` |
-| LFS3-MOUNT-19 | Defect | every CI run | `LFS3_I_RDONLY` in B-DEF and B-RO |
-| LFS3-MOUNT-21 | Defect | every CI run | `lfs3_fs_grow` beyond `cfg->block_count` |
-| LFS3-MOUNT-22 | Untested | every CI run | failed grow, then fill; window range |
-| LFS3-MOUNT-24 | Planned | before v3-beta | v0.0 image refused by the release |
-| LFS3-MOUNT-25 | Untested | every CI run | v2.11 image fixture |
+| LFS3-MOUNT-24 | Not implemented | before v3-beta | v0.0 image refused by the release |
 | LFS3-MOUNT-27 | Partly | every CI run | plain mount after formatting with every flag |
-| LFS3-CFG-01 | Defect | every CI run | zeroed-configuration define set |
 | LFS3-CFG-02 | Untested | every CI run | death test: invalid sizes |
 | LFS3-CFG-03 | Untested | before v3-beta | death test: `block_size` below the minimum |
 | LFS3-CFG-04 | Untested | every CI run | `block_recycles` bounds |
-| LFS3-CFG-05 | Defect | every CI run | `gc_compact_thresh` checks in B-DEF |
 | LFS3-CFG-06 | Untested | every CI run | unknown `gc_flags` bits |
 | LFS3-CFG-07 | Untested | every CI run | `FCACHE_SIZE=0` with a `malloc(0)` that returns NULL |
 | LFS3-CFG-08 | Partly | every CI run | per-file caches of 1, 16 and 4096 bytes |
 | LFS3-CFG-09 | Untested | every CI run | build check: `LFS3_NAME_MAX=1023` |
-| LFS3-CFG-15 | Untested | every CI run | emubd prog-once check over every suite |
-| LFS3-RES-01 | Untested | every CI run | static buffers and an allocator that fails when called; B-NM |
-| LFS3-RES-02 | Untested | every CI run | CI size job (ctx, structs) |
-| LFS3-RES-03 | Untested | every CI run | CI size job (stack) |
-| LFS3-RES-04 | Untested | every CI run | CI size job (code) |
-| LFS3-RES-05 | Untested | every CI run | CI size job (stack bounds) |
-| LFS3-RES-06 | Defect | every CI run | failing allocations in `lfs3_init` |
-| LFS3-RES-07 | Untested | before v3-beta | sparse device of 2^31 - 1 blocks |
-| LFS3-RES-08 | Untested | every CI run | counting allocator per open file |
+| LFS3-RES-02 | Partly | every CI run | the size statuses (structs) on a pull request |
+| LFS3-RES-03 | Partly | every CI run | the size statuses (stack, ctx) on a pull request |
+| LFS3-RES-04 | Partly | every CI run | the size statuses (code) on a pull request |
+| LFS3-RES-05 | Partly | every CI run | fail the size job on an unbounded stack |
 | LFS3-PERF-01 | Untested | nightly | ratio check over `bench_rbyd` compaction |
 | LFS3-PERF-02 | Untested | nightly | ratio check over `bench_rbyd` lookup |
 | LFS3-PERF-03 | Untested | nightly | ratio check over `bench_wt` random |
@@ -8404,36 +8602,28 @@ new environment (9.2).
 | LFS3-PERF-05 | Untested | nightly | ratio check across block sizes |
 | LFS3-PERF-06 | Partly | nightly | bench: bytes per small append and sync at `prog_size` 256 |
 | LFS3-PERF-07 | Defect | nightly | count `cfg->sync` calls per file sync |
-| LFS3-PERF-08 | Partly | nightly | in-tree W-LOG bench with a v2.11.3 reference, 1 row/s (`bench_wlog_fresh`) |
-| LFS3-PERF-09 | Defect | nightly | in-tree W-LOG bench with a v2.11.3 reference, 50 rows/s (`bench_wlog_fresh`) |
-| LFS3-PERF-10 | Partly | nightly | in-tree W-LOG bench with pre-erase: erases per call (`bench_wlog_fresh`) |
 | LFS3-PERF-11 | Partly | every CI run | data-block erases per small synced append |
 | LFS3-PERF-12 | Untested | nightly | CI bench-diff job |
 | LFS3-PERF-13 | Untested | nightly | reads of the first allocation after mount, with the gbmap |
-| LFS3-THR-01 | Tested | every CI run | `threadsafe::locks` (NEW-89), and the runner's counting `lock`/`unlock` over every suite in B-TS (`make test-threadsafe`), on `v3-r8` (ecf44d33) |
-| LFS3-THR-02 | Tested | every CI run | failing `lock`/`unlock` in `threadsafe::*` (NEW-89); `scripts/ckerrs.py` over the B-TS recordings, on `v3-r8` (ecf44d33) |
 | LFS3-THR-03 | Untested | nightly | two filesystems on two threads under ThreadSanitizer |
-| LFS3-BUILD-01 | Partly | every CI run | `-Werror` builds with GCC, clang and the cross compilers |
-| LFS3-BUILD-02 | Defect | every CI run | B-BIG build |
-| LFS3-BUILD-03 | Defect | every CI run | `LFS3_CKDATACKSUMS` builds |
-| LFS3-BUILD-04 | Defect | every CI run | `LFS3_RDONLY` combination matrix |
-| LFS3-BUILD-05 | Defect | every CI run | `LFS3_PMUL_CRC32C` build with `ck::crc32c*` |
-| LFS3-BUILD-06 | Defect | every CI run | `LFS3_DBG*` matrix |
+| LFS3-BUILD-02 | Partly | every CI run | B-BIG build with clang and `-Werror` |
+| LFS3-BUILD-03 | Partly | every CI run | `LFS3_CKDATACKSUMS` builds |
+| LFS3-BUILD-04 | Partly | every CI run | `LFS3_RDONLY` combination matrix |
+| LFS3-BUILD-05 | Partly | every CI run | `LFS3_PMUL_CRC32C` build with `ck::crc32c*` |
+| LFS3-BUILD-06 | Partly | every CI run | `LFS3_DBG*` matrix |
 | LFS3-BUILD-07 | Untested | every CI run | `LFS3_PREERASE` `#error` check |
-| LFS3-BUILD-08 | Defect | every CI run | `LFS3_CFG` build |
-| LFS3-BUILD-09 | Defect | every CI run | string-fallback unit test |
-| LFS3-BUILD-10 | Defect | every CI run | `nm` symbol check |
-| LFS3-BUILD-11 | Defect | every CI run | `-Werror` build for arm-none-eabi |
+| LFS3-BUILD-08 | Untested | every CI run | `LFS3_CFG` build |
+| LFS3-BUILD-09 | Untested | every CI run | string-fallback unit test |
+| LFS3-BUILD-10 | Untested | every CI run | `nm` symbol check |
+| LFS3-BUILD-11 | Untested | every CI run | `-Werror` build for arm-none-eabi |
 | LFS3-BUILD-12 | Untested | nightly | forced flags in each B-YES-x build |
 | LFS3-BUILD-18 | Untested | nightly | `LFS3_NAME_MAX=32`, `LFS3_FILE_MAX=65535` build |
-| LFS3-BUILD-19 | Untested | every CI run | B-RO reads images written by B-DEF and B-YGB |
 | LFS3-BUILD-20 | Untested | every CI run | logging macro build matrix |
-| LFS3-CI-05 | Untested | nightly | nightly power-loss workflow |
-| LFS3-CI-08 | Defect | every CI run | tooling job on Linux and macOS |
-| LFS3-CI-11 | Untested | nightly | nightly geometry workflow |
-| LFS3-DOC-02 | Planned | before v3-beta | SPEC-based reader cross-check |
-| LFS3-DOC-03 | Planned | before v3-beta | README example compile job |
-| LFS3-DOC-20 | Tested | every CI run | `make test-dbg` (cc19a932) |
+| LFS3-CI-05 | Untested | nightly | the nightly power-loss jobs run on GitHub, with `-Plog` and `permute(2)` on the three suites |
+| LFS3-CI-08 | Partly | every CI run | tooling job on Linux and macOS |
+| LFS3-CI-11 | Untested | nightly | the nightly geometry and erase-value jobs run on GitHub |
+| LFS3-DOC-02 | Partly | before v3-beta | SPEC-based reader cross-check |
+| LFS3-DOC-03 | Partly | before v3-beta | README example compile job |
 
 ### 9.2 Existing tests in a new environment
 
@@ -8443,54 +8633,20 @@ new environment (9.2).
 | LFS3-PL-21 | Partly | nightly | `relocations::*_pl_fuzz` with PLB-TORN (LFS3-CI-05) |
 | LFS3-PL-23 | Untested | nightly | `-P'permute(1)'` (LFS3-CI-05) |
 | LFS3-PL-24 | Untested | nightly | `-P'permute(2)'` (LFS3-CI-05) |
-| LFS3-PL-27 | Defect | every CI run | fix the bug and remove the exclusion |
 | LFS3-INT-05 | Partly | every CI run | builds with each crc32c option |
-| LFS3-INT-15 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-INT-16 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-INT-17 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-INT-18 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-INT-20 | Defect | every CI run | B-BIG once F-2 is fixed (LFS3-CI-03) |
-| LFS3-INT-23 | Defect | every CI run | B-BIG with `ck::ckparity_btree_append` (on v3-fix-parity) |
-| LFS3-FAIL-03 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-05 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-06 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-08 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-09 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-10 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-11 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-FAIL-20 | Untested | nightly | B-YGB, with the B-tree cases no longer excluded |
-| LFS3-META-02 | Untested | nightly | build with `LFS3_DBGRBYDBALANCE` |
+| LFS3-FAIL-20 | Partly | nightly | B-YGB, with the B-tree cases no longer excluded |
 | LFS3-META-16 | Partly | nightly | G-ALL (LFS3-CI-11) |
 | LFS3-ALLOC-06 | Partly | nightly | `LOOKAHEAD_SIZE` matrix |
-| LFS3-ALLOC-09 | Partly | every CI run | B-YGB and B-BIG |
-| LFS3-ALLOC-10 | Partly | every CI run | B-YGB |
-| LFS3-ALLOC-13 | Partly | every CI run | a `LFS3_GBMAP` build |
-| LFS3-ALLOC-14 | Partly | every CI run | a `LFS3_GBMAP` build |
-| LFS3-PRE-01 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-GC-03 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-GC-04 | Partly | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-GC-13 | Partly | every CI run | B-BIG (LFS3-CI-03) |
 | LFS3-MOUNT-01 | Partly | nightly | G-ALL in B-DEF and B-YGB (LFS3-CI-11) |
 | LFS3-MOUNT-26 | Untested | every CI run | `compat::*` with each earlier release linked as `LFSP` |
 | LFS3-CFG-10 | Partly | nightly | `CRYSTAL_THRESH` matrix |
 | LFS3-CFG-11 | Partly | nightly | `SHRUB_SIZE` matrix |
 | LFS3-CFG-12 | Partly | nightly | `FRAGMENT_SIZE` matrix |
 | LFS3-CFG-13 | Untested | nightly | G-EMMC and G-NAND |
-| LFS3-CFG-16 | Partly | every CI run | B-BIG with `GC_LOOKAHEAD_THRESH` matrix |
-| LFS3-CFG-17 | Partly | every CI run | B-BIG with `GC_LOOKGBMAP_THRESH` matrix |
-| LFS3-BUILD-13 | Defect | every CI run | B-BIG (LFS3-CI-03) |
-| LFS3-BUILD-14 | Tested | every CI run | B-YGB (LFS3-CI-03), passes at e529bb20 |
 | LFS3-BUILD-15 | Untested | nightly | each B-YES-x build |
-| LFS3-BUILD-16 | Tested | every CI run | `make test-release` (B-NA) and `mount::noassert` (e529bb20) |
-| LFS3-BUILD-17 | Untested | nightly | B-NB and B-NS |
-| LFS3-CI-01 | Defect | every CI run | v3 workflow |
-| LFS3-CI-02 | Defect | every CI run | v3 workflow, cross architectures |
-| LFS3-CI-03 | Untested | every CI run | v3 workflow, feature builds |
-| LFS3-CI-04 | Tested | every CI run | jobs `test-valgrind` and `test-sanitize` (41165ec9) |
-| LFS3-CI-06 | Defect | every CI run | v3 workflow, sizes |
-| LFS3-CI-07 | Defect | every CI run | v3 workflow, coverage |
-| LFS3-CI-09 | Tested | every CI run | job `test-sanitize`, leaks included (6fad1a62, 41165ec9) |
-
+| LFS3-BUILD-17 | Partly | nightly | B-NB and B-NS |
+| LFS3-CI-06 | Partly | every CI run | the size statuses, seen on a pull request |
+| LFS3-CI-07 | Partly | every CI run | the coverage difference, seen on a pull request |
 
 ## Appendix A. Defect register
 
@@ -8504,95 +8660,132 @@ a test or build run showed it; **code** means the code establishes it without
 doubt; **suspected** means the code suggests it but nothing has reproduced
 it; **maintainer** means the maintainer records it.
 
-The last column lists fixes on our branches of the fork. None of them is
-upstream yet. Requirement status always describes `b10efaa`.
+The last column gives the fixing commit on `v3-integration`, and the case or
+check that verifies the fix. None of the fixes is upstream yet. "Open"
+means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 
-### A.1 Fixed on v3-fixes, and test-code defects
+### A.1 Test-code and tooling defects
 
-| Ref | Defect | Where | Evidence | Requirements | Fix |
+| Ref | Defect | Where | Evidence | Requirements | Fix and test |
 |---|---|---|---|---|---|
-| F-1 | `lfs3_fromle32` shifted a promoted `int` into the sign bit (undefined behaviour) | `lfs3_util.h:498-503` | code | GEN-03 | v3-fixes `8b2a82f` |
-| F-2 | `LFS3_CKDATACKSUMS`, and so `LFS3_BIGGEST`, did not compile: `data.u.disk` used on a pointer, since `321e33d` | `lfs3.c:1736, 1808` | run | INT-20, BUILD-02, BUILD-03, BUILD-13 | v3-fixes `e4c046b` |
-| F-3 | `LFS3_FROM_BRANCH` encoded a 13-byte branch into an 8-byte buffer; `-Warray-bounds` in every build | `lfs3.c:3505-3511` | run | GEN-03, BUILD-01 | v3-fixes `ba31df7` |
-| F-4 | Test: use-after-free in `grow::incr_spam_uzd_fuzz` (180 baseline failures) | `tests/test_grow.toml` | run | MOUNT-23, CI-09 | v3-fixes `2574f54` |
-| F-5 | Test: sim array overflows in `badblocks::alternating_*` and the rename paths | `tests/test_badblocks.toml` | run (glibc abort, ASan) | FAIL-01, CI-09 | v3-fixes `9ec4c44`, `55b2396` |
-| F-6 | Test: rattr list without terminator in `files::zero_btree` (1 baseline failure) | `tests/test_files.toml:1241-1243` | run | FILE-22, CI-09 | v3-fixes `029db13` |
-| F-7 | Test: unterminated names in `mtree::opened_relocate_l` and `_r` | `tests/test_mtree.toml` | run (ASan) | META-13, CI-09 | v3-fixes `55b2396` |
-| F-8 | Test: buffer overread in `mtree::truncated_tag` | `tests/test_mtree.toml` | run (ASan) | INT-01, CI-09 | v3-fixes `55b2396` |
-| F-9 | Test: always-true error check in `ck::spam_uz_fuzz`, so its model was never updated after a sync | `tests/test_ck.toml` | code | FAIL-10, CI-09 | v3-ci `77884c9` |
-| F-10 | Test: string initializers without room for NUL in `test_rbyd` (246 warnings on newer compilers) | `tests/test_rbyd.toml` | run | BUILD-01 | v3-ci `1b89fb4` |
+| F-1 | `lfs3_fromle32` shifted a promoted `int` into the sign bit (undefined behaviour) | `lfs3_util.h:498-503` | code | GEN-03 | 8b2a82f9; `make test-sanitize` |
+| F-2 | `LFS3_CKDATACKSUMS`, and so `LFS3_BIGGEST`, did not compile: `data.u.disk` used on a pointer, since `321e33d` | `lfs3.c:1736, 1808` | run | INT-20, BUILD-02, BUILD-03, BUILD-13 | e4c046b5; the B-BIG build and suite (job `test-biggest`) |
+| F-3 | `LFS3_FROM_BRANCH` encoded a 13-byte branch into an 8-byte buffer; `-Warray-bounds` in every build | `lfs3.c:3505-3511` | run | GEN-03, BUILD-01 | ba31df75; `-Werror` builds (job `test`) |
+| F-4 | Test: use-after-free in `grow::incr_spam_uzd_fuzz` (180 baseline failures) | `tests/test_grow.toml` | run | MOUNT-23, CI-09 | 2574f544; the case, and `make test-sanitize` |
+| F-5 | Test: sim array overflows in `badblocks::alternating_*` and the rename paths | `tests/test_badblocks.toml` | run (glibc abort, ASan) | FAIL-01, CI-09 | 9ec4c44c, 55b2396a; the cases under `make test-sanitize` |
+| F-6 | Test: rattr list without terminator in `files::zero_btree` (1 baseline failure) | `tests/test_files.toml:1241-1243` | run | FILE-22, CI-09 | 029db137; the case |
+| F-7 | Test: unterminated names in `mtree::opened_relocate_l` and `_r` | `tests/test_mtree.toml` | run (ASan) | META-13, CI-09 | 55b2396a; `make test-sanitize` |
+| F-8 | Test: buffer overread in `mtree::truncated_tag` | `tests/test_mtree.toml` | run (ASan) | INT-01, CI-09 | 55b2396a; `make test-sanitize` |
+| F-9 | Test: always-true error check in `ck::spam_uz_fuzz`, so its model was never updated after a sync | `tests/test_ck.toml` | code | FAIL-10, CI-09 | 77884c97; the case |
+| F-10 | Test: string initializers without room for NUL in `test_rbyd` (246 warnings on newer compilers) | `tests/test_rbyd.toml` | run | BUILD-01 | 1b89fb4a; `-Werror` builds |
+| F-11 | emubd: a continued out-of-order power loss during an erase restored a stale snapshot, under `-Pexhaustive` and `permute(n)` with OOO | `bd/lfs3_emubd.c` | run | PL-23, PL-24 | 74009b94; `bd::powerloss_continue` |
+| F-12 | emubd: the METASTABLE bit could land anywhere in the block, so it modelled bit rot, not power loss, and gave 205 of NEW-08's 276 false losses; and it settled at the next prog instead of staying unstable until the erase | `bd/lfs3_emubd.c` | run | PL-03, DEG-01 | 8e037fbb, a12705da; `bd::metastable` |
+| F-13 | Test: `exhaustion::spam_file_pl_fuzz` reset the wear of blocks 0 and 1 only, so with the gbmap ten interrupted formats wore out block 2 (60 B-YGB failures, issue #4) | `tests/test_exhaustion.toml` | run | PL-26 | afdf7f05; the case in B-YGB |
+| F-14 | Test: `stickynotes::cleanup_drop` didn't build two orphan-only mdirs with the gbmap on 512-byte blocks (3 B-YGB failures, issue #18) | `tests/test_stickynotes.toml` | run | META-14 | 68039c4d; the case in B-YGB |
+| F-15 | Tooling: the runner rewrote `LFS3_ASSERT` even with `LFS3_NO_ASSERT`, so release behaviour could not be tested (issue #14) | `scripts/prettyasserts.py`, `Makefile` | run | BUILD-16 | e529bb20; `make test-release`, `mount::noassert` |
+| F-16 | Tooling: the debug scripts accepted images the driver rejects: VERSION as leb128s, unchecked CKSUM phase and size, leb128 limits, redundancy bits, mptr length, an unvalidated trunk, a shrub null tag, a `BLOCK` "e" bit (issue #13) | `scripts/dbg*.py` | run (248 of 537 checks) | DOC-20 | cc19a932; `make test-dbg` |
+| F-17 | Test and build: zero-length VLAs and other UBSan reports in test code; `-Wtype-limits` in `test_alloc`; 32-bit `-Werror` breaks in the tests; a GCC `-Werror` break without `LFS3_GBMAP`; test cases that leaked what they allocated | `tests/*.toml`, `lfs3.c` | run (UBSan, LSan, GCC) | GEN-03, BUILD-01, CI-09 | 4e9ea5d4, efd03916, 152f20c2, 345c40f7, 6fad1a62; `make test-sanitize`, the `-Werror` jobs |
+| F-18 | Tooling: GCC-only flags broke clang builds; `PERFBDGEN` passed a trace flag the scripts reject; invalid escape sequences warned on Python 3.12 | `Makefile`, `scripts/*.py` | run | CI-08 | 1ee68320, 9115a2ab; job `test-clang` |
 
-### A.2 Found while writing this document
+### A.2 Found while writing this document and resolving its issues
 
-| Ref | Defect | Where | Evidence | Requirements | Fix |
+| Ref | Defect | Where | Evidence | Requirements | Fix and test |
 |---|---|---|---|---|---|
-| D-1 | The `gc_preerase_count` comment does not say that pre-erase needs `LFS3_REVPERTURB` and a mount with `LFS3_M_REVPERTURB` | `lfs3.h:608-620` | code | DOC-04 | none |
-| D-2 | With `LFS3_M_CKMETAPARITY` and without `LFS3_M_CKFETCHES`, `lfs3_bd_readtag` parity-checks CKSUM tags during quick fetches. The byte after a CKSUM tag is the next commit's valid bit, or erased state that the perturb bit makes intentionally invalid, so every B-tree commit to an rbyd not fetched since mount returns `LFS3_ERR_CORRUPT`. Appends to B-tree files fail after a remount, and mounts with `LFS3_M_PREERASE` fail: 1275 permutations of `mount::flags` and `mount::format_flags` in B-BIG | `lfs3.c:1368-1376` | run | INT-23, GC-13, BUILD-13 | v3-fix-parity `f90e132` (`ck::ckparity_btree_append`) |
-| D-3 | After a prog fails with something other than `LFS3_ERR_CORRUPT` partway through a crystallization that resumes a file's leaf block, the leaf still claims the block is erased from where the crystallization started, and the next sync progs those bytes again | `lfs3_file_crystallize_` | run (`badblocks::error_then_sync`, `LFS3_ERR_IO` on the 146th prog) | SYNC-09, CFG-15 | `4968164e` |
-| D-4 | An mdir split that finds blocks for its first sibling but not for the second, or not for the mtree node, fails with `LFS3_ERR_NOSPC` instead of compacting in place, so `lfs3_remove` fails on a nearly full disk | `lfs3_mdir_commit_` | run (`badblocks::error_then_sync` with `PROG_SIZE=16`) | ALLOC-04, SYNC-09 | `ce2a68d6` |
-| D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck::readflip_spam`, pending) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09; the re-fetch fallback is issue #6 |
-| D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch |
-| D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | `82ab4f07`, `b5888089` (issue #22) |
-| D-8 | A commit that only removes still splits an mdir whose compaction estimate is over half a block. Splitting an inlined mroot whose root attrs fill its block moves its entries to a new mdir and needs an mtree the mroot has no room for, so `lfs3_removeattr("/")` fails with `LFS3_ERR_NOSPC` every time; splitting any other mdir needs new blocks and an mtree update that a full disk or a full mroot may not take, and can overflow the mtree's B-tree split | `lfs3_mdir_commit__`, `lfs3_mdir_commit_` | run (`mtree::commit_too_big` with `-DSEED='range(4096)'`: 44 of 12,288 in B-DEF) | DEG-05 | `819e1a10` (issue #23) |
-| D-9 | An mtree B-tree split can leave the rattrs of an mdir split, two mdir pointers and the new mdir's first name, no room in the sibling they go to: on 512-byte blocks, with names within `name_limit` (132 bytes), a sibling held 378 bytes after compaction, and `lfs3_mkdir` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in `lfs3_btree_commit_`. The `name_limit` bound assumes each half of a split fits in half a block, which a few large names in one node make untrue: the split balances what the node holds, not what the commit adds. With `LFS3_NO_ASSERT` the RANGE is taken for a full root, and a new root is tried on block after block through the whole disk before `lfs3_mkdir` returns `LFS3_ERR_NOSPC` | `lfs3_btree_commit_` | run (`mtree::commit_too_big` with `ERASE_SIZE=512`, `SEED=637`, in B-DEF and B-BIG; with `LFS3_NO_ASSERT`, about 3,900 root allocations) | META-03, DIR-02, ERR-06 | `e38b42ae` (issue #25) |
+| D-1 | The `gc_preerase_count` comment does not say that pre-erase needs `LFS3_REVPERTURB` and a mount with `LFS3_M_REVPERTURB` | `lfs3.h:608-620` | code | DOC-04 | eb073217; review |
+| D-2 | With `LFS3_M_CKMETAPARITY` and without `LFS3_M_CKFETCHES`, `lfs3_bd_readtag` parity-checks CKSUM tags during quick fetches. The byte after a CKSUM tag is the next commit's valid bit, or erased state that the perturb bit makes intentionally invalid, so every B-tree commit to an rbyd not fetched since mount returns `LFS3_ERR_CORRUPT`. Appends to B-tree files fail after a remount, and mounts with `LFS3_M_PREERASE` fail: 1275 permutations of `mount::flags` and `mount::format_flags` in B-BIG | `lfs3.c:1368-1376` | run | INT-23, GC-13, BUILD-13 | f90e1323; `ck::ckparity_btree_append`, `mount::flags` in B-BIG |
+| D-3 | After a prog fails with something other than `LFS3_ERR_CORRUPT` partway through a crystallization that resumes a file's leaf block, the leaf still claims the block is erased from where the crystallization started, and the next sync progs those bytes again | `lfs3_file_crystallize_` | run (`badblocks::error_then_sync`, `LFS3_ERR_IO` on the 146th prog) | SYNC-09, CFG-15 | 4968164e; `badblocks::error_then_sync` |
+| D-4 | An mdir split that finds blocks for its first sibling but not for the second, or not for the mtree node, fails with `LFS3_ERR_NOSPC` instead of compacting in place, so `lfs3_remove` fails on a nearly full disk | `lfs3_mdir_commit_` | run (`badblocks::error_then_sync` with `PROG_SIZE=16`) | ALLOC-04, SYNC-09 | ce2a68d6; `badblocks::error_then_sync` |
+| D-5 | With `LFS3_M_CKMETAPARITY`, a flipped continuation bit in a tag's leb128 weight or size reframes the tag and passes the parity check half the time, and a re-fetch while mounted silently falls back to an older commit when a newer one fails its checksum; reads return wrong data without an error | `lfs3_bd_readtag`, `lfs3_rbyd_fetch_` | run (NEW-62 `ck_readflip::spam`) | INT-19, FAIL-09 | resolved by restating LFS3-INT-19 and LFS3-FAIL-09 (e402fc35); `ck_readflip::spam` (59b39cf6); the re-fetch fallback is D-23 |
+| D-6 | With `LFS3_M_CKFETCHES`, a B-tree node is verified against its stored checksum when it is fetched, and the lookup then reads its tags from the device again, so a bit that reads differently on that later read is not covered; the mroot is not fetched again while mounted, and mdirs have no stored checksum. 15 of 604 class 1 rounds of `ck_readflip::spam` missed with `CK=1` | `lfs3_branch_fetch`, `lfs3_rbyd_lookupnext_` | run (NEW-62) | INT-25 | resolved by narrowing LFS3-INT-25 to flips present at a fetch (315ca3cf); `ck_readflip::spam` with `FLIP=1` (6a0d2e1c) |
+| D-7 | Near the 31-bit file limit, rid and bid sums in a file's tree overflow `int32_t`: `lfs3_rbyd_estimate` tests `rid_ > a_rid + weight_ - 1` while compacting a shrub or B-tree node, and `lfs3_btree_traverse` reports an inner node's bid as `btrv->bid + rid__`, which is also wrong for every node but its parent's first. Signed overflow is undefined behaviour, so the compiler may miscompile the bounds | `lfs3_rbyd_estimate`, `lfs3_btree_traverse` | run (UBSan: 16 permutations of `fwrite::filemax`, 2024 of `fwrite::filemax_fuzz`; B-DEF: 299 of `fwrite::filemax_fuzz` see the wrong inner-node bid) | FILE-17, GEN-03 | 82ab4f07, b5888089 (issue #22); `fwrite::filemax_fuzz`, `make test-sanitize` |
+| D-8 | A commit that only removes still splits an mdir whose compaction estimate is over half a block. Splitting an inlined mroot whose root attrs fill its block moves its entries to a new mdir and needs an mtree the mroot has no room for, so `lfs3_removeattr("/")` fails with `LFS3_ERR_NOSPC` every time; splitting any other mdir needs new blocks and an mtree update that a full disk or a full mroot may not take, and can overflow the mtree's B-tree split | `lfs3_mdir_commit__`, `lfs3_mdir_commit_` | run (`mtree::commit_too_big` with `-DSEED='range(4096)'`: 44 of 12,288 in B-DEF) | DEG-05 | 819e1a10 (issue #23); `mtree::commit_too_big` with the failing seeds |
+| D-9 | An mtree B-tree split can leave the rattrs of an mdir split, two mdir pointers and the new mdir's first name, no room in the sibling they go to: on 512-byte blocks, with names within `name_limit` (132 bytes), a sibling held 378 bytes after compaction, and `lfs3_mkdir` tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in `lfs3_btree_commit_`. The `name_limit` bound assumes each half of a split fits in half a block, which a few large names in one node make untrue: the split balances what the node holds, not what the commit adds. With `LFS3_NO_ASSERT` the RANGE is taken for a full root, and a new root is tried on block after block through the whole disk before `lfs3_mkdir` returns `LFS3_ERR_NOSPC` | `lfs3_btree_commit_` | run (`mtree::commit_too_big` with `ERASE_SIZE=512`, `SEED=637`, in B-DEF and B-BIG; with `LFS3_NO_ASSERT`, about 3,900 root allocations) | META-03, DIR-02, ERR-06 | e38b42ae (issue #25); `mtree::commit_too_big` with seed 637 |
+| D-10 | A synced, acknowledged commit could be lost without an error after a power loss: a commit interrupted by the loss read whole at one mount, littlefs appended to it, and a later mount read it torn and dropped both (27 to 29 of 64 mounts in a probe) | `lfs3_mdir_fetch`, mount | run (METASTABLE power loss, NEW-08) | PL-03, DEG-01, DEG-11 to DEG-14 | c783a551 (issue #1); `powerloss::metastable`, `metastable_builton`, `dirty_mark` |
+| D-11 | Asserts reachable from metadata that reads differently from its fetch: corrupt alts, and a lookup that finds the disk changed mid-operation | `lfs3_rbyd_*`, `lfs3_mdir_*` | run (METASTABLE, READFLIP) | GEN-09 | 42e7f9eb, e5646435; `ck::metastable_alts`, `dirs::rm_many_2layers_metastable` |
+| D-12 | More asserts reachable from misread metadata: a misdirected bookmark lookup pushed mid 0 to the grm (`lfs3_grm_push`), a tag read with bit 7 set was copied into a new commit (`lfs3_rbyd_appendtag`), and `lfs3_file_lookupnext` asserted (issue #18) | `lfs3_grm_push`, `lfs3_rbyd_appendtag`, `lfs3_file_lookupnext` | run (B-YGB, 7 permutations) | GEN-09 | 7d27de3d; `ck::reserved_bit`, `ck::root_bookmark` |
+| D-13 | A checksum read twice: fetch checksummed each ecksum and gcksumdelta, then decoded them from a second read; and parity was checked on the lookup's read while the data was read again later. A bit that reads differently each time could pass the check and come back flipped | `lfs3_rbyd_fetch_`, `lfs3_bd_readtag` | run | INT-19, GEN-09 | 88301cf5, 3ab7ced4; `ck::fetch_gcksumdelta`, `ck::ckparity_data` |
+| D-14 | Valgrind: a fixed-size file attribute buffer was written back whole after a shorter stored attribute, so bytes no read had filled reached a commit's checksum (issue #2) | `lfs3_file_sync_`, attr loading | run (valgrind, 9 cases) | ATTR-14 | 245b84c9; `attrs::fattr_zerofill`, the valgrind job |
+| D-15 | A failed crystallization left its leaf marked erased and its partial data in the pcache, so a later write programmed bytes twice and a bptr checksum mismatched after a successful sync (issue #3) | `lfs3_file_crystallize_` | run (B-YGB, `badblocks::graft_torn` asserted) | CFG-15 | 0c531757; `badblocks::crystal_ioerror` |
+| D-16 | With the gbmap, pre-erase and lookahead, `lfs3_fs_gc` with `gc_steps` -1 could never return on a nearly full disk, and an mdir compaction could not shrink was compacted on every pass (issue #5) | `lfs3_mtree_gc` | run (16 of 384 permutations) | GC-02 | b55ca37f, 6a1535f6; `gc::steps_unbounded`, `gc::compact_unshrinkable` |
+| D-17 | `lfs3_dir_seek` counted orphaned stickynotes that `lfs3_dir_read` skips, so a saved position landed one entry off per orphan before it (issue #12) | `lfs3_dir_seek` | run (14 of 32 permutations) | DIR-11 | 233ff491; `dread::seek_tell` |
+| D-18 | A data block's checksum covered the padding of its last prog instead of its `cksize` bytes, so `LFS3_CK_CKDATA` flagged good files as corrupt | `lfs3_file_crystallize_` | run | CFG-10 | aa18164d; `ck::ckdata_unaligned` |
+| D-19 | Crystallization copied a data block's bytes under a fresh checksum without checking the block's own checksum, unless `LFS3_M_CKDATACKSUMS`, laundering a flip | `lfs3_file_crystallize_` | run | DEG-15, INT-24 | 91d63160; `ck::crystallize_flipped` |
+| D-20 | A full bad-block queue dropped its smallest runs, so a failed block could be forgotten and erased again | `lfs3_alloc_*`, the bad-block queue | run (`badblocks_gbmap::exhaustion`) | BAD-01, BAD-08, BAD-09 | edc41794; `badblocks_gbmap::queue_full`, `queue_inuse`, `queue_merge` |
+| D-21 | When `cfg->sync` failed after a commit, RAM was reverted while the commit stayed on disk: a failed mkdir in an mtree mdir left a gcksum mismatch, and a failed rename showed up as done | `lfs3_mdir_commit_` | run | FAIL-18, META-10 | 5eaedd05; `badblocks::badsync`, `badblocks::ioerror` |
+| D-22 | Pre-erased blocks counted as in use on a mount without `LFS3_M_REVPERTURB`, so after a gc pre-erase an allocation walked the whole window and failed with `LFS3_ERR_NOSPC` on a disk about 10% full | `lfs3_alloc_findfree` | run (`powerloss::gc_crossmode_pl_fuzz`) | PRE-04 | bebf55ba; `powerloss::gc_crossmode_pl_fuzz`, `gc::preerase_norevperturb` |
+| D-23 | A read error on the newer block of a metadata pair fell back to the older block, at mount and while mounted, silently losing every commit since (issue #6) | `lfs3_mdir_fetch` | run (`mount::readerror` with CORRUPT, 8 of 8) | INT-26, ERR-05 | 862e3695; `mount::readerror`, `mount::readerror_mounted` |
+| D-24 | Settling took a failed read for a power loss: a newer block that failed reads was settled over by the older one, or a commit that failed a read was dropped | `lfs3_mdir_settle` | run (10 of 12 permutations) | DEG-14 | e78b4263; `powerloss::settle_newer`, `settle_rderr` |
+| D-25 | `LFS3_ERR_INVAL` had a second meaning: a handle torn by a failed multi-commit write, and an mroot without a geometry tag | `lfs3_file_sync`, mount | code | ERR-03, ERR-07 | d4211ea5, e9aeb8b2; `badblocks::graft_torn`, `mount::no_geometry` |
+| D-26 | An error in an append that coalesced with the file's last fragment tore the handle, so a logger's next sync returned `LFS3_ERR_INVAL` | `lfs3_file_graft_` | run (`badblocks::append_torn`, READERROR, `PROG_SIZE` 16) | SYNC-20 | 554e89f9; `badblocks::append_torn` |
+| D-27 | With `prog_size` 256, v3 erased more than v2.11.3 on W-LOG at 50 rows per second (M-3) | file appends | run (`bench_wlog_fresh`) | PERF-09 | ec0733b8, 554e89f9, 32eb36e7; `bench_wlog_fresh` |
+| D-28 | Lookahead scans allocated blocks the gbmap marks BMBAD, so a driver writing an image with marks wrote its bad blocks | `lfs3_alloc_*` | run (`compat::gbmap_exchange`: 53 erases of one marked block) | BAD-05 | 4f6d5ef8; `compat::gbmap_exchange` |
+| D-29 | Name lookups were routed past their mdir by a stale bname, so inserts broke mname order or went to the wrong mdir | `lfs3_mtree_namelookup` | run | META-05 | 09501b44; `dirs::mvrm_fuzz_long` |
+| D-30 | The pre-erase gbmap commit allocated without a checkpoint, so `lookahead.ckpoint` wrapped and NOSPC went undetected (3-alloc B2 reached) | `lfs3_alloc_preerase` | run | ALLOC-08 | fe1a00d3; `gc::preerase_ckpoint`, `gc::preerase_ckpoint_full` |
+| D-31 | A failed gbmap repopulation left part of its commit in the pcache, which the next flush wrote into a gbmap node's block and into a data block's checksum | `lfs3_alloc_ckpoint` | run (ERASEERROR wear-out with pre-erase) | ALLOC-05, CFG-15 | d4c29655; `exhaustion::*` with pre-erase and ERASEERROR |
+| D-32 | Removes on a full disk or a full mdir failed with `LFS3_ERR_NOSPC`: an mdir that couldn't split didn't compact in place; removing the last entry of a full mdir appended before dropping it; a removing commit's compaction copied what it removed; a pending grm cleanup that didn't fit blocked every remove | `lfs3_mdir_commit_`, `lfs3_fs_mkconsistent` | run | ALLOC-04, DEG-05 | 60026203, f29b8985, 0535a265, 501eda31; `alloc::nospc_recover`, `mtree::commit_too_big` |
+| D-33 | An mroot compaction that didn't fit tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` | `lfs3_mdir_compact___` | run (a 3896-byte root attr, then a create) | META-03, ERR-06 | 42e26e7e; `mtree::commit_too_big`, `attrs::setattr_huge` |
+| D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
+| D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
 
 ### A.3 From the analyses
 
-| Ref | Defect | Where | Evidence | Requirements | Fix |
+| Ref | Defect | Where | Evidence | Requirements | Fix and test |
 |---|---|---|---|---|---|
-| 1-meta 0.1 | `lfs3_dir_seek(0)` and `(1)`: `off - 2` wraps and the cursor walks to the end of the mtree | `lfs3.c:12241` | probe | DIR-11 | v3-fix-api `cc4acb9` (`dread::seek_tell`) |
-| 1-meta 0.2 | A commit larger than the space left after compaction trips `LFS3_ASSERT(err != LFS3_ERR_RANGE)`: `lfs3_mkdir` with 184-255-byte names on 512-byte blocks, `lfs3_setattr` of about 2500 bytes or more on 4096-byte blocks | `lfs3.c:8777` (also 8761, 8993, 9006, 9228, 9281, 9329) | probe | META-03, DIR-02, ATTR-05 | none |
-| 1-meta 0.3 | Big-endian hosts: `lfs3_mdir_fetch` reads into `revs[0]` and converts `revs[i]`, so it can pick the older block of a pair (also 3-alloc B8, 4-api R13) | `lfs3.c:7862-7869` | code | META-04, GEN-02 | none |
-| 1-meta 0.4 | Unknown configuration tags below 0x013b are ignored (also 4-api R9) | `lfs3.c:15750-15764` | probe | MOUNT-09 | none |
-| 1-meta 0.5 | `lfs3_fs_consumegdelta` does not check the GBMAPDELTA lookup error and reads stale or uninitialised data (also 3-alloc B4, 4-api R14) | `lfs3.c:7744-7755` | code | META-11 | none |
-| 1-meta 0.7b | `LFS3_PMUL_CRC32C` does not compile: `lfs3_fromle32_` is undefined | `lfs3_util.c:210` | run | BUILD-05 | none |
-| 1-meta 0.7c | Under `LFS3_CKDATACKSUMS` the B-tree BNAME rattr and the stickynote-to-file name supply too few arguments; AddressSanitizer reports a stack-buffer-overflow in about 150 `btree::find*` permutations in B-BIG | `lfs3.c:6044, 3461-3465` | run (ASan) | GEN-03, BUILD-13 | v3-fix-api `7f689b8` |
-| 1-meta 7.7 | Asserts on on-disk values (`lfs3_data_readshrub`, `lfs3_data_readgrm`, `lfs3_rbyd_fetchck`, mtree leaf checks, `lfs3_mroot_parent`, alt jumps) | various | code | GEN-07 | none |
-| 1-meta 7.14 | `gc_compact_thresh` is checked only with `LFS3_GC` but used in every build | `lfs3.c:15139-15147` | code | CFG-05 | none |
-| 2-files B1 | After `lfs3_file_fruncate`, a bad prog during a resumed append relocates from a wrapped `block_pos`, copies nothing, and leaves a negative size and a file that reads as `LFS3_ERR_CORRUPT` | `lfs3.c:13644-13662` | probe | FILE-10 | v3-fix-files `b07be9e` (`badblocks::fruncate_append`) |
-| 2-files B2 | `LFS3_O_APPEND` writes check `file_limit` against the position before the append | `lfs3.c:14123-14135` | probe | FILE-03 | v3-fix-files `5500063` (`fwrite::append_fbig`) |
-| 2-files B3 | `lfs3_file_sync` writes through `LFS3_O_RDONLY` handles, including on an `LFS3_M_RDONLY` mount | `lfs3.c:14553-14608` | probe | MOUNT-17, Q1 | v3-fix-files `b923cd8` (`attrs::fattr_rdonly_file`, `fsync::desync_wdrs`) |
+| 1-meta 0.1 | `lfs3_dir_seek(0)` and `(1)`: `off - 2` wraps and the cursor walks to the end of the mtree | `lfs3.c:12241` | probe | DIR-11 | cc4acb99; `dread::seek_tell` |
+| 1-meta 0.2 | A commit larger than the space left after compaction trips `LFS3_ASSERT(err != LFS3_ERR_RANGE)`: `lfs3_mkdir` with 184-255-byte names on 512-byte blocks, `lfs3_setattr` of about 2500 bytes or more on 4096-byte blocks | `lfs3.c:8777` (also 8761, 8993, 9006, 9228, 9281, 9329) | probe | META-03, DIR-02, ATTR-05 | d428d7b8, 42e26e7e, e38b42ae; `dirs::name_limit`, `attrs::setattr_huge`, `attrs::fattr_huge`, `mtree::commit_too_big` |
+| 1-meta 0.3 | Big-endian hosts: `lfs3_mdir_fetch` reads into `revs[0]` and converts `revs[i]`, so it can pick the older block of a pair (also 3-alloc B8, 4-api R13) | `lfs3.c:7862-7869` | code | META-04, GEN-02 | ec3e6550; `mtree::fetch_revorder`, the suite on mips and powerpc |
+| 1-meta 0.4 | Unknown configuration tags below 0x013b are ignored (also 4-api R9) | `lfs3.c:15750-15764` | probe | MOUNT-09 | ae774718; `mount::incompat_unknown_config` |
+| 1-meta 0.5 | `lfs3_fs_consumegdelta` does not check the GBMAPDELTA lookup error and reads stale or uninitialised data (also 3-alloc B4, 4-api R14) | `lfs3.c:7744-7755` | code | META-11 | b2ae1491; `mount::readerror` |
+| 1-meta 0.7b | `LFS3_PMUL_CRC32C` does not compile: `lfs3_fromle32_` is undefined | `lfs3_util.c:210` | run | BUILD-05 | a2a3117d; none (no job builds it) |
+| 1-meta 0.7c | Under `LFS3_CKDATACKSUMS` the B-tree BNAME rattr and the stickynote-to-file name supply too few arguments; AddressSanitizer reports a stack-buffer-overflow in about 150 `btree::find*` permutations in B-BIG | `lfs3.c:6044, 3461-3465` | run (ASan) | GEN-03, BUILD-13 | 7f689b87; `make test-sanitize` in B-BIG |
+| 1-meta 7.7 | Asserts on on-disk values (`lfs3_data_readshrub`, `lfs3_data_readgrm`, `lfs3_rbyd_fetchck`, mtree leaf checks, `lfs3_mroot_parent`, alt jumps) | various | code | GEN-07 | in part: 42e7f9eb, e5646435, 7d27de3d (D-11, D-12); the range asserts are open (Q21) |
+| 1-meta 7.14 | `gc_compact_thresh` is checked only with `LFS3_GC` but used in every build | `lfs3.c:15139-15147` | code | CFG-05 | 6152d1bb; `gc::compact_thresh_check` |
+| 2-files B1 | After `lfs3_file_fruncate`, a bad prog during a resumed append relocates from a wrapped `block_pos`, copies nothing, and leaves a negative size and a file that reads as `LFS3_ERR_CORRUPT` | `lfs3.c:13644-13662` | probe | FILE-10 | 036267f1; `badblocks::fruncate_append` |
+| 2-files B2 | `LFS3_O_APPEND` writes check `file_limit` against the position before the append | `lfs3.c:14123-14135` | probe | FILE-03 | c630f695; `fwrite::append_fbig` |
+| 2-files B3 | `lfs3_file_sync` writes through `LFS3_O_RDONLY` handles, including on an `LFS3_M_RDONLY` mount | `lfs3.c:14553-14608` | probe | MOUNT-17, Q1 | db987a31; `attrs::fattr_rdonly_file`, `fsync::desync_wdrs`, `mount::rdonly_nowrite` |
 | 2-files B4 | Close after a write error returns 0 and discards the handle's changes (documented behaviour) | `lfs3.c:12876-12879` | probe | SYNC-19 | not a defect |
-| 2-files B5 | A write spanning several entries commits them one at a time; an error part way through may leave the handle's tree inconsistent, and a later sync may persist it | `lfs3.c:13213-13232` | suspected | SYNC-09 | none |
-| 2-files B6 | `LFS3_DBGBTREECOMMITS` does not compile | `lfs3.c:6969-6983` | run | BUILD-06 | none |
-| 2-files B8 | Errors from the graft and checkpoint in truncate and fruncate do not desync the handle | `lfs3.c:14738-14747, 14828-14837` | code | SYNC-05 | v3-fix-files `8c5241d` (`badblocks::truncate_desync`) |
-| 2-files B9 | `lfs3_file_rewind` is declared `int` and defined `lfs3_soff_t` | `lfs3.h:1640`, `lfs3.c:14700` | code | BUILD-11 | none |
-| 2-files B10 | `lfs3_file_opencfg_` is an undeclared external symbol | `lfs3.c:12590` | code | BUILD-10 | none |
-| 2-files B11 | The attribute-flag check uses file-flag helpers, so `LFS3_A_RDONLY \| LFS3_A_LAZY` asserts | `lfs3.c:12810-12816` | code | ATTR-12 | v3-fix-files `1783b37` |
-| 2-files B12 | `fragment_size` 0 (the zeroed default) makes the fragment path loop without progress, committing each time | `lfs3.c:14090` | code | CFG-01 | none |
-| 2-files B13 | Decoded block pointers, branches and shrubs are not range-checked | `lfs3.c:2352-2390, 5174-5201, 6499-6524` | code | GEN-07 | none |
-| 2-files B14 | `lfs3_file_read` asserts `pos + size <= 0x7fffffff` | `lfs3.c:12983` | code | FILE-04 | v3-fix-files `25cfa66` (`files::read_big`) |
-| 2-files B18 | A small append and sync issues 7 `cfg->sync` calls | — | probe | PERF-07 | none |
-| 2-files B19 | `.github/workflows/test.yml` is the 2022 v2 workflow and cannot pass on v3 | `.github/workflows/test.yml` | code | CI-01, CI-02, CI-04, CI-06, CI-07 | none |
-| 3-alloc B1 | `lfs3_alloc_preerase` returns an erase or ecksum error without advancing, so gc, check, and mount or format with the pre-erase flag fail at the same block forever | `lfs3.c:11416-11430` | code | PRE-06 | v3-fix-alloc `3ceb48b` (`badblocks::preerase`) |
-| 3-alloc B2 | `lookahead.ckpoint` is unsigned and 0 at mount; an allocation before the first checkpoint wraps it | `lfs3.c:11011, 11160, 15226` | suspected (the wrap is certain, reaching it is not) | ALLOC-08 | none |
-| 3-alloc B3 | "Stuck mroot" and a failed final `lfs3_bd_sync` return from `lfs3_mdir_commit_` without reverting gstate | `lfs3.c:9316, 9336, 9346` | code | META-10 | v3-fix-alloc `bd5bb8c` (`badblocks::mrootanchor_stuck`, `badblocks::badsync`; adds emubd `mkbadsync`) |
-| 3-alloc B5 | A source read error during compaction or relocation takes the bad-prog path, so each retry erases a new block until NOSPC | `lfs3.c:8705-8822, 8990-9009, 5868-6179, 13449-13622` | suspected | FAIL-17 | none |
-| 3-alloc B6 | A failed `lfs3_fs_grow` restores the block count but not the allocation window | `lfs3.c:16985-16997, 10886-10897` | suspected | MOUNT-22 | none |
-| 3-alloc B10 | With the gbmap, every commit checkpoints and may need blocks to repopulate, so a remove on a full disk may fail | `lfs3.c:9480-9493, 10797-10808` | suspected | ALLOC-05 | none |
-| 3-alloc B11 | `lookgbmap_thresh`: the code tests `known < thresh`, the header says "<=" and "0 only repopulates the gbmap when empty" | `lfs3.c:10800-10802`, `lfs3.h:704-716` | code | ALLOC-11 | none |
-| 3-alloc B17 | Pre-erase's erased-state checksum covers only the first `prog_size` bytes, while the first program can be a `pcache_size` flush | `lfs3.c:2491-2502` | code (depends on the hardware model) | PRE-09, Q19 | v3-integration `57493587` (`powerloss::append_pl`, `powerloss::preerase_pl_fuzz`) |
-| 3-alloc R3 | `lfs3_fs_ck` may return with its stack traversal still linked | `lfs3.c:16772-16775, 16824-16825` | suspected | GC-06 | none |
-| 3-alloc R8 | Header drift: `LFS3_M_REVPERTURB` comment, mkgbmap/rmgbmap returns, `gc_lookgbmap_thresh` text, read-callback CORRUPT, `LFS3_T_PREERASE` | `lfs3.h` | code | DOC-05, DOC-07, DOC-09, DOC-11, DOC-17 | none |
-| 4-api R1 | `lfs3_rename` of a directory into its own subtree returns 0 and detaches the subtree | `lfs3.c:11835-12014` | probe | DIR-05 | v3-fix-api `067ebe7` (`dirs::mv_subtree`) |
-| 4-api R3 | Large attributes assert, or return the undocumented `LFS3_ERR_RANGE` with `LFS3_NO_ASSERT` | `lfs3.c:9006` | probe | ATTR-05 | none |
-| 4-api R4 | `lfs3_fs_grow` beyond `cfg->block_count` succeeds, erases out of range, and makes the image unmountable (also 3-alloc B7) | `lfs3.c:16899-16999` | probe | MOUNT-21, GEN-08 | none |
-| 4-api R5 | An `LFS3_RDONLY` build compares uninitialised name and file limits, so a zeroed `lfs3_t` does not mount | `lfs3.c:15231-15243, 15715, 15741` | probe | MOUNT-14 | none |
-| 4-api R6 | `LFS3_RDONLY` with `LFS3_CKMETAPARITY`, `LFS3_GBMAP` or `LFS3_GC` does not compile | `lfs3.c:15206-15207, 10483-10509, 15097, 15143-15146` | run | BUILD-04 | none |
-| 4-api R7 | `lfs3_set` ignores `file_limit` | `lfs3.c:15045-15071` | probe | KV-04 | v3-fix-files `9c7deb7` (`kv::set_fbig`) |
-| 4-api R8 | `lfs3_init` frees pointers it never set when an early allocation fails | `lfs3.c:15175-15222, 15400-15418` | probe | RES-06 | none |
-| 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | none |
-| 4-api R17 | `lfs3_fromleb128` shifts signed values (undefined behaviour for large fifth bytes) | `lfs3_util.c:37-56` | code | GEN-03 | none |
-| 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | v3-r8 `ecf44d33` (`threadsafe::*`) |
-| 4-api R20 | `lfs3_util.h` honours `LFS3_CFG`, `lfs3_util.c` checks `LFS3_CONFIG` | `lfs3_util.h:21`, `lfs3_util.c:11` | code | BUILD-08 | none |
-| 4-api R21 | The `lfs3_strspn` fallback is wrong for sets of two or more characters | `lfs3_util.h:719-734` | code | BUILD-09 | none |
-| 4-api R22 | `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the header hides it | `lfs3.h:1511` | code | BUILD-10 | none |
-| 4-api R23 | Stale header text: `lfs3_fs_unck`, `lfs3_info.type`, the `gc_compact_thresh` percentage | `lfs3.h:1801-1810, 721, 625` | code | DOC-06, DOC-08, DOC-10 | none |
-| 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | none |
-| 4-api R27 | `dirs::rm_many_2layers` under power loss with `N=4` is excluded as a known bug | `tests/test_dirs.toml:3442` | maintainer | PL-27 | none |
-| 4-api R28 | `lfs3_format` with `block_count` 1 writes block 0, then asserts in the bd wrapper | `lfs3.c:570` | probe | MOUNT-03 | none |
-| 4-api §1.7 | Attribute type ranges in `lfs3.h` differ from #1111 | `lfs3.h:766-768` | code | DOC-14 | none |
-| 5-verif §0.6 | Tooling: `PERFBDGEN` passes `--trace-freq`; `test.py -j` is Linux-only; invalid escape sequences; `test_compat.toml` names a runner flag that does not exist | `Makefile:161-162`, `scripts/test.py` | run | CI-08 | escape sequences: v3-ci `dbbb5e6` |
+| 2-files B5 | A write spanning several entries commits them one at a time; an error part way through may leave the handle's tree inconsistent, and a later sync may persist it | `lfs3.c:13213-13232` | run (`badblocks::graft_torn`) | SYNC-09, ERR-07 | 96883f8e (the handle is torn and sync refuses it), d4211ea5; `badblocks::graft_torn` |
+| 2-files B6 | `LFS3_DBGBTREECOMMITS` does not compile | `lfs3.c:6969-6983` | run | BUILD-06 | d827c60e; none (no job builds it) |
+| 2-files B8 | Errors from the graft and checkpoint in truncate and fruncate do not desync the handle | `lfs3.c:14738-14747, 14828-14837` | code | SYNC-05 | 3f3d1e05; `badblocks::truncate_desync` |
+| 2-files B9 | `lfs3_file_rewind` is declared `int` and defined `lfs3_soff_t` | `lfs3.h:1640`, `lfs3.c:14700` | code | BUILD-11 | 64e5ae37; none (no job builds for arm-none-eabi) |
+| 2-files B10 | `lfs3_file_opencfg_` is an undeclared external symbol | `lfs3.c:12590` | code | BUILD-10 | e2ae786a; none (no symbol check) |
+| 2-files B11 | The attribute-flag check uses file-flag helpers, so `LFS3_A_RDONLY \| LFS3_A_LAZY` asserts | `lfs3.c:12810-12816` | code | ATTR-12 | 2c4576bd; `attrs::fattr_rdonly` |
+| 2-files B12 | `fragment_size` 0 (the zeroed default) makes the fragment path loop without progress, committing each time | `lfs3.c:14090` | code | CFG-01 | da4ec17c (asserted, Q15); `mount::zeroed_cfg` |
+| 2-files B13 | Decoded block pointers, branches and shrubs are not range-checked | `lfs3.c:2352-2390, 5174-5201, 6499-6524` | code | GEN-07 | open (Q21) |
+| 2-files B14 | `lfs3_file_read` asserts `pos + size <= 0x7fffffff` | `lfs3.c:12983` | code | FILE-04 | 443c0090; `files::read_big` |
+| 2-files B18 | A small append and sync issues 7 `cfg->sync` calls | — | probe | PERF-07 | open; not measured again |
+| 2-files B19 | `.github/workflows/test.yml` is the 2022 v2 workflow and cannot pass on v3 | `.github/workflows/test.yml` | code | CI-01, CI-02, CI-04, CI-06, CI-07 | 162b05f7, da14f0ea, 41165ec9; CI run 36985477685 |
+| 3-alloc B1 | `lfs3_alloc_preerase` returns an erase or ecksum error without advancing, so gc, check, and mount or format with the pre-erase flag fail at the same block forever | `lfs3.c:11416-11430` | code | PRE-06 | 3ceb48b1; `badblocks::preerase` |
+| 3-alloc B2 | `lookahead.ckpoint` is unsigned and 0 at mount; an allocation before the first checkpoint wraps it | `lfs3.c:11011, 11160, 15226` | run (reached by pre-erase, D-30) | ALLOC-08 | fe1a00d3; `gc::preerase_ckpoint` |
+| 3-alloc B3 | "Stuck mroot" and a failed final `lfs3_bd_sync` return from `lfs3_mdir_commit_` without reverting gstate | `lfs3.c:9316, 9336, 9346` | code | META-10 | bd5bb8c2, then 5eaedd05 for the sync (D-21); `badblocks::mrootanchor_stuck`, `badblocks::badsync` |
+| 3-alloc B5 | A source read error during compaction or relocation takes the bad-prog path, so each retry erases a new block until NOSPC | `lfs3.c:8705-8822, 8990-9009, 5868-6179, 13449-13622` | run | FAIL-17 | 2da3c077; `badblocks::source_readerror` |
+| 3-alloc B6 | A failed `lfs3_fs_grow` restores the block count but not the allocation window | `lfs3.c:16985-16997, 10886-10897` | run | MOUNT-22 | 9d1a6df4; `grow::failed` |
+| 3-alloc B10 | With the gbmap, every commit checkpoints and may need blocks to repopulate, so a remove on a full disk may fail | `lfs3.c:9480-9493, 10797-10808` | run | ALLOC-05 | eba40790; `gbmap::nospc_remove`, `alloc::nospc_gbmap` |
+| 3-alloc B11 | `lookgbmap_thresh`: the code tests `known < thresh`, the header says "<=" and "0 only repopulates the gbmap when empty" | `lfs3.c:10800-10802`, `lfs3.h:704-716` | code | ALLOC-11 | 5bc6dcf8; `gbmap::lookgbmap_thresh` |
+| 3-alloc B17 | Pre-erase's erased-state checksum covers only the first `prog_size` bytes, while the first program can be a `pcache_size` flush | `lfs3.c:2491-2502` | run (TORNTAIL: 2990 of 2998 `test_powerloss` permutations) | PRE-09, Q19 | 57493587; `powerloss_p1::tear_tail`, `powerloss::*` with torn tails |
+| 3-alloc R3 | `lfs3_fs_ck` may return with its stack traversal still linked | `lfs3.c:16772-16775, 16824-16825` | run | GC-06 | 69ad2cd6; `gc::mkconsistent_ck_grm`, `gc::ck_no_dangling` |
+| 3-alloc R7 | One unreadable mdir blocks allocation everywhere: a lookahead scan or gbmap repopulation that meets it fails every write that needs a scan | `lfs3_alloc_*` | run | DEG-04 | 320dc4a8; `badblocks::alloc_with_damage` |
+| 3-alloc R8 | Header drift: `LFS3_M_REVPERTURB` comment, mkgbmap/rmgbmap returns, `gc_lookgbmap_thresh` text, read-callback CORRUPT, `LFS3_T_PREERASE` | `lfs3.h` | code | DOC-05, DOC-07, DOC-09, DOC-11, DOC-17 | eb073217; review |
+| 3-alloc R9 | A gbmap that doesn't read makes every write that needs it fail, and the anchor's wear has no stated bound | `lfs3_alloc_*`, the anchor | run | DEG-08 | 73001c31, 4ac1a1bb; `badblocks::gbmap_root`, `relocations::anchor_wear` |
+| 4-api R1 | `lfs3_rename` of a directory into its own subtree returns 0 and detaches the subtree | `lfs3.c:11835-12014` | probe | DIR-05 | 067ebe7e; `dirs::mv_subtree` |
+| 4-api R3 | Large attributes assert, or return the undocumented `LFS3_ERR_RANGE` with `LFS3_NO_ASSERT` | `lfs3.c:9006` | probe | ATTR-05 | d428d7b8; `attrs::setattr_huge`, `attrs::fattr_huge` |
+| 4-api R4 | `lfs3_fs_grow` beyond `cfg->block_count` succeeds, erases out of range, and makes the image unmountable (also 3-alloc B7) | `lfs3.c:16899-16999` | probe | MOUNT-21, GEN-08 | 613ccac8; `grow::invalid` |
+| 4-api R5 | An `LFS3_RDONLY` build compares uninitialised name and file limits, so a zeroed `lfs3_t` does not mount | `lfs3.c:15231-15243, 15715, 15741` | probe | MOUNT-14 | 83f8cdea; `make test-rdonly` |
+| 4-api R6 | `LFS3_RDONLY` with `LFS3_CKMETAPARITY`, `LFS3_GBMAP` or `LFS3_GC` does not compile | `lfs3.c:15206-15207, 10483-10509, 15097, 15143-15146` | run | BUILD-04 | cc461256; none (no job builds them) |
+| 4-api R7 | `lfs3_set` ignores `file_limit` | `lfs3.c:15045-15071` | probe | KV-04 | d88ee2fc; `kv::set_fbig` |
+| 4-api R8 | `lfs3_init` frees pointers it never set when an early allocation fails | `lfs3.c:15175-15222, 15400-15418` | probe | RES-06 | 90c12e41; `mount::nomem` |
+| 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | open (Q2); `mount::rdonly_mutate` checks the assert |
+| 4-api R17 | `lfs3_fromleb128` shifts signed values (undefined behaviour for large fifth bytes) | `lfs3_util.c:37-56` | code | GEN-03 | fb675e5b; `make test-sanitize` |
+| 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | ecf44d33; `threadsafe::*`, `make test-threadsafe` |
+| 4-api R20 | `lfs3_util.h` honours `LFS3_CFG`, `lfs3_util.c` checks `LFS3_CONFIG` | `lfs3_util.h:21`, `lfs3_util.c:11` | code | BUILD-08 | 7e5796c6; none (no build check) |
+| 4-api R21 | The `lfs3_strspn` fallback is wrong for sets of two or more characters | `lfs3_util.h:719-734` | code | BUILD-09 | afcabca0; none (no unit case) |
+| 4-api R22 | `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the header hides it | `lfs3.h:1511` | code | BUILD-10 | 71a6f970; `make test-nomalloc` builds it |
+| 4-api R23 | Stale header text: `lfs3_fs_unck`, `lfs3_info.type`, the `gc_compact_thresh` percentage | `lfs3.h:1801-1810, 721, 625` | code | DOC-06, DOC-08, DOC-10 | 170f0110 (`lfs3_info.type`), the `lfs3.h` commit of issue #10 (`lfs3_fs_unck`); the percentage still reads "~88%" for 87.5% |
+| 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | 83f8cdea; `make test-rdonly` |
+| 4-api R27 | `dirs::rm_many_2layers` under power loss with `N=4` is excluded as a known bug | `tests/test_dirs.toml:3442` | maintainer | PL-27 | caaea78c (the exclusion removed; the case passes); `dirs::rm_many_2layers` |
+| 4-api R28 | `lfs3_format` with `block_count` 1 writes block 0, then asserts in the bd wrapper | `lfs3.c:570` | probe | MOUNT-03 | dda5cc34, 67f5b135; `mount::format_tiny` |
+| 4-api §1.7 | Attribute type ranges in `lfs3.h` differ from #1111 | `lfs3.h:766-768` | code | DOC-14 | open (Q9) |
+| 5-verif §0.6 | Tooling: `PERFBDGEN` passes `--trace-freq`; `test.py -j` is Linux-only; invalid escape sequences; `test_compat.toml` names a runner flag that does not exist | `Makefile:161-162`, `scripts/test.py` | run | CI-08 | 1ee68320, 9115a2ab (F-18); `test.py -j` is still Linux-only |
 
 ## Appendix B. Measurements
 
@@ -8620,7 +8813,7 @@ ones LFS3-PERF-08 to PERF-10 are judged by.
   pad).
 - **Reference.** littlefs v2.11.3 running the same workload, with
   `lfs_file_sync` every second: `bench/bench_v2.c` and `bench/model.h` on
-  the `v3-notes` branch, built against v2.11.3 (`6cb4e865`) with its
+  the `v3-notes` branch, built against the v2.11.3 release with its
   `prog_size` set to 1, 16 or 256.
 - **Metrics.** Erases per minute (erase count over the run, divided by 10).
   Page programs per minute: 256-byte pages touched by each program, which
@@ -8645,32 +8838,35 @@ ones LFS3-PERF-08 to PERF-10 are judged by.
 | M-3 | 50 | v3, `prog_size` 256 | 89.5 | |
 | M-3 | 50 | v3, `prog_size` 1, pre-erase | 4.5 | |
 
-`bench_wlog_fresh` on `v3-integration` (`32eb36e7`), B-BIG, per minute:
+`bench_wlog_fresh` on `v3-integration` (`9a2148ff`), B-BIG, per minute:
 
 | Rows/s | `prog_size` | Configuration | Erases | Page programs | Bytes programmed | Longest call | Most erases in a call | v2.11.3 erases (pages) |
 |---|---|---|---|---|---|---|---|---|
-| 1 | 1 | | 3.5 | 221.8 | 12349 | 184.6 ms | 4 | 58.7 (558.1) |
-| 1 | 1 | gbmap | 3.6 | 223.6 | 12978 | 185.1 ms | 4 | |
-| 1 | 1 | gbmap, pre-erase | 2.9 | 224.5 | 13069 | 50.2 ms | 1 | |
-| 1 | 16 | | 5.7 | 336.1 | 21286 | 93.9 ms | 2 | 58.7 (551.0) |
-| 1 | 16 | gbmap | 5.7 | 335.6 | 21232 | 185.1 ms | 4 | |
-| 1 | 16 | gbmap, pre-erase | 5.0 | 339.3 | 21198 | 50.6 ms | 1 | |
-| 1 | 256 | | 10.6 | 161.7 | 41395 | 184.6 ms | 4 | 62.7 (562.1) |
-| 1 | 256 | gbmap | 10.5 | 160.5 | 41088 | 184.5 ms | 4 | |
-| 1 | 256 | gbmap, pre-erase | 6.2 | 160.3 | 41037 | 49.6 ms | 1 | |
-| 50 | 1 | | 23.1 | 654.3 | 90526 | 184.6 ms | 4 | 76.7 (838.9) |
-| 50 | 1 | gbmap | 23.3 | 657.4 | 91670 | 185.1 ms | 4 | |
-| 50 | 1 | gbmap, pre-erase | 3.4 | 677.4 | 92385 | 52.0 ms | 1 | |
-| 50 | 16 | | 27.8 | 844.7 | 109077 | 145.3 ms | 3 | 76.7 (831.6) |
-| 50 | 16 | gbmap | 27.9 | 843.0 | 109952 | 186.3 ms | 4 | |
-| 50 | 16 | gbmap, pre-erase | 5.6 | 859.6 | 110960 | 53.8 ms | 1 | |
-| 50 | 256 | | 48.5 | 759.1 | 194330 | 185.9 ms | 4 | 80.7 (843.6) |
-| 50 | 256 | gbmap | 48.3 | 753.5 | 192896 | 185.9 ms | 4 | |
-| 50 | 256 | gbmap, pre-erase | 15.4 | 777.4 | 199014 | 53.8 ms | 1 | |
+| 1 | 1 | | 3.5 | 218.9 | 12407 | 184.6 ms | 4 | 58.7 (558.1) |
+| 1 | 1 | gbmap | 3.6 | 223.1 | 13002 | 185.1 ms | 4 | |
+| 1 | 1 | gbmap, pre-erase | 2.8 | 221.5 | 12692 | 50.6 ms | 1 | |
+| 1 | 16 | | 5.8 | 336.6 | 21482 | 49.0 ms | 1 | 58.7 (551.0) |
+| 1 | 16 | gbmap | 5.7 | 335.7 | 21277 | 185.5 ms | 4 | |
+| 1 | 16 | gbmap, pre-erase | 5.0 | 336.1 | 21306 | 50.6 ms | 1 | |
+| 1 | 256 | | 10.5 | 159.9 | 40934 | 184.5 ms | 4 | 62.7 (562.1) |
+| 1 | 256 | gbmap | 10.8 | 163.9 | 41958 | 184.6 ms | 4 | |
+| 1 | 256 | gbmap, pre-erase | 6.4 | 163.5 | 41856 | 49.6 ms | 1 | |
+| 50 | 1 | | 23.1 | 654.5 | 90587 | 184.6 ms | 4 | 76.7 (838.9) |
+| 50 | 1 | gbmap | 23.4 | 659.2 | 91863 | 185.5 ms | 4 | |
+| 50 | 1 | gbmap, pre-erase | 3.4 | 676.2 | 92453 | 50.2 ms | 1 | |
+| 50 | 16 | | 27.8 | 839.4 | 109163 | 144.9 ms | 3 | 76.7 (831.6) |
+| 50 | 16 | gbmap | 27.9 | 843.1 | 109946 | 186.4 ms | 4 | |
+| 50 | 16 | gbmap, pre-erase | 5.6 | 862.0 | 111029 | 52.3 ms | 1 | |
+| 50 | 256 | | 48.5 | 759.2 | 194355 | 185.9 ms | 4 | 80.7 (843.6) |
+| 50 | 256 | gbmap | 48.4 | 755.2 | 193331 | 185.9 ms | 4 | |
+| 50 | 256 | gbmap, pre-erase | 15.5 | 779.1 | 199450 | 53.9 ms | 1 | |
 
-At `fd3157e3`, before the changes of B.5, the erases were the first row of
-B.5's table, with 86.7 (86.4 with the gbmap) at 50 rows per second and
-`prog_size` 256. `bench_wlog_fresh` asserts the bounds of LFS3-PERF-08 to
+These figures were measured at `9a2148ff`, after the dirty mark and
+settling of LFS3-DEG-11 to DEG-14. Against the first measurement of the
+changes of B.5 (`32eb36e7`), no erase rate moved by more than 0.3 a minute,
+and bytes programmed by less than 3%. At `fd3157e3`, before the changes of
+B.5, the erases were the first row of B.5's table, with 86.7 (86.4 with the
+gbmap) at 50 rows per second and `prog_size` 256. `bench_wlog_fresh` asserts the bounds of LFS3-PERF-08 to
 PERF-10, so `make bench` fails if any permutation exceeds them.
 
 The pre-erase runs first erase all 2023 or 2024 free blocks on the pad.
@@ -8684,8 +8880,8 @@ rather than compacted.
 Observations:
 
 - v3 avoids the sync-padding problem for small `prog_size`: at
-  `prog_size` 1 it erases 15 times less than v2 at 1 row per second.
-- Erases grow with `prog_size`: 3.5, 5.7 and 10.6 per minute at 1 row per
+  `prog_size` 1 it erases 17 times less than v2 at 1 row per second.
+- Erases grow with `prog_size`: 3.5, 5.8 and 10.5 per minute at 1 row per
   second, 23.1, 27.8 and 48.5 at 50, for `prog_size` 1, 16 and 256. v2's
   hardly depend on it.
 - With `prog_size` 256, every metadata commit is padded to a 256-byte
@@ -8694,8 +8890,8 @@ Observations:
 - With pre-erase, the slowest call still contained one erase. This is
   expected if it was an mdir compaction, which erases the other block of the
   pair rather than an allocated block (LFS3-PERF-10).
-- Pre-erase needs a mount with `LFS3_M_REVPERTURB`, which `lfs3.h` does not
-  say next to `gc_preerase_count` (D-1, LFS3-DOC-04).
+- Pre-erase needs a mount with `LFS3_M_REVPERTURB`, which `lfs3.h` now says
+  next to `gc_preerase_count` (D-1, LFS3-DOC-04).
 
 ### B.2 Sync cost of a small append
 
@@ -8994,6 +9190,7 @@ are mapped at the end of 6.4.
 | `lfs3_fs_mkgood` | BAD-12 |
 | `lfs3_fs_nextbad` | BAD-13, BAD-14, DEG-06 |
 | `lfs3_fs_nextsuspect` | BAD-16 |
+| `lfs3_fs_health` | DEG-09, ALLOC-17 |
 | `lfs3_crc32c` | INT-05 |
 | `lfs3_crc32c_mul` | INT-05 |
 | `lfs3_toleb128` | GEN-02, DOC-02 |
@@ -9034,7 +9231,7 @@ are mapped at the end of 6.4.
 | `fragment_size` | KV-09, CFG-01, CFG-12 |
 | `crystal_thresh` | KV-09, CFG-01, CFG-10, PERF-11 |
 | `lookgbmap_thresh` | ALLOC-11 |
-| `ck_retries` | GC-18, DEG-10, BAD-17 |
+| `ck_retries` | GC-18, INT-26, DEG-10, DEG-14, BAD-17 |
 | `ck_passes` | GC-17 |
 | `lfs3_file_cfg.fcache_buffer` | CFG-08, RES-01 |
 | `lfs3_file_cfg.fcache_size` | CFG-08 |
