@@ -2397,11 +2397,11 @@ int lfs3_fs_gc(lfs3_t *lfs3);
 
 // Mark janitorial work as incomplete
 //
-// Any info flags passed to lfs3_gc_unck will be reset internally,
+// Any info flags passed to lfs3_fs_unck will be reset internally,
 // forcing the work to be redone.
 //
 // This is most useful for triggering new ckmeta/ckdata scans with
-// LFS3_I_CANCKMETA and LFS3_I_CANCKDATA. Otherwise littlefs will perform
+// LFS3_I_CKMETA and LFS3_I_CKDATA. Otherwise littlefs will perform
 // only one scan after mount.
 //
 // Returns 0, unck itself never fails. With LFS3_THREADSAFE, also an error
