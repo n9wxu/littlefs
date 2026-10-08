@@ -670,8 +670,8 @@ test-compat-gbmap:
 test-nomalloc:
 	$(MAKE) BUILDDIR=$(NOMALLOC_DIR) LFS3_NO_MALLOC=1 LFS3_GBMAP=1 \
 		TESTS="$(NOMALLOC_TESTS)" test-runner
-	./scripts/test.py -R$(NOMALLOC_DIR)/runners/test_runner $(TESTFLAGS) \
-		$(notdir $(NOMALLOC_TESTS:.toml=))
+	./scripts/test.py -R$(NOMALLOC_DIR)/runners/test_runner \
+		$(notdir $(NOMALLOC_TESTS:.toml=)) $(TESTFLAGS)
 
 ## Check that the debug scripts decode what littlefs writes and reject
 ## what littlefs rejects, with and without the gbmap
@@ -741,8 +741,8 @@ test-compat-endian:
 .PHONY: test-balance
 test-balance:
 	$(MAKE) BUILDDIR=$(BALANCE_DIR) LFS3_DBGRBYDBALANCE=1 test-runner
-	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner $(TESTFLAGS) \
-		test_rbyd test_btree test_mtree
+	./scripts/test.py -R$(BALANCE_DIR)/runners/test_runner \
+		test_rbyd test_btree test_mtree $(TESTFLAGS)
 
 ## Run the tests under AddressSanitizer and UndefinedBehaviorSanitizer
 #
