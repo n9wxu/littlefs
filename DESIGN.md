@@ -1385,6 +1385,20 @@ with the gbmap a check can move what still reads to a new block (see
 fits better at the block device level (see [ramcrc32bd] and [ramrsbd] for
 examples), and redundancy across blocks is planned.
 
+A checksum says the bytes are the ones that were written, not that
+littlefs wrote them. An image built on a host, a card from another device,
+or a flip the checksum misses can pass every checksum and still hold values
+that can't be right: a block address outside the filesystem or in the
+mroot anchor, a size outside its block, an alt or a B-tree branch that
+leads back to where it was, an mdir with more rids than it has mids.
+littlefs treats these as damage too. Each decoder checks what it reads
+before anything uses it, and a walk down an rbyd or a B-tree stops when it
+would go around in circles, so the call returns `LFS3_ERR_CORRUPT`, and a
+read-only mount still mounts degraded around it. Asserts are left for
+littlefs's own invariants and its callers' preconditions, so a build with
+`LFS3_NO_ASSERT` behaves the same on such an image. The checks are a
+compare or two per decoded pointer and per step of a walk.
+
 ## Global checksums
 
 Checksumming every log has a blind spot.

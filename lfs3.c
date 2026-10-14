@@ -1573,10 +1573,12 @@ static inline bool lfs3_tag_unreachable(
         lfs3_srid_t lower_rid, lfs3_srid_t upper_rid,
         lfs3_tag_t lower_tag, lfs3_tag_t upper_tag) {
     if (lfs3_tag_isgt(alt)) {
+        // a corrupt alt with a null key can leave no tags below
+        // upper_tag, don't look up the null tag
         return !lfs3_tag_follow(
                 alt, weight,
                 lower_rid, upper_rid,
-                upper_rid-1, upper_tag-1);
+                upper_rid-1, lfs3_max(lfs3_tag_key(upper_tag-1), 0x1));
     } else {
         return !lfs3_tag_follow(
                 alt, weight,
@@ -2650,6 +2652,14 @@ static inline bool lfs3_alloc_isbadqfull(const lfs3_t *lfs3);
 static lfs3_sbool_t lfs3_alloc_isknownbad(lfs3_t *lfs3, lfs3_block_t block);
 #endif
 
+// blocks decoded from disk must be inside the filesystem, and never the
+// mroot anchor's blocks 0 and 1, which the allocator never hands out
+static inline bool lfs3_block_isinvalid(const lfs3_t *lfs3,
+        lfs3_block_t block) {
+    // note blocks 0 and 1 wrap past block_count
+    return block - 2 >= lfs3->block_count - 2;
+}
+
 
 
 /// Block pointer things ///
@@ -2834,6 +2844,17 @@ static int lfs3_data_readbptr(lfs3_t *lfs3, lfs3_data_t *data,
                 &bptr->cksum));
     if (err) {
         return err;
+    }
+
+    // bptrs come from disk, check they point into the filesystem, and
+    // that their data is inside what their checksum covers
+    //
+    // note off and size are little-leb128s, so this can't overflow
+    if (lfs3_block_isinvalid(lfs3, lfs3_bptr_block(bptr))
+            || lfs3_bptr_cksize(bptr) > lfs3->cfg->block_size
+            || lfs3_bptr_off(bptr) + lfs3_bptr_size(bptr)
+                > lfs3_bptr_cksize(bptr)) {
+        return LFS3_ERR_CORRUPT;
     }
 
     // mark as on-disk + cksum
@@ -3048,6 +3069,10 @@ static int lfs3_data_readecksum(lfs3_t *lfs3, lfs3_data_t *data,
     int err = lfs3_data_readlleb128(lfs3, data, (lfs3_size_t*)&ecksum->cksize);
     if (err) {
         return err;
+    }
+    // erased state can't be larger than a block
+    if ((lfs3_size_t)ecksum->cksize > lfs3->cfg->block_size) {
+        return LFS3_ERR_CORRUPT;
     }
 
     err = lfs3_data_readle32(lfs3, data, &ecksum->cksum);
@@ -3633,7 +3658,7 @@ static int lfs3_rbyd_fetch(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
 // this just finds the eoff/perturb/ecksum for the current trunk to
 // enable reckless commits
 static int lfs3_rbyd_fetchquick(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
-        lfs3_block_t block, lfs3_size_t trunk,
+        lfs3_block_t block, lfs3_size_t trunk, lfs3_rid_t weight,
         uint32_t cksum) {
     // why would you try to fetch a shrub?
     LFS3_ASSERT(!(trunk & LFS3_RBYD_ISSHRUB));
@@ -3649,12 +3674,18 @@ static int lfs3_rbyd_fetchquick(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
 
     // quick fetch should leave the cksum unaffected
     LFS3_ASSERT(rbyd->cksum == cksum);
+
+    // a weight that doesn't match our parent's, weight, means one of
+    // them is corrupt
+    if (rbyd->weight != weight) {
+        return LFS3_ERR_CORRUPT;
+    }
     return 0;
 }
 
 // a more aggressive fetch when checksum is known
 static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
-        lfs3_block_t block, lfs3_size_t trunk,
+        lfs3_block_t block, lfs3_size_t trunk, lfs3_rid_t weight,
         uint32_t cksum) {
     // why would you try to fetch a shrub?
     LFS3_ASSERT(!(trunk & LFS3_RBYD_ISSHRUB));
@@ -3688,9 +3719,12 @@ static int lfs3_rbyd_fetchck(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         return LFS3_ERR_CORRUPT;
     }
 
-    // if trunk/weight mismatch _after_ cksums match, that's not a storage
-    // error, that's a programming error
-    LFS3_ASSERT(lfs3_rbyd_trunk(rbyd) == trunk);
+    // a trunk or weight that doesn't match our parent's, trunk and
+    // weight, _after_ cksums match is not a storage error, the parent
+    // pointing here is corrupt
+    if (lfs3_rbyd_trunk(rbyd) != trunk || rbyd->weight != weight) {
+        return LFS3_ERR_CORRUPT;
+    }
     return 0;
 }
 
@@ -3705,9 +3739,11 @@ static inline lfs3_size_t lfs3_ckretries(const lfs3_t *lfs3) {
 static int lfs3_rbyd_ckretry(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
     lfs3_block_t block = rbyd->blocks[0];
     lfs3_size_t trunk = rbyd->trunk;
+    lfs3_rid_t weight = rbyd->weight;
     uint32_t cksum = rbyd->cksum;
     for (lfs3_size_t i = 0;; i++) {
-        int err = lfs3_rbyd_fetchck(lfs3, rbyd, block, trunk, cksum);
+        int err = lfs3_rbyd_fetchck(lfs3, rbyd, block, trunk, weight,
+                cksum);
         if (err != LFS3_ERR_CORRUPT
                 || i >= lfs3_ckretries(lfs3)) {
             return err;
@@ -3741,8 +3777,14 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
         lfs3_srid_t *rid_, lfs3_rid_t *weight_, lfs3_data_t *data_,
         lfs3_rheight_t *rheight_) {
     (void)rheight_;
-    // these bits should be clear at this point
-    LFS3_ASSERT(lfs3_tag_mode(tag) == 0);
+    // these bits should be clear at this point, except for the carry
+    // from stepping past the largest key, 0xfff, which only a tag on disk
+    // can have, and which is the start of the next rid
+    LFS3_ASSERT(tag <= 0x1000);
+    if (tag > 0xfff) {
+        rid += 1;
+        tag = 0;
+    }
 
     // make sure we never look up zero tags, the way we create
     // unreachable tags has a hole here
@@ -3765,9 +3807,16 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
     lfs3_size_t branch = lfs3_rbyd_trunk(rbyd);
     lfs3_srid_t lower_rid = 0;
     lfs3_srid_t upper_rid = rbyd->weight;
+    // alts we follow jump back to older trunks, which end before the alt
+    // we followed, reaching it again means a corrupt alt that would loop
+    lfs3_size_t bound = lfs3->cfg->block_size;
 
     // descend down tree
     while (true) {
+        if (branch >= bound) {
+            return LFS3_ERR_CORRUPT;
+        }
+
         lfs3_tag_t alt;
         lfs3_rid_t weight;
         lfs3_size_t jump;
@@ -3816,16 +3865,14 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
                         &alt, &weight,
                         lower_rid, upper_rid);
                 branch_ = branch - jump;
+                // unreachable alts use jump=0, following one loops too
+                bound = branch;
             }
 
             lfs3_tag_trim(
                     alt, weight,
                     &lower_rid, &upper_rid,
                     NULL, NULL);
-            // unreachable alts use jump=0, following one would loop
-            if (branch_ == branch) {
-                return LFS3_ERR_CORRUPT;
-            }
             branch = branch_;
 
         // found end of tree?
@@ -3838,6 +3885,11 @@ static lfs3_stag_t lfs3_rbyd_lookupnext_(lfs3_t *lfs3, const lfs3_rbyd_t *rbyd,
             if (!tag__
                     || rid__ < rid
                     || (rid__ == rid && tag__ < tag)) {
+                // only the last rid can run out of tags, ending anywhere
+                // else means a corrupt alt sent us the wrong way
+                if (upper_rid < (lfs3_srid_t)rbyd->weight) {
+                    return LFS3_ERR_CORRUPT;
+                }
                 return LFS3_ERR_NOENT;
             }
 
@@ -4022,11 +4074,10 @@ static lfs3_data_t lfs3_data_fromgeometry(const lfs3_geometry_t *geometry,
 static int lfs3_rbyd_appendrattr_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_tag_t tag, lfs3_srid_t weight,
         lfs3_from_t from, lfs3_count_t count, const lfs3_rattr_t *args) {
-    // tag must not be internal at this point
-    LFS3_ASSERT(!lfs3_tag_isinternal(tag));
-    // bit 7 is reserved for future subtype extensions, we never set it,
-    // so this tag was copied from a misread on disk
-    if (tag & 0x80) {
+    // tag must not be internal at this point, and bit 7 is reserved for
+    // future subtype extensions, we never write either, so this tag was
+    // copied from a corrupt or misread disk
+    if (lfs3_tag_isinternal(tag) || (tag & 0x80)) {
         return LFS3_ERR_SRCCORRUPT;
     }
 
@@ -4411,11 +4462,10 @@ static int lfs3_rbyd_appendrattr(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
         lfs3_srid_t rid, const lfs3_rattr_t *rattr) {
     // must fetch before mutating!
     LFS3_ASSERT(lfs3_rbyd_isfetched(rbyd));
-    // tag must not be internal at this point
-    LFS3_ASSERT(!lfs3_rattr_isinternal(rattr));
-    // bit 7 is reserved for future subtype extensions, we never set it,
-    // so this tag was copied from a misread on disk
-    if (lfs3_rattr_tag(rattr) & 0x80) {
+    // tag must not be internal at this point, and bit 7 is reserved for
+    // future subtype extensions, we never write either, so this tag was
+    // copied from a corrupt or misread disk
+    if (lfs3_rattr_isinternal(rattr) || (lfs3_rattr_tag(rattr) & 0x80)) {
         return LFS3_ERR_SRCCORRUPT;
     }
 
@@ -4541,9 +4591,23 @@ trunk:;
     lfs3_size_t y_branch = 0;
     // keep track of the tag we find at the end of the trunk
     lfs3_tag_t tag_ = 0;
+    // alts we follow jump back to older trunks, which end before the alt
+    // we followed, so every step moves, and reaching that alt again, or
+    // standing still on an unreachable alt (jump=0), means a corrupt alt
+    // that would loop
+    lfs3_size_t bound = lfs3_rbyd_eoff(rbyd);
+    lfs3_size_t last = 0;
 
     // descend down tree, building alt pointers
     while (true) {
+        if (branch < last) {
+            bound = last;
+        }
+        if (branch == last || branch >= bound) {
+            return LFS3_ERR_CORRUPT;
+        }
+        last = branch;
+
         // keep track of incoming branch
         if (lfs3_tag_isblack(p[0].alt)) {
             y_branch = branch;
@@ -4917,11 +4981,7 @@ trunk:;
                 return err;
             }
 
-            // continue to next alt, unreachable alts use jump=0,
-            // following one would loop
-            if (branch_ == branch) {
-                return LFS3_ERR_CORRUPT;
-            }
+            // continue to next alt
             branch = branch_;
             continue;
 
@@ -5889,6 +5949,16 @@ static int lfs3_data_readbranch(lfs3_t *lfs3, lfs3_data_t *data,
         return err;
     }
 
+    // branches come from disk, check they point into the filesystem,
+    // and that their trunk is in the block, past the revision count
+    //
+    // note trunks before the revision count wrap past block_size
+    if (lfs3_block_isinvalid(lfs3, branch->blocks[0])
+            || branch->trunk - sizeof(uint32_t)
+                >= lfs3->cfg->block_size - sizeof(uint32_t)) {
+        return LFS3_ERR_CORRUPT;
+    }
+
     return 0;
 }
 
@@ -5908,12 +5978,11 @@ static int lfs3_branch_fetch(lfs3_t *lfs3, lfs3_rbyd_t *branch,
     #ifdef LFS3_CKFETCHES
     if (lfs3_m_isckfetches(lfs3->flags)) {
         int err = lfs3_rbyd_fetchck(lfs3, branch,
-                branch->blocks[0], lfs3_rbyd_trunk(branch),
+                branch->blocks[0], lfs3_rbyd_trunk(branch), weight,
                 branch->cksum);
         if (err) {
             return err;
         }
-        LFS3_ASSERT(branch->weight == weight);
     }
     #endif
 
@@ -6049,8 +6118,13 @@ static lfs3_stag_t lfs3_btree_lookupnext_(lfs3_t *lfs3,
         *rbyd_ = btree->r;
     }
 
-    // descend down the btree looking for our bid
-    while (true) {
+    // descend down the btree looking for our bid, each level is another
+    // block, so a descent deeper than our blocks is a branch that loops
+    for (lfs3_block_t depth = 0;; depth++) {
+        if (depth >= lfs3->block_count) {
+            return LFS3_ERR_CORRUPT;
+        }
+
         // lookup our bid in the rbyd
         lfs3_srid_t rid__;
         lfs3_rid_t weight__;
@@ -6156,10 +6230,15 @@ static int lfs3_btree_parent(lfs3_t *lfs3,
     LFS3_ASSERT(bid < btree->r.weight);
     LFS3_ASSERT(lfs3_rbyd_cmp(&btree->r, child) != 0);
 
-    // descend down the btree looking for our bid
+    // descend down the btree looking for our bid, each level is another
+    // block, so a descent deeper than our blocks is a branch that loops
     lfs3_bid_t bid__ = btree->r.weight-1;
     *rbyd_ = btree->r;
-    while (true) {
+    for (lfs3_block_t depth = 0;; depth++) {
+        if (depth >= lfs3->block_count) {
+            return LFS3_ERR_CORRUPT;
+        }
+
         // each branch is a pair of optional name + on-disk structure
         lfs3_srid_t rid__;
         lfs3_rid_t weight__;
@@ -6442,6 +6521,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                     true)) {
                 int err = lfs3_rbyd_fetchquick(lfs3, &child,
                         child.blocks[0], lfs3_rbyd_trunk(&child),
+                        child.weight,
                         child.cksum);
                 if (err) {
                     return err;
@@ -6449,6 +6529,7 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
             } else {
                 int err = lfs3_rbyd_fetchck(lfs3, &child,
                         child.blocks[0], lfs3_rbyd_trunk(&child),
+                        child.weight,
                         child.cksum);
                 if (err) {
                     return err;
@@ -6572,7 +6653,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                     }
                 }
 
-                LFS3_ASSERT(sibling_tag == LFS3_TAG_BRANCH);
+                // inner nodes hold only branches
+                if (sibling_tag != LFS3_TAG_BRANCH) {
+                    return LFS3_ERR_CORRUPT;
+                }
                 err = lfs3_data_fetchbranch(lfs3, &sibling_data, sibling_weight,
                         &sibling);
                 if (err) {
@@ -6617,7 +6701,10 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
                     }
                 }
 
-                LFS3_ASSERT(sibling_tag == LFS3_TAG_BRANCH);
+                // inner nodes hold only branches
+                if (sibling_tag != LFS3_TAG_BRANCH) {
+                    return LFS3_ERR_CORRUPT;
+                }
                 err = lfs3_data_fetchbranch(lfs3, &sibling_data, sibling_weight,
                         &sibling);
                 if (err) {
@@ -6710,9 +6797,12 @@ static int lfs3_btree_commit_(lfs3_t *lfs3,
         }
 
     split:;
-        // we should have something to split here
-        LFS3_ASSERT(split_rid > 0
-                && split_rid < (lfs3_srid_t)child.weight);
+        // we should have something to split here, an rbyd with too few
+        // entries to split holds more than littlefs puts in one
+        if (split_rid <= 0
+                || split_rid >= (lfs3_srid_t)child.weight) {
+            return LFS3_ERR_CORRUPT;
+        }
 
     split_relocate_l:;
         // allocate a new rbyd
@@ -7088,10 +7178,15 @@ static lfs3_scmp_t lfs3_btree_namelookup(lfs3_t *lfs3,
         *weight_ = 0;
     }
 
-    // descend down the btree looking for our name
+    // descend down the btree looking for our name, each level is another
+    // block, so a descent deeper than our blocks is a branch that loops
     lfs3_bid_t bid__ = btree->r.weight-1;
     lfs3_rbyd_t rbyd__ = btree->r;
-    while (true) {
+    for (lfs3_block_t depth = 0;; depth++) {
+        if (depth >= lfs3->block_count) {
+            return LFS3_ERR_CORRUPT;
+        }
+
         // lookup our name in the rbyd via binary search
         lfs3_srid_t rid__;
         lfs3_stag_t tag__;
@@ -7178,6 +7273,7 @@ static lfs3_stag_t lfs3_btree_traverse(lfs3_t *lfs3,
         // restart from the root
         btrv->rbyd = btree->r;
         btrv->rid = btrv->bid;
+        btrv->depth = 0;
 
         // explicitly traverse the root even if weight=0
         if (btrv->bid == -1) {
@@ -7229,6 +7325,13 @@ static lfs3_stag_t lfs3_btree_traverse(lfs3_t *lfs3,
 
         // found another branch
         if (tag__ == LFS3_TAG_BRANCH) {
+            // each level is another block, so a descent deeper than our
+            // blocks is a branch that loops
+            btrv->depth += 1;
+            if (btrv->depth >= lfs3->block_count) {
+                return LFS3_ERR_CORRUPT;
+            }
+
             // adjust rid with subtree's weight
             btrv->rid -= (rid__ - (weight__-1));
 
@@ -7349,8 +7452,14 @@ static int lfs3_data_readshrub(lfs3_t *lfs3,
     if (err) {
         return err;
     }
-    // shrub trunks should never be null
-    LFS3_ASSERT(lfs3_shrub_trunk(shrub));
+    // shrub trunks come from disk, check they're in our mdir's block,
+    // past the revision count, shrub trunks are never null
+    //
+    // note null trunks wrap past block_size
+    if (shrub->trunk - sizeof(uint32_t)
+            >= lfs3->cfg->block_size - sizeof(uint32_t)) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // set the shrub bit in our trunk
     shrub->trunk |= LFS3_RBYD_ISSHRUB;
@@ -7917,6 +8026,16 @@ static int lfs3_data_readmptr(lfs3_t *lfs3, lfs3_data_t *data,
         if (err) {
             return err;
         }
+
+        // mptrs come from disk, check they point into the filesystem
+        if (lfs3_block_isinvalid(lfs3, mptr[i])) {
+            return LFS3_ERR_CORRUPT;
+        }
+    }
+
+    // a pair is two blocks
+    if (mptr[0] == mptr[1]) {
+        return LFS3_ERR_CORRUPT;
     }
 
     return 0;
@@ -8944,8 +9063,12 @@ static int lfs3_mdir_fetch_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         fellback = true;
     }
 
-    // could not find a non-corrupt rbyd
-    if (err) {
+    // could not find a non-corrupt rbyd? or one with more rids than an
+    // mdir can hold, mids would run into the next mdir? or an empty
+    // mdir in the mtree, we drop these in the commit that empties them
+    if (err
+            || mdir->r.weight > ((lfs3_rid_t)1 << lfs3->mbits)
+            || (mid >= 0 && mdir->r.weight == 0)) {
         return LFS3_ERR_CORRUPT;
     }
 
@@ -9130,10 +9253,13 @@ static int lfs3_mtree_lookupmptr(lfs3_t *lfs3, lfs3_smid_t mid,
     if (tag < 0) {
         return lfs3_ckfound(tag);
     }
-    LFS3_ASSERT((lfs3_sbid_t)bid == lfs3_mbid(lfs3, mid));
-    LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
-    LFS3_ASSERT(tag == LFS3_TAG_MNAME
-            || tag == LFS3_TAG_MDIR);
+    // mtree leaves map 1 << mbits mids to an mdir, anything else is a
+    // corrupt mtree
+    if ((lfs3_sbid_t)bid != lfs3_mbid(lfs3, mid)
+            || weight != (lfs3_bid_t)(1 << lfs3->mbits)
+            || (tag != LFS3_TAG_MNAME && tag != LFS3_TAG_MDIR)) {
+        return LFS3_ERR_CORRUPT;
+    }
 
     // if we found an mname, lookup the mdir
     if (tag == LFS3_TAG_MNAME) {
@@ -10340,8 +10466,10 @@ static int lfs3_mdir_compact___(lfs3_t *lfs3,
                 return err;
             }
 
-            // write the new shrub tag
-            LFS3_ASSERT(weight == 0);
+            // write the new shrub tag, shrub tags have no weight
+            if (weight != 0) {
+                return LFS3_ERR_SRCCORRUPT;
+            }
             err = lfs3_rbyd_appendcompactrattr(lfs3, &mdir_->r,
                     LFS3_RATTRS(
                         LFS3_RATTR(2, tag, 0, LFS3_FROM_SHRUB),
@@ -11437,9 +11565,12 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
         if (cmp < 0) {
             return lfs3_ckfound(cmp);
         }
-        LFS3_ASSERT(weight == (lfs3_bid_t)(1 << lfs3->mbits));
-        LFS3_ASSERT(tag == LFS3_TAG_MNAME
-                || tag == LFS3_TAG_MDIR);
+        // mtree leaves map 1 << mbits mids to an mdir, anything else is a
+        // corrupt mtree
+        if (weight != (lfs3_bid_t)(1 << lfs3->mbits)
+                || (tag != LFS3_TAG_MNAME && tag != LFS3_TAG_MDIR)) {
+            return LFS3_ERR_CORRUPT;
+        }
 
         // smaller than every mname in the subtree we were routed to?
         //
@@ -11448,9 +11579,12 @@ static lfs3_stag_t lfs3_mtree_namelookup(lfs3_t *lfs3,
         // land in the mdirs before the subtree, so walk back to the last
         // mname <= our name
         //
-        // the first mdir has no mname, so this always terminates
+        // the first mdir has no mname, so this always terminates, unless
+        // the mtree is corrupt
         while (cmp == LFS3_CMP_GT) {
-            LFS3_ASSERT(bid >= (lfs3_bid_t)(1 << lfs3->mbits));
+            if (bid < (lfs3_bid_t)(1 << lfs3->mbits)) {
+                return LFS3_ERR_CORRUPT;
+            }
             bid -= (1 << lfs3->mbits);
             tag = lfs3_btree_lookup(lfs3, &lfs3->mtree, bid, LFS3_TAG_MNAME,
                     &data);
@@ -12474,6 +12608,12 @@ static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
         return err;
     }
 
+    // the window and what we know must be inside the filesystem
+    if (gbmap->window >= lfs3->block_count
+            || gbmap->known > lfs3->block_count) {
+        return LFS3_ERR_CORRUPT;
+    }
+
     err = lfs3_data_readbranch(lfs3, data, lfs3->block_count,
             &gbmap->b.r);
     if (err) {
@@ -12788,8 +12928,7 @@ static lfs3_sblock_t lfs3_gbmap_nextbad(lfs3_t *lfs3, lfs3_block_t block) {
         lfs3_stag_t tag__ = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
                 &block__, NULL, NULL);
         if (tag__ < 0) {
-            LFS3_ASSERT(tag__ != LFS3_ERR_NOENT);
-            return tag__;
+            return lfs3_ckfound(tag__);
         }
 
         if (tag__ == LFS3_TAG_BMBAD) {
@@ -13556,16 +13695,20 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
                         lfs3->gbmap.window,
                         &block, NULL,
                         LFS3_IFDEF_PREERASE(&lfs3->gbmap.ecksum, NULL));
-                if (tag < 0) {
-                    // a gbmap that doesn't read? drop it, and look ahead
-                    if (tag == LFS3_ERR_CORRUPT) {
-                        int err = lfs3_alloc_dropgbmap(lfs3);
-                        if (err) {
-                            return err;
-                        }
-                        continue;
-                    }
+                if (tag < 0 && lfs3_ckfound(tag) != LFS3_ERR_CORRUPT) {
                     return tag;
+                }
+                bool free = (tag == LFS3_TAG_BMFREE
+                        || tag == LFS3_TAG_BMERASED);
+
+                // a gbmap that doesn't read? or that says the mroot
+                // anchor is free? drop it, and look ahead
+                if (tag < 0 || (free && lfs3->gbmap.window < 2)) {
+                    int err = lfs3_alloc_dropgbmap(lfs3);
+                    if (err) {
+                        return err;
+                    }
+                    continue;
                 }
                 lfs3_block_t d = lfs3_min(
                         (block+1) - lfs3->gbmap.window,
@@ -13575,8 +13718,7 @@ static lfs3_sblock_t lfs3_alloc_findfree(lfs3_t *lfs3,
                 //
                 // erased blocks are free either way, but without
                 // revperturb lfs3_alloc_ must erase them again
-                if (tag == LFS3_TAG_BMFREE
-                        || tag == LFS3_TAG_BMERASED) {
+                if (free) {
                     lfs3->gbmap.next = +d;
 
                 // in-use? bad? treat as in-use
@@ -14695,8 +14837,11 @@ static int lfs3_stat_(lfs3_t *lfs3, const lfs3_mdir_t *mdir,
     // get file type from the tag
     info->type = lfs3_tag_subtype(tag);
 
-    // read the file name
-    LFS3_ASSERT(lfs3_data_size(&name) <= LFS3_NAME_MAX);
+    // read the file name, a name longer than any littlefs creates is
+    // corrupt
+    if (lfs3_data_size(&name) > LFS3_NAME_MAX) {
+        return LFS3_ERR_CORRUPT;
+    }
     lfs3_ssize_t name_len = lfs3_data_read(lfs3, &name,
             info->name, LFS3_NAME_MAX);
     if (name_len < 0) {
@@ -15226,6 +15371,12 @@ static int lfs3_file_fetch(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
         int err = lfs3_bshrub_fetch(lfs3, &file->b);
         if (err && err != LFS3_ERR_NOENT) {
             return err;
+        }
+
+        // a file larger than the file limit is corrupt, our offset math
+        // relies on this
+        if (file->b.b.r.weight > lfs3->file_limit) {
+            return LFS3_ERR_CORRUPT;
         }
 
         // mark as in-sync
@@ -18580,6 +18731,11 @@ static int lfs3_data_readgeometry(lfs3_t *lfs3, lfs3_data_t *data,
 
     geometry->block_size += 1;
     geometry->block_count += 1;
+
+    // the mroot anchor's blocks must be inside the filesystem
+    if (geometry->block_count < 2) {
+        return LFS3_ERR_CORRUPT;
+    }
     return 0;
 }
 
@@ -20485,6 +20641,10 @@ static int lfs3_fs_fixgrm(lfs3_t *lfs3) {
         if (err) {
             return lfs3_ckfound(err);
         }
+        // a grm past the end of its mdir is corrupt
+        if (lfs3_mrid(lfs3, mdir.mid) >= (lfs3_srid_t)mdir.r.weight) {
+            return LFS3_ERR_CORRUPT;
+        }
 
         // we also use grm to track orphans that need to be cleaned up,
         // which means it may not match the on-disk state, which means
@@ -21707,8 +21867,7 @@ static int lfs3_fs_mkbad_(lfs3_t *lfs3, lfs3_block_t block, bool bad) {
     lfs3_stag_t tag = lfs3_gbmap_lookupnext(lfs3, &lfs3->gbmap.b, block,
             NULL, NULL, NULL);
     if (tag < 0) {
-        LFS3_ASSERT(tag != LFS3_ERR_NOENT);
-        return tag;
+        return lfs3_ckfound(tag);
     }
 
     // update the gbmap, in-use blocks stay in use until the next

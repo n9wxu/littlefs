@@ -71,11 +71,14 @@ uncorrectable ECC error.
 
 ### `LFS3_ERR_CORRUPT`
 
-Data read from disk failed its checksum or parity check, or the read
+Data read from disk failed its checksum or parity check, or holds a value
+no writer produces, such as a block address outside the filesystem, a size
+outside its block, or a tree that leads back to itself, or the read
 callback returned `LFS3_ERR_CORRUPT`. A failed check doesn't prove the data
 is lost: a read at low supply, or a bit left metastable by a power loss, can
 fail once and pass later. Reads that fail are listed by
-`lfs3_fs_nextsuspect` (with `LFS3_GBMAP`).
+`lfs3_fs_nextsuspect` (with `LFS3_GBMAP`). An image built elsewhere whose
+values are wrong under valid checksums fails the same way on every read.
 
 **Rebuild**, with the smallest repair that works:
 
