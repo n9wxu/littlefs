@@ -626,9 +626,10 @@ class Checker:
                 ['dbgbmapsvg.py', '-e', '-o',
                     os.path.join(self.dir, 'out.svg')]]
 
-        # versions lfs3_mountmroot refuses
+        # versions lfs3_mountmroot refuses, and an older minor version,
+        # which it mounts
         block, commits = chain[-1]
-        for version in [b'\x01\x00', b'\x00\x01', b'\xff\x00']:
+        for version in [b'\x01\x00', b'\x00\x02', b'\xff\x00', b'\x00\x00']:
             x = image.copy()
             data = x.blocks[block]
             for commit in commits:
@@ -636,6 +637,17 @@ class Checker:
                     if tag == TAG_VERSION and size >= 2:
                         data[off+d:off+d+2] = version
             x.resealchain(chain, block, commits[-1].eoff)
+            if version == b'\x00\x00':
+                px = os.path.join(self.dir, 'x.disk')
+                x.write(px)
+                for args in refused:
+                    rc, _, err = self.run(args[0], '-b%d' % self.block_size,
+                            *args[1:], px)
+                    self.check('%s: version v0.0: %s' % (name, ' '.join(
+                                a for a in args if not a.endswith('.svg'))),
+                            rc == 0,
+                            'rc %d %s' % (rc, err.strip().splitlines()[-1:]))
+                continue
             self.ck_refused('%s: version v%d.%d' % (
                         name, version[0], version[1]),
                     x, refused)
@@ -736,6 +748,15 @@ class Checker:
                     self.check('%s: mptr %s' % (script, data.hex()),
                             blocks is None,
                             'decodes as %r' % (blocks,))
+
+            # an mroot without a version is damage, lfs3_mountmroot
+            # refuses it
+            if hasattr(mod, 'Lfs3'):
+                class NoVersion:
+                    version = None
+                self.check('%s: no version' % script,
+                        not mod.Lfs3.ckversion(NoVersion()),
+                        'accepted')
 
             # version is two bytes, missing bytes are zero
             if hasattr(mod, 'Config'):

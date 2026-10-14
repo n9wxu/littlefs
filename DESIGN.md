@@ -29,9 +29,11 @@ the low-level details covering every bit on disk, check out
 the [v2 branch][v2-design].
 
 A note on status: v3 is still in alpha. Images are marked with disk version
-v0.0 to say they are experimental, and a released v3 will refuse to mount
-them. Where this document describes something that is planned rather than
-implemented, it says so.
+v0.x to say they are experimental, v0.1 on the fork's `v3-integration`
+branch, and a released v3 will refuse to mount them. Every format change
+during the alpha bumps the minor version, so an image says which drivers
+wrote it. Where this document describes something that is planned rather
+than implemented, it says so.
 
 ## The problem
 
@@ -2353,10 +2355,11 @@ lessons from v2 are built into the format:
 
 1. **Compat flags.** Besides a major and minor version, the superblock carries
    three sets of feature flags, borrowed from Linux filesystems: rcompat
-   flags, which a driver must understand to read the filesystem; wcompat
-   flags, which it must understand to write to it; and ocompat flags, which it
-   can ignore. Features can be added and removed independently, and a driver
-   that doesn't understand a write-only feature can still mount read-only. The
+   flags, which must match the driver's own for it to read the filesystem;
+   wcompat flags, which it must understand to write to it; and ocompat
+   flags, which it can ignore. Features can be added and removed
+   independently, and a driver that doesn't understand a write-only feature
+   can still mount read-only. The
    optional gbmap is tracked this way, and so are settled copies, which a
    driver that doesn't prefer them must not write to.
 

@@ -115,7 +115,7 @@ WCOMPAT_DIR         = 0x01000000 # Directory file types in use
 
 # the disk version we understand, see LFS3_DISK_VERSION
 DISK_VERSION_MAJOR = 0
-DISK_VERSION_MINOR = 0
+DISK_VERSION_MINOR = 1
 
 TAG_NULL        = 0x0000    ##  v--- ---- +--- ----
 TAG_INTERNAL    = 0x0000    ##  v--- ---- +ttt tttt
@@ -3181,11 +3181,11 @@ class Lfs3:
         return self.config.magic.data == b'littlefs'
 
     # check that we understand the disk version, a missing version is
-    # v0.0, see lfs3_mountmroot
+    # damage, see lfs3_mountmroot
     def ckversion(self):
-        major, minor = (self.version.tuple
-                if self.version is not None
-                else (0, 0))
+        if self.version is None:
+            return False
+        major, minor = self.version.tuple
         return (major == DISK_VERSION_MAJOR
                 and minor <= DISK_VERSION_MINOR)
 

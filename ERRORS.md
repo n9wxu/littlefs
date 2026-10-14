@@ -100,10 +100,11 @@ fail once and pass later. Reads that fail are listed by
    below.
 
 From `lfs3_mount`, CORRUPT means no filesystem was found, or its
-metadata is damaged: a metadata pair that doesn't read or check, or a
-global checksum or global state that doesn't check. A read-write mount
-can't build on damage, and littlefs never takes the older block of a
-pair for the latest because a read failed. **Rebuild**:
+metadata is damaged: a metadata pair that doesn't read or check, an mroot
+without its magic string, version or geometry, or a global checksum or
+global state that doesn't check. A read-write mount can't build on damage,
+and littlefs never takes the older block of a pair for the latest because
+a read failed. **Rebuild**:
 
 1. Mount again with `ck_retries` set (we suggest 3), after the supply has
    recovered: a pair is read again whenever a read fails.
@@ -186,9 +187,12 @@ because it is always in use, as on Linux.
 ### `LFS3_ERR_NOTSUP`
 
 The disk, or the request, needs something this build or this filesystem
-doesn't have: an on-disk version or compat flag this build doesn't know, a
-block size other than the configuration's or more blocks than it, a file of
-an unknown type, or a bad-block call on a filesystem without a gbmap.
+doesn't have: another major on-disk version or a newer minor one, rcompat
+flags that differ from this build's own, by a flag it doesn't set or one it
+does that the disk lacks, a wcompat flag this build doesn't know
+(read-write only), a block size other than the configuration's or more
+blocks than it, a file of an unknown type, or a bad-block call on a
+filesystem without a gbmap.
 
 **Fail.** At mount, reformatting is a contingency only if losing the
 contents is acceptable; usually the firmware or its configuration is wrong.

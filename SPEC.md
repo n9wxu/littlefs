@@ -1,10 +1,11 @@
 ## littlefs technical specification
 
 This is the technical specification of the little filesystem v3 with
-on-disk version v0.0, the experimental version written by the v3-alpha
-driver and by the fork's `v3-integration` branch, which adds the `DIRTY`
-tag, settled copies and their wcompat flag, and writes `BMBAD`. This document covers the technical details of how littlefs is
-stored on disk for introspection and tooling. This document assumes you are
+on-disk version v0.1, the experimental version written by the fork's
+`v3-integration` branch: v0.0, written by the v3-alpha driver, with the
+`DIRTY` tag, settled copies and their wcompat flag, and `BMBAD` marks.
+This document covers the technical details of how littlefs is stored on
+disk for introspection and tooling. This document assumes you are
 familiar with the design of littlefs, for more info on how littlefs works
 check out [DESIGN.md](DESIGN.md).
 
@@ -19,12 +20,15 @@ check out [DESIGN.md](DESIGN.md).
 
 **NOTE: THIS ON-DISK FORMAT IS NOT YET FROZEN.**
 
-The driver writes and accepts the on-disk version v0.0 (`LFS3_DISK_VERSION`
-is `0x00000000`). v0.0 marks the format as experimental: it may still change
-in incompatible ways without a version bump, so two v0.0 images written by
-different alpha revisions of the driver are not guaranteed to be compatible.
-When the format is frozen, the release driver will use a non-zero version
-and will reject v0.0 images.
+The driver writes the on-disk version v0.1 (`LFS3_DISK_VERSION` is
+`0x00000001`), and accepts v0.0 and v0.1. Major version 0 marks the format
+as experimental, and every change to it during the alpha bumps the minor
+version, so an image says which drivers wrote it. A read-write mount of a
+v0.0 image upgrades it to v0.1 before its first write, after which v0.0
+drivers refuse it, see [Compatibility](#compatibility). Two v0.0 images
+written by different alpha revisions of the driver are still not
+guaranteed to be compatible. When the format is frozen, the release driver
+will use a version outside v0.x and will reject the v0.x images.
 
 Places where the code marks the format as unstable, unimplemented, or
 reserved for planned features are called out in the text, and collected in
@@ -221,7 +225,7 @@ uint32_t crc32c_cube(uint32_t a) {
 }
 ```
 
-For example, `crc32c_cube(0x9c558f15)` is `0x1228c36f`.
+For example, `crc32c_cube(0xf5c741b7)` is `0x3f7f68cb`.
 
 ### Parity
 
@@ -335,8 +339,8 @@ bits are not part of the key, so a shrub tag `0x1404` has the same key,
 0 (`0x1000`), is the null tag, it never names real data.
 
 Several tags, `MAGIC`, `GBMAPDELTA`, and most struct tags, reserve their two
-lowest bits for redundancy. In v0.0 these bits are fixed by the tag values
-listed below, and the driver matches them exactly, see
+lowest bits for redundancy. In v0.1, as in v0.0, these bits are fixed by
+the tag values listed below, and the driver matches them exactly, see
 [Open points](#open-points).
 
 ### Weights and rids
@@ -673,7 +677,7 @@ was erased.
 
 `cksize` must cover the first program the writer can make there: a power
 loss can leave the first `prog_size` bytes of a program erased and program
-bytes after them. The v0.0 driver's first program into an erased region is
+bytes after them. The v0.1 driver's first program into an erased region is
 a flush of its program cache, so it writes `cksize` as `pcache_size`, at
 least 11 (the largest tag it programs on its own), rounded up to
 `prog_size` and clamped to the end of the block. Drivers before
@@ -688,7 +692,7 @@ and:
 
 2. `eoff + cksize <= block_size`.
 
-3. `cksize` covers the writer's own first program at `eoff`. The v0.0
+3. `cksize` covers the writer's own first program at `eoff`. The v0.1
    driver requires it to be at least the `cksize` it would write itself, so
    a narrower checksum, from an older image or a smaller `pcache_size`,
    costs a compaction instead of being trusted.
@@ -899,17 +903,17 @@ filesystem, with a 16-byte `prog_size`. This is the mroot anchor, see
 
 ```
 00000000: 68 69 21 00 81 31 00 08 6c 69 74 74 6c 65 66 73  hi!..1..littlefs
-00000010: c1 31 00 0c 01 34 00 02 00 00 e1 31 00 16 41 34  .1...4.....1..A4
-00000020: 00 0a 81 35 00 04 90 0c 01 00 61 31 00 26 e1 34  ...5......a1.&.4
-00000030: 00 1a 41 35 00 10 81 36 00 04 00 00 04 01 c1 34  ..A5...6.......4
-00000040: 00 14 61 35 00 20 41 36 00 10 81 38 00 03 ff 1f  ..a5. A6...8....
-00000050: 1f c1 34 00 27 61 35 00 33 e1 36 00 23 c1 38 00  ..4.'a5.3.6.#.8.
-00000060: 13 81 39 00 02 ff 01 61 34 00 3d c1 36 00 16 61  ..9....a4.=.6..a
-00000070: 38 00 25 c1 39 00 12 81 3a 00 05 ff ff ff ff 07  8.%.9...:.......
-00000080: e1 34 00 56 c1 36 00 2f 61 38 00 3e e1 39 00 2b  .4.V.6./a8.>.9.+
-00000090: 41 3a 00 19 83 04 01 01 00 33 00 00 04 6f c3 28  A:.......3...o.(
-000000a0: 12 b2 00 00 05 10 10 4c 2f ef b0 01 00 8f 80 80  .......L/.......
-000000b0: 00 fa 42 c3 92 ff ff ff ff ff ff ff ff ff ff ff  ..B.............
+00000010: c1 31 00 0c 01 34 00 02 00 01 61 31 00 16 c1 34  .1...4....a1...4
+00000020: 00 0a 01 35 00 04 90 0c 01 00 e1 31 00 26 61 34  ...5.......1.&a4
+00000030: 00 1a c1 35 00 10 01 36 00 04 00 00 04 01 41 34  ...5...6......A4
+00000040: 00 14 e1 35 00 20 c1 36 00 10 01 38 00 03 ff 1f  ...5. .6...8....
+00000050: 1f 41 34 00 27 e1 35 00 33 61 36 00 23 41 38 00  .A4.'.5.3a6.#A8.
+00000060: 13 01 39 00 02 ff 01 e1 34 00 3d 41 36 00 16 e1  ..9.....4.=A6...
+00000070: 38 00 25 41 39 00 12 01 3a 00 05 ff ff ff ff 07  8.%A9...:.......
+00000080: 61 34 00 56 41 36 00 2f e1 38 00 3e 61 39 00 2b  a4.VA6./.8.>a9.+
+00000090: c1 3a 00 19 03 04 01 01 00 b3 00 00 04 cb 68 7f  .:............h.
+000000a0: 3f b2 00 00 05 10 10 4c 2f ef b0 05 00 8f 80 80  ?......L/.......
+000000b0: 00 cd 4b d2 a2 ff ff ff ff ff ff ff ff ff ff ff  ..K.............
 000000c0: ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff ff  ................
 ```
 
@@ -920,40 +924,41 @@ off   bytes                    tag
 0008:   6c 69 74 74 6c 65 66 73  "littlefs"
 0010: c1 31 00 0c              v1 alt b le 0x131 w0 jump 12 => 0x0004
 0014: 01 34 00 02              v0 VERSION w0 size 2
-0018:   00 00                    v0.0
-001a: e1 31 00 16              v1 alt r le 0x131 w0 jump 22 => 0x0004
-001e: 41 34 00 0a              v0 alt b le 0x134 w0 jump 10 => 0x0014
-0022: 81 35 00 04              v1 RCOMPAT w0 size 4
+0018:   00 01                    v0.1
+001a: 61 31 00 16              v0 alt r le 0x131 w0 jump 22 => 0x0004
+001e: c1 34 00 0a              v1 alt b le 0x134 w0 jump 10 => 0x0014
+0022: 01 35 00 04              v0 RCOMPAT w0 size 4
 0026:   90 0c 01 00              0x00010c90
  ... more trunks: WCOMPAT, GEOMETRY, NAMELIMIT, FILELIMIT ...
-0080: e1 34 00 56              v1 alt r le 0x134 w0 jump 86 => 0x002a
-0084: c1 36 00 2f              v1 alt b le 0x136 w0 jump 47 => 0x0055
-0088: 61 38 00 3e              v0 alt r le 0x138 w0 jump 62 => 0x004a
-008c: e1 39 00 2b              v1 alt r le 0x139 w0 jump 43 => 0x0061
-0090: 41 3a 00 19              v0 alt b le 0x13a w0 jump 25 => 0x0077
-0094: 83 04 01 01              v1 BOOKMARK rid 0 w1 size 1
+0080: 61 34 00 56              v0 alt r le 0x134 w0 jump 86 => 0x002a
+0084: 41 36 00 2f              v0 alt b le 0x136 w0 jump 47 => 0x0055
+0088: e1 38 00 3e              v1 alt r le 0x138 w0 jump 62 => 0x004a
+008c: 61 39 00 2b              v0 alt r le 0x139 w0 jump 43 => 0x0061
+0090: c1 3a 00 19              v1 alt b le 0x13a w0 jump 25 => 0x0077
+0094: 03 04 01 01              v0 BOOKMARK rid 0 w1 size 1
 0098:   00                       did 0, the root directory
-0099: 33 00 00 04              v0 GCKSUMDELTA w0 size 4
-009d:   6f c3 28 12              0x1228c36f
+0099: b3 00 00 04              v1 GCKSUMDELTA w0 size 4
+009d:   cb 68 7f 3f              0x3f7f68cb
 00a1: b2 00 00 05              v1 ECKSUM w0 size 5
 00a5:   10 10 4c 2f ef           cksize 16, cksum 0xef2f4c10
-00aa: b0 01 00 8f 80 80 00     v1 CKSUM phase 1 w0 size 15
-00b1:   fa 42 c3 92              cksum 0x92c342fa
+00aa: b0 05 00 8f 80 80 00     v1 CKSUM phase 1, perturb, w0 size 15
+00b1:   cd 4b d2 a2              cksum 0xa2d24bcd
 00b5:   ff ff ff ff ff ff ff ff ff ff ff
                                  11 bytes of padding, contents unspecified
 ```
 
 The rbyd's trunk is the last trunk, at `0x0080`, five alts and the
 `BOOKMARK` leaf, with weight 1. The canonical checksum, the CRC-32C of bytes
-`0x00-0x98` with valid bits cleared, is `0x9c558f15`, and the
-`GCKSUMDELTA` is its cube, `0x1228c36f`.
+`0x00-0x98` with valid bits cleared, is `0xf5c741b7`, and the
+`GCKSUMDELTA` is its cube, `0x3f7f68cb`.
 
 The first valid bit, at `0x0004`, is 1, the parity of
 `crc32c(0, 68 69 21 00)` = `0x15b8cf4e`. The `CKSUM` tag's size, 15, is
 encoded as a 4-byte leb128 (`8f 80 80 00`) and covers the 4-byte checksum
 and 11 bytes of padding that bring the next commit to `0x00c0`. The erased
-`0xff` at `0x00c0` has its top bit set, while the next commit's first valid
-bit would be `parity(0x9c558f15)` = 0, so no perturbation was needed.
+`0xff` at `0x00c0` has its top bit set, which equals the next commit's
+first valid bit, `parity(0xf5c741b7)` = 1, so the writer set the perturb
+bit, and a commit appended here would start with its valid bits inverted.
 
 Looking up the `NAMELIMIT` tag, (rid -1, `0x139`), from the trunk:
 
@@ -998,7 +1003,7 @@ To find the active block, a reader:
 1. Reads the revision counts of both blocks. A block whose revision count
    can't be read must not be treated as older, since that would silently
    roll the pair back: the reader reads again, and if the read keeps
-   failing, the pair is damaged. The v0.0 driver reads again up to
+   failing, the pair is damaged. The v0.1 driver reads again up to
    `ck_retries` times, the same for a failed read of the log it fetches,
    and only passes over a block that can't hold the newer state: the
    mroot's other block while mounted, and a block it failed to write as
@@ -1854,7 +1859,7 @@ sets.
 
 For example, a freshly formatted filesystem has only one metadata pair, the
 mroot anchor, so its gcksum is the anchor's canonical checksum,
-`0x9c558f15`, and the anchor's `GCKSUMDELTA` is its cube, `0x1228c36f`.
+`0xf5c741b7`, and the anchor's `GCKSUMDELTA` is its cube, `0x3f7f68cb`.
 
 ### grm
 
@@ -2051,7 +2056,7 @@ The filesystem's format-time configuration is stored in config tags (the
 | tag      | name        | data                                    | default      |
 |----------|-------------|-----------------------------------------|--------------|
 | `0x0131` | `MAGIC`     | `"littlefs"`                            | required     |
-| `0x0134` | `VERSION`   | u8 major, u8 minor                      | v0.0         |
+| `0x0134` | `VERSION`   | u8 major, u8 minor                      | required     |
 | `0x0135` | `RCOMPAT`   | rcompat flags, le, any length           | 0            |
 | `0x0136` | `WCOMPAT`   | wcompat flags, le, any length           | 0            |
 | `0x0137` | `OCOMPAT`   | ocompat flags, le, any length           | 0            |
@@ -2061,7 +2066,10 @@ The filesystem's format-time configuration is stored in config tags (the
 
 Only the active mroot's config counts. The other mroots in the chain only
 need `MAGIC`. The driver writes every config tag except `OCOMPAT` at format
-time, and treats a missing tag as its default.
+time, and treats a missing tag as its default. An active mroot without a
+required tag is damage, not an older format, and fails to mount with
+`LFS3_ERR_CORRUPT`. A missing `RCOMPAT` tag means no rcompat flags, which
+differ from the driver's, see [Compatibility](#compatibility).
 
 The tags are described in detail under [Tag reference](#tag-reference).
 
@@ -2070,15 +2078,20 @@ The tags are described in detail under [Tag reference](#tag-reference).
 As well as a version, littlefs v3 has three sets of compat flags, which
 allow features to be added and removed independently of each other:
 
-- **rcompat flags** - Must be understood to read the filesystem (ext4's
-  `incompat` flags).
+- **rcompat flags** - Must match the driver's own to read the filesystem
+  (ext4's `incompat` flags).
 - **wcompat flags** - Must be understood to write to the filesystem (ext4's
   `ro_compat` flags).
 - **ocompat flags** - No understanding necessary (ext4's `compat` flags).
 
-Note "understanding" a flag does not necessarily mean supporting the
-feature. A driver can understand a flag well enough to know it can't read a
-filesystem that uses it.
+An rcompat flag changes how the filesystem is read, so a driver reads only
+the layout it writes, and refuses a filesystem that lacks one of its
+rcompat flags as well as one with a flag it doesn't set. A filesystem with
+fewer features is the work of a different driver, which can read it.
+
+Note "understanding" a wcompat flag does not necessarily mean supporting
+the feature. A driver can understand a flag well enough to know it can't
+write a filesystem that uses it.
 
 Each set of flags is stored as a little-endian bitfield of any length. A
 reader treats missing bytes as zeros. The driver reads the first 32 bits,
@@ -2089,7 +2102,7 @@ writes ocompat flags.
 
 #### rcompat flags
 
-| flag         | name          | meaning                              | v0.0      |
+| flag         | name          | meaning                              | v0.1      |
 |--------------|---------------|--------------------------------------|-----------|
 | `0x00000001` | `NONSTANDARD` | Non-standard filesystem format       |           |
 | `0x00000004` | `WRONLY`      | Reading is disallowed                |           |
@@ -2117,14 +2130,14 @@ inferred:
   presumably an mtree whose root is a shrub in the mroot.
 - tree: a B-tree whose root is in its own block.
 
-In v0.0, the driver only implements `MMOSS`, `MTREE`, `BSHRUB`, and
-`BTREE`, and always sets these flags along with `GRM`, so its rcompat flags
-are always `0x00010c90`. `MSPROUT`, `MSHRUB`, `BMOSS`, and `BSPROUT` are
-reserved and not implemented.
+In v0.1, as in v0.0, the driver only implements `MMOSS`, `MTREE`, `BSHRUB`,
+and `BTREE`, and always sets these flags along with `GRM`, so its rcompat
+flags are always `0x00010c90`. `MSPROUT`, `MSHRUB`, `BMOSS`, and `BSPROUT`
+are reserved and not implemented.
 
 #### wcompat flags
 
-| flag         | name          | meaning                              | v0.0      |
+| flag         | name          | meaning                              | v0.1      |
 |--------------|---------------|--------------------------------------|-----------|
 | `0x00000001` | `NONSTANDARD` | Non-standard filesystem format       |           |
 | `0x00000002` | `RDONLY`      | Writing is disallowed                |           |
@@ -2155,44 +2168,51 @@ Here is the config of a freshly formatted 4 KiB x 32 filesystem, from the
 
 ```
 0004: 81 31 00 08 | 6c 69 74 74 6c 65 66 73   MAGIC     "littlefs"
-0014: 01 34 00 02 | 00 00                     VERSION   v0.0
-0022: 81 35 00 04 | 90 0c 01 00               RCOMPAT   0x00010c90
-0036: 81 36 00 04 | 00 00 04 01               WCOMPAT   0x01040000
-004a: 81 38 00 03 | ff 1f 1f                  GEOMETRY  4095+1 x 31+1
-0061: 81 39 00 02 | ff 01                     NAMELIMIT 255
-0077: 81 3a 00 05 | ff ff ff ff 07            FILELIMIT 0x7fffffff
+0014: 01 34 00 02 | 00 01                     VERSION   v0.1
+0022: 01 35 00 04 | 90 0c 01 00               RCOMPAT   0x00010c90
+0036: 01 36 00 04 | 00 00 04 01               WCOMPAT   0x01040000
+004a: 01 38 00 03 | ff 1f 1f                  GEOMETRY  4095+1 x 31+1
+0061: 01 39 00 02 | ff 01                     NAMELIMIT 255
+0077: 01 3a 00 05 | ff ff ff ff 07            FILELIMIT 0x7fffffff
 ```
 
 ## Compatibility
 
 This section collects the rules a driver must follow to stay compatible
-with other drivers, and notes where the v0.0 driver differs.
+with other drivers, and notes where the v0.1 driver differs.
 
-1. **Version** - A driver must refuse to mount a filesystem whose major
-   version differs from its own, or whose minor version is newer than its
-   own. Minor versions are for backwards-compatible additions. The driver's
-   version is v0.0, and a filesystem without a `VERSION` tag is treated as
-   v0.0. v0.0 is experimental: a released v3 driver will refuse v0.0
-   filesystems, and two v0.0 filesystems from different alpha revisions of
-   the driver may not be compatible.
+1. **Version** - A driver must refuse to mount, even read-only, a
+   filesystem whose major version differs from its own, or whose minor
+   version is newer than its own, and must treat an active mroot without a
+   `VERSION` tag as damage. Minor versions are for backwards-compatible
+   additions. The driver's version is v0.1. It mounts v0.0 filesystems,
+   and upgrades their `VERSION` to v0.1, in a commit of its own, the first
+   time a read-write mount makes the filesystem consistent for writing,
+   which it does before the first change to files, directories or
+   attributes (`lfs3_fs_mkconsistent`), so the filesystem says which
+   drivers wrote it; a read-only mount never changes it. v0.x is
+   experimental: every format change during the alpha bumps the minor
+   version, a released v3 driver will refuse v0.x filesystems, and two v0.0
+   filesystems from different alpha revisions of the driver may not be
+   compatible.
 
-2. **rcompat flags** - A driver must refuse to mount a filesystem with any
-   rcompat flag it doesn't understand. The v0.0 driver is stricter: it
-   requires the rcompat flags to equal its own set, `0x00010c90`, exactly,
-   so it also refuses a filesystem that is missing any of its flags.
+2. **rcompat flags** - A driver must refuse to mount, even read-only, a
+   filesystem whose rcompat flags differ from its own: one with an
+   rcompat flag it doesn't set, and one missing a flag it does. The v0.1
+   driver's flags are `0x00010c90`.
 
 3. **wcompat flags** - A driver must refuse to write to a filesystem with
    any wcompat flag it doesn't understand, but may mount it read-only. The
-   v0.0 driver requires the wcompat flags to equal its own set exactly,
+   v0.1 driver requires the wcompat flags to equal its own set exactly,
    except for `GBMAP`, which it accepts either way when built with gbmap
    support, and `SETTLED`, which it accepts either way. On a mismatch it
    refuses to mount read-write, but can still mount read-only.
 
-4. **ocompat flags** - May be ignored. The v0.0 driver never reads them.
+4. **ocompat flags** - May be ignored. The v0.1 driver never reads them.
 
 5. **Config** - A driver must refuse to mount a filesystem whose
    active mroot contains a config tag (`0x0100-0x01ff` at rid -1) it doesn't
-   understand. The v0.0 driver refuses every config tag in that range but
+   understand. The v0.1 driver refuses every config tag in that range but
    the ones listed here, including those with bit 7 set.
 
    A driver must also refuse a filesystem whose block size differs from its
@@ -2201,7 +2221,7 @@ with other drivers, and notes where the v0.0 driver differs.
 
 6. **New structures** - New representations of files or metadata come
    with an rcompat flag, which keeps old drivers from misreading them. The
-   v0.0 driver ignores struct tags it doesn't expect, so without the flag,
+   v0.1 driver ignores struct tags it doesn't expect, so without the flag,
    a file using an unknown struct would look empty.
 
 7. **Unknown entry types** - Entries whose name tags are in
@@ -2232,7 +2252,7 @@ with other drivers, and notes where the v0.0 driver differs.
 
 12. **Reserved bits** - Writers must write bit 7 of every tag as 0, must
     not write the `10` tag mode, and must write struct tags with the exact
-    values listed here, including their low "redundancy" bits. The v0.0
+    values listed here, including their low "redundancy" bits. The v0.1
     driver reads a tag with bit 7 set as an unknown tag but never copies
     one into a commit, and treats a struct tag with different low bits as a
     different, unknown tag.
@@ -2364,17 +2384,21 @@ Version fields:
 2. **Minor version (8-bits)** - Incremented on backwards-compatible
    feature additions.
 
-This specification describes version v0.0 (`00 00`), the experimental
-version. Missing bytes read as zero, so a missing `VERSION` tag means v0.0.
-Note the header's `LFS3_DISK_VERSION` macros allow 16-bit major and minor
-versions, but only 8 bits of each are stored.
+This specification describes version v0.1 (`00 01`), the experimental
+version of the fork's `v3-integration` branch, which also reads v0.0
+(`00 00`), the version of the v3-alpha driver, and upgrades it before its
+first write, see [Compatibility](#compatibility). Missing bytes of the tag
+read as zero, but the tag itself is required: an active mroot without one
+fails to mount with `LFS3_ERR_CORRUPT`. Note the header's
+`LFS3_DISK_VERSION` macros allow 16-bit major and minor versions, but only
+8 bits of each are stored.
 
 ---
 #### `0x0135` LFS3_TAG_RCOMPAT
 
 bits: `v--- ---1 +-11 -1-1`
 
-Flags that must be understood to read the filesystem, see
+Flags that must match the driver's own to read the filesystem, see
 [rcompat flags](#rcompat-flags).
 
 ```
@@ -2401,7 +2425,7 @@ bits: `v--- ---1 +-11 -111`
 
 Flags that don't need to be understood, see
 [ocompat flags](#ocompat-flags). Same layout as `RCOMPAT`. Never written by
-the v0.0 driver.
+the driver.
 
 ---
 #### `0x0138` LFS3_TAG_GEOMETRY
@@ -2753,8 +2777,8 @@ mroot.
 ```
 
 The two low bits are reserved for redundancy, `scripts/dbgtag.py` calls
-them `rr`, and are `01` in v0.0. The driver matches the whole tag value and
-reads exactly two blocks, see [Open points](#open-points).
+them `rr`, and are `01` in v0.0 and v0.1. The driver matches the whole tag
+value and reads exactly two blocks, see [Open points](#open-points).
 
 ---
 #### `0x0435` LFS3_TAG_MDIR
@@ -2886,9 +2910,9 @@ layout as `UATTR`. No standard attributes are defined yet.
 bits: `v--1 kkkk +kkk kkkk`
 
 The shrub mode bits. A normal tag with `0x1000` set is the same tag in a
-[shrub](#shrubs), a secondary tree in the same block. In v0.0, shrubs
-contain shrub `DATA` (`0x1404`), shrub `BLOCK` (`0x1408`), and shrub null
-(`0x1000`) tags.
+[shrub](#shrubs), a secondary tree in the same block. In v0.0 and v0.1,
+shrubs contain shrub `DATA` (`0x1404`), shrub `BLOCK` (`0x1408`), and shrub
+null (`0x1000`) tags.
 
 ---
 #### `0x4xxx` LFS3_TAG_ALT
@@ -3032,19 +3056,22 @@ on disk:
 ## Open points
 
 The v3 on-disk format is still being worked on, and this specification
-describes the v0.0 format as implemented by the driver on the fork's
+describes the v0.1 format as implemented by the driver on the fork's
 `v3-integration` branch. The following are places where the format is
 unfinished, marked as reserved or TODO in the code, or where the driver and
 this document leave a question open.
 
-1. **The version is not frozen.** `LFS3_DISK_VERSION` is `0x00000000`, and
-   every v3-alpha image claims v0.0, so incompatible alpha revisions can't
-   be told apart on disk. The maintainer has said the format may still
-   change before release, and that the released driver will reject v0.0.
-   The additions of this fork, `DIRTY`, the settled field of `CKSUM`, and
-   the `SETTLED` wcompat flag, are either ignorable or guarded, so other
-   v0.0 drivers read these images and refuse only to write ones that hold
-   settled copies.
+1. **The version is not frozen.** `LFS3_DISK_VERSION` is `0x00000001`.
+   Every v3-alpha image claims v0.0, so incompatible alpha revisions can't
+   be told apart on disk; from v0.1 on, every format change during the
+   alpha bumps the minor version. The maintainer has said the format may
+   still change before release, and that the released driver will reject
+   the alpha versions. v0.1 is v0.0 with the additions of this fork,
+   `DIRTY`, the settled field of `CKSUM` and the `SETTLED` wcompat flag,
+   which are ignorable or guarded, and `BMBAD` marks. v0.0 drivers refuse
+   v0.1 filesystems, even read-only, and the v0.1 driver upgrades a v0.0
+   filesystem before its first change to files, directories or
+   attributes, after which v0.0 drivers refuse it too.
 
 2. **Planned features.** Metadata redundancy, data redundancy and
    deduplication, and 16-bit and 64-bit variants are planned or being
@@ -3069,12 +3096,14 @@ this document leave a question open.
    written. The `10` tag mode is unused. Bit 7 of every tag is reserved for
    extending the subtype.
 
-6. **rcompat matching.** The compat flags are described as "must
-   understand", but the driver requires its rcompat flags, and its wcompat
-   flags apart from `GBMAP` and `SETTLED`, to match exactly, so a
-   filesystem that doesn't set the flag of a feature the driver supports
-   (`MTREE`, say) is still rejected. It's not clear yet whether a driver may
-   accept a subset of its flags.
+6. **wcompat matching.** rcompat flags must match exactly, see
+   [Compatibility](#compatibility). wcompat flags are described as "must
+   understand", but the driver also requires its wcompat flags, apart from
+   `GBMAP` and `SETTLED`, to match exactly, so it refuses to write a
+   filesystem that doesn't set the flag of a feature it supports
+   (`GCKSUM`, say), though it mounts it read-only. It's not clear yet
+   whether a driver may write a filesystem with a subset of its wcompat
+   flags.
 
 7. **Version width.** The version macros allow 16-bit major and minor
    versions, but `VERSION` stores 8 bits of each.
@@ -3086,7 +3115,7 @@ this document leave a question open.
 
 9. **Limits.** The format puts no limit on names or attribute sizes beyond
    `NAMELIMIT`, but an entry and its attributes must fit in a metadata
-   pair after compaction. The v0.0 driver caps names at
+   pair after compaction. The v0.1 driver caps names at
    `block_size/2 - 124` bytes and refuses an attribute that doesn't fit
    with `LFS3_ERR_NOSPC`; another driver may choose other bounds.
 

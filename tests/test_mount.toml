@@ -2048,6 +2048,194 @@ code = '''
     lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_NOTSUP;
 '''
 
+# test that we fail if we find no version, format always writes one, so
+# an mroot without one is corruption, not an older format
+[cases.test_mount_no_version]
+in = 'lfs3.c'
+code = '''
+    // create a superblock
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // delete the version
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+            LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_VERSION, 0),
+            LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount should now fail
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+    // and there's nothing to salvage the version from
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG)
+            => LFS3_ERR_CORRUPT;
+'''
+
+# test that format writes our version, v0.1, and that an image of an
+# older minor version, v0.0, mounts, read-only without changing it, and
+# read-write without changing it until the first write, which upgrades it
+# to ours first
+[cases.test_mount_version_upgrade]
+# OP=0  => lfs3_mkdir
+# OP=1  => lfs3_remove
+# OP=2  => lfs3_rename
+# OP=3  => lfs3_setattr
+# OP=4  => lfs3_removeattr
+# OP=5  => lfs3_file_open for writing
+# OP=6  => lfs3_set
+# OP=7  => lfs3_fs_mkconsistent
+# OP=8  => lfs3_fs_ck with LFS3_CK_MKCONSISTENT
+# OP=9  => lfs3_fs_gc with LFS3_GC_MKCONSISTENT
+# OP=10 => a mount with LFS3_M_MKCONSISTENT
+defines.OP = 'range(11)'
+if = 'OP != 9 || LFS3_IFDEF_GC(true, false)'
+in = 'lfs3.c'
+code = '''
+    // format writes our version
+    assert(LFS3_DISK_VERSION == 0x00000001);
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    uint8_t version[2];
+    lfs3_data_t data;
+    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_VERSION, &data)
+            => LFS3_TAG_VERSION;
+    lfs3_data_read(&lfs3, &data, version, 2) => 2;
+    assert(version[0] == 0 && version[1] == 1);
+
+    // something to read, rename and remove
+    lfs3_mkdir(&lfs3, "a") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "r2d2",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "beep boop", 9) => 9;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_setattr(&lfs3, "r2d2", 'a', "hi", 2) => 0;
+
+    // write v0.0
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+            LFS3_RATTR(2, LFS3_TAG_VERSION, 0, LFS3_FROM_BUF, 2),
+            LFS3_RATTR_ARG(((const uint8_t[2]){0, 0})),
+            LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // a read-only mount reads it, and writes nothing
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    uint8_t rbuf[9];
+    lfs3_file_open(&lfs3, &file, "r2d2", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 9) => 9;
+    assert(memcmp(rbuf, "beep boop", 9) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_VERSION, &data)
+            => LFS3_TAG_VERSION;
+    lfs3_data_read(&lfs3, &data, version, 2) => 2;
+    assert(version[0] == 0 && version[1] == 0);
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_emubd_progs(CFG) => progs;
+    lfs3_emubd_erases(CFG) => erases;
+
+    // so does a read-write mount, until it first writes
+    #ifdef LFS3_GC
+    struct lfs3_cfg cfg = *CFG;
+    cfg.gc_flags = LFS3_GC_MKCONSISTENT;
+    #endif
+    if (OP != 10) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR,
+                LFS3_IFDEF_GC((OP == 9) ? &cfg : CFG, CFG)) => 0;
+        lfs3_file_open(&lfs3, &file, "r2d2", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, 9) => 9;
+        assert(memcmp(rbuf, "beep boop", 9) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "a", &info) => 0;
+        lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_VERSION, &data)
+                => LFS3_TAG_VERSION;
+        lfs3_data_read(&lfs3, &data, version, 2) => 2;
+        assert(version[0] == 0 && version[1] == 0);
+        lfs3_emubd_progs(CFG) => progs;
+        lfs3_emubd_erases(CFG) => erases;
+    }
+
+    // the first write upgrades it
+    if (OP == 0) {
+        lfs3_mkdir(&lfs3, "b") => 0;
+    } else if (OP == 1) {
+        lfs3_remove(&lfs3, "a") => 0;
+    } else if (OP == 2) {
+        lfs3_rename(&lfs3, "a", "b") => 0;
+    } else if (OP == 3) {
+        lfs3_setattr(&lfs3, "r2d2", 'b', "yo", 2) => 0;
+    } else if (OP == 4) {
+        lfs3_removeattr(&lfs3, "r2d2", 'a') => 0;
+    } else if (OP == 5) {
+        lfs3_file_open(&lfs3, &file, "r2d2", LFS3_O_WRONLY) => 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+    } else if (OP == 6) {
+        lfs3_set(&lfs3, "c3po", "beep boop", 9) => 0;
+    } else if (OP == 7) {
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+    } else if (OP == 8) {
+        lfs3_fs_ck(&lfs3, LFS3_CK_MKCONSISTENT) => 0;
+    } else if (OP == 9) {
+        #ifdef LFS3_GC
+        lfs3_fs_gc(&lfs3) => 0;
+        #endif
+    } else if (OP == 10) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_MKCONSISTENT, CFG) => 0;
+    }
+    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_VERSION, &data)
+            => LFS3_TAG_VERSION;
+    lfs3_data_read(&lfs3, &data, version, 2) => 2;
+    assert(version[0] == 0 && version[1] == 1);
+    lfs3_unmount(&lfs3) => 0;
+
+    // and it stays upgraded, with the write's effect
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_mdir_lookup(&lfs3, &lfs3.mroot, LFS3_TAG_VERSION, &data)
+            => LFS3_TAG_VERSION;
+    lfs3_data_read(&lfs3, &data, version, 2) => 2;
+    assert(version[0] == 0 && version[1] == 1);
+    struct lfs3_info info;
+    if (OP == 0) {
+        lfs3_stat(&lfs3, "b", &info) => 0;
+        assert(info.type == LFS3_TYPE_DIR);
+    } else if (OP == 1) {
+        lfs3_stat(&lfs3, "a", &info) => LFS3_ERR_NOENT;
+    } else if (OP == 2) {
+        lfs3_stat(&lfs3, "a", &info) => LFS3_ERR_NOENT;
+        lfs3_stat(&lfs3, "b", &info) => 0;
+    } else if (OP == 3) {
+        lfs3_getattr(&lfs3, "r2d2", 'b', rbuf, 2) => 2;
+        assert(memcmp(rbuf, "yo", 2) == 0);
+    } else if (OP == 4) {
+        lfs3_getattr(&lfs3, "r2d2", 'a', rbuf, 2) => LFS3_ERR_NOATTR;
+    } else if (OP == 6) {
+        lfs3_get(&lfs3, "c3po", rbuf, 9) => 9;
+        assert(memcmp(rbuf, "beep boop", 9) == 0);
+    }
+    lfs3_file_open(&lfs3, &file, "r2d2", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, 9) => 9;
+    assert(memcmp(rbuf, "beep boop", 9) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that we fail to mount incompatible rcompat flags
 [cases.test_mount_incompat_rcompat]
 in = 'lfs3.c'
@@ -2071,6 +2259,48 @@ code = '''
                 lfs3_rcompat(&lfs3)
                     | LFS3_RCOMPAT_NONSTANDARD),
             LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount should now fail
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOTSUP;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_NOTSUP;
+'''
+
+# test that we fail to mount rcompat flags that differ from ours in any
+# way, read-only too, rcompat flags must match ours exactly, so an image
+# missing one of our flags is refused as well as one with a flag we
+# don't set
+[cases.test_mount_incompat_rcompat_mismatch]
+# FLAG=-1 => no rcompat tag at all
+# FLAG=n  => flip bit n of our rcompat flags
+defines.FLAG = 'range(-1, 32)'
+in = 'lfs3.c'
+code = '''
+    // create a superblock
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // clear one of our rcompat flags, set one we don't, or remove the
+    // rcompat tag
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    if (FLAG == -1) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_RCOMPAT, 0),
+                LFS3_RATTR_NULL)) => 0;
+    } else {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_RCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(
+                    lfs3_rcompat(&lfs3)
+                        ^ ((lfs3_rcompat_t)1 << FLAG)),
+                LFS3_RATTR_NULL)) => 0;
+    }
     lfs3_unmount(&lfs3) => 0;
 
     // mount should now fail
@@ -3656,7 +3886,9 @@ code = '''
 # FAILURE=15 => unknown config
 # FAILURE=16 => out of phase
 # FAILURE=17 => gcksum mismatch
-defines.FAILURE = 'range(18)'
+# FAILURE=18 => no version
+# FAILURE=19 => missing rcompat flag
+defines.FAILURE = 'range(20)'
 # M=0 => rdwr
 # M=1 => rdwr with mount-time work
 # M=2 => rdonly
@@ -3798,6 +4030,16 @@ code = '''
         ERR = LFS3_ERR_CORRUPT;
         // a read-only mount without checks mounts degraded
         rdonly_ok = (M == 2);
+    } else if (FAILURE == 18) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_VERSION, 0),
+                LFS3_RATTR_NULL)) => 0;
+        ERR = LFS3_ERR_CORRUPT;
+    } else if (FAILURE == 19) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_RCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(lfs3_rcompat(&lfs3) & ~LFS3_RCOMPAT_GRM),
+                LFS3_RATTR_NULL)) => 0;
     }
     if (FAILURE != 16) {
         lfs3_unmount(&lfs3) => 0;

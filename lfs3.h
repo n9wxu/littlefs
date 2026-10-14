@@ -23,7 +23,14 @@
 // Version of On-disk data structures
 // Major (top-nibble), incremented on backwards incompatible changes
 // Minor (bottom-nibble), incremented on feature additions
-#define LFS3_DISK_VERSION 0x00000000
+//
+// Major version 0 is the experimental alpha format, and every change to
+// it bumps the minor version: v0.1 is v0.0 with the DIRTY tag, settled
+// copies and their wcompat flag, and BMBAD marks. A mount refuses
+// another major version or a newer minor one, and a read-write mount
+// upgrades an older minor version before its first write, see
+// lfs3_mount.
+#define LFS3_DISK_VERSION 0x00000001
 #define LFS3_DISK_VERSION_MAJOR (0xffff & (LFS3_DISK_VERSION >> 16))
 #define LFS3_DISK_VERSION_MINOR (0xffff & (LFS3_DISK_VERSION >>  0))
 
@@ -1178,9 +1185,14 @@ enum lfs3_tag {
 
 // On-disk compat flags
 //
-// - RCOMPAT => Must understand to read the filesystem
+// - RCOMPAT => Must match ours to read the filesystem
 // - WCOMPAT => Must understand to write to the filesystem
 // - OCOMPAT => No understanding necessary, we don't really use these
+//
+// rcompat flags change how the filesystem is read, so a mount, read-only
+// or not, refuses rcompat flags that differ from ours in any way, a flag
+// we don't set as well as a missing flag we do: we only read the layout
+// we write, an image with fewer features is the work of another driver
 //
 // note, "understanding" does not necessarily mean support
 //
@@ -1750,6 +1762,17 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // LFS3_I_MKCONSISTENT, LFS3_I_LOOKAHEAD, LFS3_I_PREERASE and
 // LFS3_I_COMPACT, work a read-only mount can't do.
 //
+// Note on versions
+//
+// A mount, read-only or not, refuses with LFS3_ERR_NOTSUP an on-disk
+// version of another major version than LFS3_DISK_VERSION, or of a newer
+// minor version, and rcompat flags other than ours. An mroot without a
+// version or geometry is damage, LFS3_ERR_CORRUPT. An older minor version
+// mounts, and a read-write mount upgrades it to ours, in a commit of its
+// own, the first time it makes the filesystem consistent for writing,
+// see lfs3_fs_mkconsistent. A read-only mount never changes it. Drivers
+// of the older version refuse the filesystem from then on.
+//
 // Note on damage
 //
 // A metadata pair of the mtree that doesn't read or check, or a global
@@ -1821,8 +1844,8 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 //    lfs3_set's single commit,
 // 2. the last commit of a metadata operation outside a write session:
 //    lfs3_mkdir, lfs3_remove, lfs3_rename, lfs3_setattr,
-//    lfs3_removeattr, lfs3_fs_grow, and the repairs of
-//    lfs3_fs_mkconsistent,
+//    lfs3_removeattr, lfs3_fs_grow, and the repairs and version upgrade
+//    of lfs3_fs_mkconsistent,
 // 3. the settling itself.
 //
 // If the interrupted commit reads as whole at one mount and something is
@@ -2400,6 +2423,11 @@ int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum);
 // enforced on the first operation that writes to the filesystem, but this
 // function allows the work to be performed earlier and without other
 // filesystem changes.
+//
+// On a filesystem of an older minor on-disk version, this also upgrades
+// the version to ours, see lfs3_mount, as do LFS3_M_MKCONSISTENT,
+// LFS3_CK_MKCONSISTENT and LFS3_GC_MKCONSISTENT. lfs3_fs_grow,
+// lfs3_fs_mkbad, lfs3_fs_mkgood and other gc work don't.
 //
 // Returns 0 on success, or LFS3_ERR_NOSPC if the disk is full,
 // LFS3_ERR_INVAL if the filesystem is mounted read-only (see lfs3_mount),
