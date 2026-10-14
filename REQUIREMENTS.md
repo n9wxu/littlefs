@@ -651,7 +651,7 @@ limit.
   42 crafted permutations of B-DEF asserted or returned something other
   than `LFS3_ERR_CORRUPT`, and 3, an alt and two B-tree branches that
   lead back, hung; the mutation test found more, in alt walks, B-tree
-  merges and compactions, and D-36 to D-38. 42e7f9eb, e5646435 and
+  merges and compactions, and D-38 to D-40. 42e7f9eb, e5646435 and
   7d27de3d had turned the asserts on alts, on metadata that reads
   differently and on bit-7 tags into `LFS3_ERR_CORRUPT` (LFS3-GEN-09).
   Not covered: the asserts that a compaction fits, after
@@ -5835,7 +5835,7 @@ part way, and shall never program bytes a failed write left in its caches.
   (issue #3). With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree
   commit that failed after appending to its leaf left the cached leaf
   claiming those bytes erased, and the next commit programmed them again
-  (D-38), until 79b5fcb1; `crafted::mutate` checks this in B-BIG.
+  (D-40), until 79b5fcb1; `crafted::mutate` checks this in B-BIG.
 - **When:** every CI run.
 
 #### LFS3-CFG-16
@@ -8202,7 +8202,7 @@ shall return 0 unless data blocks are damaged too.
 - **Status:** Tested on v3-integration (3aa6ae9f, ba67125f, 8e61fd48,
   b2ac4ca0). Not implemented at 195ed2ef. A salvage looped on entries out
   of order and on an mroot with no entries, and asserted on a gbmap it
-  hadn't built (D-36, D-37), until ba67125f, 8e61fd48 and b2ac4ca0;
+  hadn't built (D-38, D-39), until ba67125f, 8e61fd48 and b2ac4ca0;
   `crafted::salvage_order`, `crafted::salvage_empty` and
   `crafted::mutate` check these.
 - **When:** every CI run.
@@ -8855,9 +8855,9 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-33 | An mroot compaction that didn't fit tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` | `lfs3_mdir_compact___` | run (a 3896-byte root attr, then a create) | META-03, ERR-06 | 42e26e7e; `mtree::commit_too_big`, `attrs::setattr_huge` |
 | D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
-| D-36 | A salvage that found an entry no name reaches removed the entries of its did by looking the did up, and scanned again; with entries out of order the lookup led elsewhere, nothing was removed, and the scan never ended. A bookmark the salvage recreated but couldn't find again would be recreated without end. Past an mdir with no entries, as damage can leave an mroot without the root's bookmark, the salvage stepped back to the same mdir without end; and recreating the root's bookmark, at mid 0, moved the empty grm to mid 1, so the next mount removed the entry there | `lfs3_salvage_orphans`, `lfs3_salvage_bookmarks`, `lfs3_salvage_next`, `lfs3_mdir_commit_` | run (`crafted::mutate`, 6 of 160 salvaging runs hung; in B-BIG, 2 of 600) | DEG-16, GEN-07 | ba67125f, 8e61fd48; `crafted::salvage_order`, `crafted::salvage_empty` |
-| D-37 | A salvage that dropped an mdir before it could build its gbmap appended a gbmap delta without a root: `lfs3_rbyd_appendgdelta` asserted that the windows matched, and `lfs3_data_frombranch` that block 0xffffffff was a block | `lfs3_salvage_drop`, `lfs3_rbyd_appendgdelta`, `lfs3_fs_commitgdelta` | run (`crafted::mutate` in B-BIG, 28 permutations) | DEG-16 | b2ac4ca0; `crafted::mutate` in B-YGB and B-BIG |
-| D-38 | With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed after appending to its leaf left the cached leaf claiming the appended bytes erased, and the next commit programmed them again | `lfs3_btree_commit`, `lfs3_bshrub_commit` | run (`crafted::mutate` in B-BIG, emubd's erase check) | CFG-15 | 79b5fcb1; `crafted::mutate` in B-BIG |
+| D-38 | A salvage that found an entry no name reaches removed the entries of its did by looking the did up, and scanned again; with entries out of order the lookup led elsewhere, nothing was removed, and the scan never ended. A bookmark the salvage recreated but couldn't find again would be recreated without end. Past an mdir with no entries, as damage can leave an mroot without the root's bookmark, the salvage stepped back to the same mdir without end; and recreating the root's bookmark, at mid 0, moved the empty grm to mid 1, so the next mount removed the entry there | `lfs3_salvage_orphans`, `lfs3_salvage_bookmarks`, `lfs3_salvage_next`, `lfs3_mdir_commit_` | run (`crafted::mutate`, 6 of 160 salvaging runs hung; in B-BIG, 2 of 600) | DEG-16, GEN-07 | ba67125f, 8e61fd48; `crafted::salvage_order`, `crafted::salvage_empty` |
+| D-39 | A salvage that dropped an mdir before it could build its gbmap appended a gbmap delta without a root: `lfs3_rbyd_appendgdelta` asserted that the windows matched, and `lfs3_data_frombranch` that block 0xffffffff was a block | `lfs3_salvage_drop`, `lfs3_rbyd_appendgdelta`, `lfs3_fs_commitgdelta` | run (`crafted::mutate` in B-BIG, 28 permutations) | DEG-16 | b2ac4ca0; `crafted::mutate` in B-YGB and B-BIG |
+| D-40 | With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed after appending to its leaf left the cached leaf claiming the appended bytes erased, and the next commit programmed them again | `lfs3_btree_commit`, `lfs3_bshrub_commit` | run (`crafted::mutate` in B-BIG, emubd's erase check) | CFG-15 | 79b5fcb1; `crafted::mutate` in B-BIG |
 
 ### A.3 From the analyses
 
