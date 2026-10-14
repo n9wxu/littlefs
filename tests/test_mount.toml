@@ -201,14 +201,16 @@ code = '''
                 | ((CKDATACKSUMS)
                     ? LFS3_IFDEF_CKDATACKSUMS(LFS3_I_CKDATACKSUMS, -1)
                     : 0)
-                | ((!MKCONSISTENT) ? LFS3_I_MKCONSISTENT : 0)
-                | ((!LOOKAHEAD && (!GBMAP || PREERASE))
+                // a rdonly mount can't do work that writes, so doesn't
+                // report it
+                | ((!RDONLY && !MKCONSISTENT) ? LFS3_I_MKCONSISTENT : 0)
+                | ((!RDONLY && !LOOKAHEAD && (!GBMAP || PREERASE))
                     ? LFS3_I_LOOKAHEAD
                     : 0)
                 | LFS3_IFDEF_PREERASE(
-                    (GBMAP && !PREERASE) ? LFS3_I_PREERASE : 0,
+                    (!RDONLY && GBMAP && !PREERASE) ? LFS3_I_PREERASE : 0,
                     0)
-                | ((!COMPACT) ? LFS3_I_COMPACT : 0)
+                | ((!RDONLY && !COMPACT) ? LFS3_I_COMPACT : 0)
                 // note ckdata implies ckmeta
                 | ((!CKMETA && !CKDATA) ? LFS3_I_CKMETA : 0)
                 | ((!CKDATA) ? LFS3_I_CKDATA : 0)
@@ -549,6 +551,110 @@ code = '''
     lfs3_getattr(&lfs3, "cat", 'a', rbuf, sizeof(rbuf)) => strlen("purr");
     assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
     lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test that a rdonly mount reports none of the work flags that write,
+# work it can't do, while a rdwr mount of the same image does
+#
+# these aren't stored on disk, mount assumes the work is there, but
+# a pending grm also sets LFS3_I_MKCONSISTENT
+[cases.test_mount_rdonly_workflags]
+# PENDING=0 => clean
+# PENDING=1 => an orphaned stickynote
+# PENDING=2 => an orphaned stickynote and a pending grm on disk
+defines.PENDING = [0, 1, 2]
+in = 'lfs3.c'
+code = '''
+    // format a block short, so lfs3_fs_grow has something to commit
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_count = BLOCK_COUNT-1;
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "dir") => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // a desynced file that's never synced leaves an orphaned
+    // stickynote on disk, closing it queues a grm to remove it, but
+    // only in RAM
+    if (PENDING >= 1) {
+        lfs3_file_open(&lfs3, &file, "dog",
+                LFS3_O_WRONLY
+                    | LFS3_O_CREAT
+                    | LFS3_O_EXCL
+                    | LFS3_O_DESYNC) => 0;
+        lfs3_file_close(&lfs3, &file) => 0;
+        assert(lfs3_grm_count(&lfs3) == 1);
+    }
+
+    // lfs3_fs_grow commits without fixing the grm first, which takes
+    // the grm to disk
+    if (PENDING >= 2) {
+        lfs3_fs_grow(&lfs3, BLOCK_COUNT) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // a rdonly mount reports none of the work that writes, but still
+    // the checks, which run read-only
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    assert(lfs3_grm_count(&lfs3) == ((PENDING >= 2) ? 1 : 0));
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_RDONLY);
+    assert(!(fsinfo.flags & (
+            LFS3_I_MKCONSISTENT
+                | LFS3_I_LOOKAHEAD
+                | LFS3_IFDEF_PREERASE(LFS3_I_PREERASE, 0)
+                | LFS3_I_COMPACT)));
+    assert(fsinfo.flags & LFS3_I_CKMETA);
+    assert(fsinfo.flags & LFS3_I_CKDATA);
+
+    // checking clears the check flags
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & (LFS3_I_CKMETA | LFS3_I_CKDATA)));
+
+    // and lfs3_fs_unck can't bring back the work flags
+    lfs3_fs_unck(&lfs3,
+            LFS3_GC_MKCONSISTENT
+                | LFS3_GC_LOOKAHEAD
+                | LFS3_IFDEF_PREERASE(LFS3_GC_PREERASE, 0)
+                | LFS3_GC_COMPACT
+                | LFS3_GC_CKMETA) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & (
+            LFS3_I_MKCONSISTENT
+                | LFS3_I_LOOKAHEAD
+                | LFS3_IFDEF_PREERASE(LFS3_I_PREERASE, 0)
+                | LFS3_I_COMPACT)));
+    assert(fsinfo.flags & LFS3_I_CKMETA);
+    lfs3_unmount(&lfs3) => 0;
+
+    // a rdwr mount still reports them
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    assert(lfs3_grm_count(&lfs3) == ((PENDING >= 2) ? 1 : 0));
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_RDONLY));
+    assert(fsinfo.flags & LFS3_I_MKCONSISTENT);
+    assert(fsinfo.flags & LFS3_I_COMPACT);
+
+    // until the work is done
+    lfs3_fs_mkconsistent(&lfs3) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & LFS3_I_MKCONSISTENT));
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "dog", &info) => LFS3_ERR_NOENT;
+    uint8_t rbuf[256];
+    lfs3_get(&lfs3, "cat", rbuf, sizeof(rbuf)) => strlen("meow");
+    assert(memcmp(rbuf, "meow", strlen("meow")) == 0);
     lfs3_unmount(&lfs3) => 0;
 '''
 

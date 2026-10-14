@@ -20384,6 +20384,19 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
                         ? LFS3_I_PREERASE
                         : 0, 0));
 
+    // a read-only mount can't do the work that writes, and these flags
+    // aren't stored on disk, mount assumes the work is there and only
+    // doing it clears them, so here they would say nothing
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        fsinfo->flags &= ~(
+                LFS3_I_MKCONSISTENT
+                    | LFS3_I_LOOKAHEAD
+                    | LFS3_IFDEF_PREERASE(LFS3_I_PREERASE, 0)
+                    | LFS3_I_COMPACT);
+    }
+    #endif
+
     // return filesystem config, this may come from disk
     fsinfo->block_size = lfs3->cfg->block_size;
     fsinfo->block_count = lfs3->block_count;

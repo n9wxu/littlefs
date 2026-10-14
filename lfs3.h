@@ -1736,7 +1736,9 @@ int lfs3_format(lfs3_t *lfs3, uint32_t flags,
 // LFS3_M_SETTLE and LFS3_M_SALVAGE. Each asserts, and with
 // LFS3_NO_ASSERT returns LFS3_ERR_INVAL before any I/O, changing
 // nothing. lfs3_file_sync and lfs3_file_close of a read-only file write
-// nothing, and succeed.
+// nothing, and succeed. lfs3_fs_stat reports LFS3_I_RDONLY, and none of
+// LFS3_I_MKCONSISTENT, LFS3_I_LOOKAHEAD, LFS3_I_PREERASE and
+// LFS3_I_COMPACT, work a read-only mount can't do.
 //
 // Note on damage
 //
@@ -2327,6 +2329,13 @@ int lfs3_trv_rewind(lfs3_t *lfs3, lfs3_trv_t *trv);
 // Find on-disk info about the filesystem
 //
 // Fills out the fsinfo structure based on the filesystem found on-disk.
+//
+// A read-only mount can't do work that writes, so reports none of
+// LFS3_I_MKCONSISTENT, LFS3_I_LOOKAHEAD, LFS3_I_PREERASE and
+// LFS3_I_COMPACT. These aren't stored on disk, mount assumes the work is
+// there until gc or a check does it. LFS3_I_CKMETA and LFS3_I_CKDATA
+// still report checks, which run read-only.
+//
 // Returns 0, stat itself never fails. With LFS3_THREADSAFE, also an error
 // from lock or unlock.
 int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo);
