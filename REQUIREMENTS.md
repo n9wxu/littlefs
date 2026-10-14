@@ -1933,11 +1933,14 @@ blocks remain.
   `LFS3_ERR_NOSPC` while free good blocks remain.
 - **Verified by:** `badblocks::silent_nockprogs` (NEW-14);
   `badblocks::silent_split`, `badblocks::silent_btree` (NEW-180).
-- **Status:** Tested on v3-integration (9f136f90). Known defect (D-41): a
-  compaction that read back zeros built its tree over them until the block
-  ran out, and the `LFS3_ERR_RANGE` that followed made an mdir split
-  return `LFS3_ERR_NOSPC` and a B-tree relocation assert. The limitation is
-  documented by LFS3-DOC-12.
+- **Status:** Tested on v3-integration (9f136f90, 19e20a74). Known defect
+  before 19e20a74 (D-41): a compaction that read back zeros built its tree
+  over them until the block ran out, and the `LFS3_ERR_RANGE` that
+  followed made an mdir split return `LFS3_ERR_NOSPC` and a B-tree
+  relocation assert. A block whose old bytes frame tags of the same shape
+  where ours end still reads back as ours; its commit then fails its
+  checksum when fetched, the `LFS3_ERR_CORRUPT` this allows. The
+  limitation is documented by LFS3-DOC-12.
 - **When:** nightly; `silent_split` and `silent_btree` every CI run.
 
 #### LFS3-FAIL-08
@@ -9125,6 +9128,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | F-16 | Tooling: the debug scripts accepted images the driver rejects: VERSION as leb128s, unchecked CKSUM phase and size, leb128 limits, redundancy bits, mptr length, an unvalidated trunk, a shrub null tag, a `BLOCK` "e" bit (issue #13) | `scripts/dbg*.py` | run (248 of 537 checks) | DOC-20 | cc19a932; `make test-dbg` |
 | F-17 | Test and build: zero-length VLAs and other UBSan reports in test code; `-Wtype-limits` in `test_alloc`; 32-bit `-Werror` breaks in the tests; a GCC `-Werror` break without `LFS3_GBMAP`; test cases that leaked what they allocated | `tests/*.toml`, `lfs3.c` | run (UBSan, LSan, GCC) | GEN-03, BUILD-01, CI-09 | 4e9ea5d4, efd03916, 152f20c2, 345c40f7, 6fad1a62; `make test-sanitize`, the `-Werror` jobs |
 | F-18 | Tooling: GCC-only flags broke clang builds; `PERFBDGEN` passed a trace flag the scripts reject; invalid escape sequences warned on Python 3.12 | `Makefile`, `scripts/*.py` | run | CI-08 | 1ee68320, 9115a2ab; job `test-clang` |
+| F-19 | Test: `badblocks::silent_nockprogs` required `lfs3_dir_open("/")` to succeed, but once the mroot splits the root is looked up in the mtree, whose new nodes nothing reads back, so a node in a block whose progs did nothing failed it with `LFS3_ERR_CORRUPT`, which LFS3-FAIL-07 allows: SEEDs 338 and 435 of `-DSEED='range(1000)'`, 4 permutations each at `ERASE_VALUE` -1 and 0x00 | `tests/test_badblocks.toml` | run | FAIL-07 | ccd5d60a; the case with `-DSEED='range(1000)'` |
 
 ### A.2 Found while writing this document and resolving its issues
 
@@ -9167,7 +9171,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
 | D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | 0487ffd3; `ck::file_ck_heals` |
 | D-37 | A commit whose first following byte failed to read with `LFS3_ERR_CORRUPT` set its perturb bit from a 0 in place of the byte; with an erase that leaves old bytes (`ERASE_VALUE=-1`), a wrong guess let fetch take an older commit left there, and those after it, for later commits, so a remount found commits never made since format: 1 permutation of `files::close_error` with `ERASE_VALUE=-1` | `lfs3_rbyd_appendcksum_` | run | INT-03 | 4cb4d237; `rbyd::erased_unreadable`, `files::close_error` with `ERASE_VALUE=-1` |
-| D-41 | Without `LFS3_M_CKPROGS`, a compaction into a block whose progs silently did nothing read back the block's old bytes, 0x00 on a block never written, as null tags, and built its tree over them until the block ran out; the `LFS3_ERR_RANGE` made an mdir split return `LFS3_ERR_NOSPC` ("an entry can't be split") on a disk about a quarter full, and tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in a B-tree relocation: 2 of 2,400 permutations of `badblocks::silent_nockprogs` with `-DSEED='range(200)'` and `ERASE_VALUE` -1 or 0x00 | `lfs3_rbyd_appendcompaction` | run | FAIL-07 | Open |
+| D-41 | Without `LFS3_M_CKPROGS`, a compaction into a block whose progs silently did nothing read back the block's old bytes, 0x00 on a block never written, as null tags, and built its tree over them until the block ran out; the `LFS3_ERR_RANGE` made an mdir split return `LFS3_ERR_NOSPC` ("an entry can't be split") on a disk about a quarter full, and tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in a B-tree relocation: `badblocks::silent_nockprogs` with `ERASE_VALUE` -1 or 0x00, 2 of 2,400 permutations with `-DSEED='range(200)'` (SEED 7), 6 of 12,000 with `range(1000)` (also SEEDs 576 and 831) | `lfs3_rbyd_appendcompaction` | run (the B-tree assert: `badblocks::silent_btree` before 19e20a74) | FAIL-07 | 19e20a74; `badblocks::silent_split`, `badblocks::silent_btree` (8d2e05a1), `badblocks::silent_nockprogs` with `-DSEED='range(1000)'` |
 
 ### A.3 From the analyses
 
