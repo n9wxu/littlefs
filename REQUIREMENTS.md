@@ -1734,7 +1734,7 @@ fails shall leave the handle as it was.
   flipped, rolled back and failing reads; the reads of the pair per check;
   the handle's size and content, and a write through it, after a check
   that failed.
-- **Pass:** `ck::file_ckmeta_mdir` (NEW-163), with `LFS3_CK_CKMETA` and
+- **Pass:** `ck::file_ckmeta_mdir` (NEW-168), with `LFS3_CK_CKMETA` and
   with `LFS3_CK_CKDATA`, for files of 8 and 128 bytes held in the mdir and
   of 8 blocks with a B-tree, in the mroot and in an mdir of the mtree,
   gets 0 from a handle opened before the damage with the pair intact, and
@@ -1745,16 +1745,16 @@ fails shall leave the handle as it was.
   `ck_retries` 0 (0 with 3); a clobbered B-tree node still gives
   `LFS3_ERR_CORRUPT`, a clobbered data block with `LFS3_CK_CKDATA` only;
   with the damage undone the check passes and the file reads back.
-  `repair::passes_file` (NEW-163) counts `ck_passes` reads of the pair
+  `repair::passes_file` (NEW-168) counts `ck_passes` reads of the pair
   for 1, 2 and 3 passes, and with 2 and 3 finds a pair whose reads go
-  wrong after the first pass. `ck::file_ck_heals` (NEW-164): after a check
+  wrong after the first pass. `ck::file_ck_heals` (NEW-169): after a check
   that failed on the B-tree's root, failing reads or clobbered, the check
   passes once the block reads, the handle reads the file whole, and a
   write and close through it keep the rest of the file. In B-DEF, B-YGB
   and B-BIG.
 - **Fail:** 0 for a pair damaged since the handle last saw it, a handle
   changed by a check that failed, or fewer reads than `ck_passes`.
-- **Verified by:** NEW-163, NEW-164.
+- **Verified by:** NEW-168, NEW-169.
 - **Status:** Tested on v3-q-file (159c1f23, 0487ffd3):
   `ck::file_ckmeta_mdir` passes 68 of 68 in B-DEF, B-YGB and B-BIG,
   `ck::file_ck_heals` 8 of 8 in each, and `repair::passes_file` 6 of 6 in
@@ -3512,13 +3512,13 @@ opened with `LFS3_O_FLUSH`, or on any handle when mounted with
   decided on 2026-10-13 (issue #11), every call that changes the file.
 - **Measure:** cache state after each write, truncate and fruncate.
 - **Pass:** `fsync::sync_*` with `FLUSH` 1 to 3 pass in B-DEF, and
-  `fsync::sync_o_tsrr` (NEW-162), with `LFS3_O_FLUSH` and with
+  `fsync::sync_o_tsrr` (NEW-167), with `LFS3_O_FLUSH` and with
   `LFS3_M_FLUSH`, finds that after each truncate and fruncate, each
   after a write, `lfs3_file_flush` programs and erases nothing, while
   without a sync an open reader, `lfs3_stat` and a second mount still see
   the file as last synced, in B-DEF.
 - **Fail:** data stays in the cache.
-- **Verified by:** as listed; NEW-162.
+- **Verified by:** as listed; NEW-167.
 - **Status:** Tested on v3-q-file (08b5e4d6): `fsync::sync_o_tsrr` passes 72
   of 72 in B-DEF, B-YGB and B-BIG. A truncate or fruncate after a flushed
   write leaves nothing to flush at `00bba274` too, so only the flags'
@@ -3539,7 +3539,7 @@ opened with `LFS3_O_SYNC`, or on any handle when mounted with
 - **Measure:** content and size seen by other handles, by `lfs3_stat` and
   by a second mount after each write, truncate and fruncate.
 - **Pass:** `fsync::sync_*` with `SYNC` 1 to 3 pass in B-DEF;
-  `fsync::sync_o_tsrr` (NEW-162), with `LFS3_O_SYNC` and with
+  `fsync::sync_o_tsrr` (NEW-167), with `LFS3_O_SYNC` and with
   `LFS3_M_SYNC`, finds after each truncate and fruncate, which shrink,
   grow past the start and shrink to nothing, that an open reader,
   `lfs3_stat` and a second, read-only mount see the new size and
@@ -3548,7 +3548,7 @@ opened with `LFS3_O_SYNC`, or on any handle when mounted with
   synced.
 - **Fail:** a write, truncate or fruncate is not visible to other handles
   after it returns.
-- **Verified by:** as listed; NEW-162.
+- **Verified by:** as listed; NEW-167.
 - **Status:** Tested on v3-q-file (08b5e4d6): `fsync::sync_o_tsrr` passes
   72 of 72 and `fsync::rwtfrwtf_sparse_fuzz` 9,600 of 9,600 in B-DEF; at
   `00bba274` every permutation of either with `SYNC` 2 or 3 fails.
@@ -3749,7 +3749,7 @@ the directory is not empty until the file is removed.
 - **Measure:** return values; the directory and the file after the
   handle closes, with and without a sync.
 - **Pass:** `dirs::rm_*`, `dirs::rm_root` and `paths::root` pass in
-  B-DEF, and `stickynotes::uncreat_rmdir` (NEW-161), with an in-sync and
+  B-DEF, and `stickynotes::uncreat_rmdir` (NEW-166), with an in-sync and
   with a desynchronized stickynote in the directory, gets
   `LFS3_ERR_NOTEMPTY` from the remove and the rename, finds the directory
   and its listing unchanged and the handle still reading its data, then,
@@ -3758,7 +3758,7 @@ the directory is not empty until the file is removed.
   file is removed, with and without a remount and `lfs3_fs_mkconsistent`
   after the close, in B-DEF.
 - **Fail:** any other result.
-- **Verified by:** as listed; NEW-161.
+- **Verified by:** as listed; NEW-166.
 - **Status:** Tested on v3-q-file (022bdf17): `stickynotes::uncreat_rmdir`
   passes 16 of 16 in B-DEF, B-YGB and B-BIG, and at `00bba274` too, as the
   decision keeps what littlefs did. A file removed while a handle still has
