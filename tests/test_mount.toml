@@ -7,6 +7,103 @@ if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
 
 code = '''
 #include "bd/lfs3_sparsebd.h"
+
+// write a small image a block short of the device, then mount it
+// read-only with a read-only file open, see test_mount_rdonly_mutate
+__attribute__((unused))
+static void test_mount_rdonly_mkimage(lfs3_t *lfs3, lfs3_file_t *file,
+        const struct lfs3_cfg *cfg, bool gbmap) {
+    struct lfs3_cfg cfg_ = *cfg;
+    cfg_.block_count = cfg->block_count-1;
+    lfs3_format(lfs3,
+            LFS3_F_RDWR
+                | ((gbmap) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            &cfg_) => 0;
+    lfs3_mount(lfs3, LFS3_M_RDWR, cfg) => 0;
+    lfs3_mkdir(lfs3, "dir") => 0;
+    lfs3_file_open(lfs3, file, "cat",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(lfs3, file, "meow", strlen("meow")) => strlen("meow");
+    lfs3_file_close(lfs3, file) => 0;
+    lfs3_setattr(lfs3, "cat", 'a', "purr", strlen("purr")) => 0;
+    lfs3_unmount(lfs3) => 0;
+
+    lfs3_mount(lfs3, LFS3_M_RDONLY, cfg) => 0;
+    lfs3_file_open(lfs3, file, "cat", LFS3_O_RDONLY) => 0;
+}
+
+// a call that would write to a read-only mount, see
+// test_mount_rdonly_mutate
+//
+// OP=0  => mkdir
+// OP=1  => remove
+// OP=2  => rename
+// OP=3  => setattr
+// OP=4  => removeattr
+// OP=5  => set
+// OP=6  => writable file open
+// OP=7  => read-only file open with LFS3_O_CREAT
+// OP=8  => read-only file open with LFS3_O_TRUNC
+// OP=9  => file write through a read-only file
+// OP=10 => file truncate through a read-only file
+// OP=11 => file fruncate through a read-only file
+// OP=12 => mkconsistent
+// OP=13 => grow
+// OP=14 => ck with work that writes
+// OP=15 => writable traversal
+// OP=16 => read-only traversal with work that writes
+// OP=17 => read-only mount with work that writes
+// OP=18 => read-only mount with LFS3_M_SALVAGE
+// OP=19 => gc with work that writes in gc_flags
+// OP=20 => mkgbmap
+// OP=21 => rmgbmap
+// OP=22 => mkbad
+// OP=23 => mkgood
+__attribute__((unused))
+static int test_mount_rdonly_write(lfs3_t *lfs3, lfs3_file_t *file,
+        const struct lfs3_cfg *cfg, int op) {
+    lfs3_file_t file_;
+    lfs3_trv_t trv;
+    lfs3_t lfs3_;
+    switch (op) {
+    case 0:  return lfs3_mkdir(lfs3, "dog");
+    case 1:  return lfs3_remove(lfs3, "cat");
+    case 2:  return lfs3_rename(lfs3, "cat", "dog");
+    case 3:  return lfs3_setattr(lfs3, "cat", 'a', "hiss", strlen("hiss"));
+    case 4:  return lfs3_removeattr(lfs3, "cat", 'a');
+    case 5:  return lfs3_set(lfs3, "cat", "woof", strlen("woof"));
+    case 6:  return lfs3_file_open(lfs3, &file_, "cat", LFS3_O_WRONLY);
+    case 7:  return lfs3_file_open(lfs3, &file_, "dog",
+                    LFS3_O_RDONLY | LFS3_O_CREAT);
+    case 8:  return lfs3_file_open(lfs3, &file_, "cat",
+                    LFS3_O_RDONLY | LFS3_O_TRUNC);
+    case 9:  return lfs3_file_write(lfs3, file, "woof", strlen("woof"));
+    case 10: return lfs3_file_truncate(lfs3, file, 0);
+    case 11: return lfs3_file_fruncate(lfs3, file, 0);
+    case 12: return lfs3_fs_mkconsistent(lfs3);
+    case 13: return lfs3_fs_grow(lfs3, cfg->block_count);
+    case 14: return lfs3_fs_ck(lfs3, LFS3_CK_MKCONSISTENT);
+    case 15: return lfs3_trv_open(lfs3, &trv, LFS3_T_RDWR);
+    case 16: return lfs3_trv_open(lfs3, &trv,
+                    LFS3_T_RDONLY | LFS3_T_COMPACT);
+    case 17: return lfs3_mount(&lfs3_,
+                    LFS3_M_RDONLY | LFS3_M_MKCONSISTENT, cfg);
+    case 18: return lfs3_mount(&lfs3_,
+                    LFS3_M_RDONLY | LFS3_M_SALVAGE, cfg);
+    #ifdef LFS3_GC
+    case 19: return lfs3_fs_gc(lfs3);
+    #endif
+    #if defined(LFS3_GBMAP) && !defined(LFS3_YES_GBMAP)
+    case 20: return lfs3_fs_mkgbmap(lfs3);
+    case 21: return lfs3_fs_rmgbmap(lfs3);
+    #endif
+    #ifdef LFS3_GBMAP
+    case 22: return lfs3_fs_mkbad(lfs3, cfg->block_count-2);
+    case 23: return lfs3_fs_mkgood(lfs3, cfg->block_count-2);
+    #endif
+    default: assert(false); return 0;
+    }
+}
 '''
 
 
@@ -357,63 +454,102 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
-# test that every mutating call on a rdonly mount asserts before
-# writing anything
+# test that every call that would write to a rdonly mount asserts
+# before touching the disk
 #
-# note with LFS3_NO_ASSERT these calls are not checked
+# with LFS3_NO_ASSERT these return LFS3_ERR_INVAL instead, see
+# test_mount_rdonly_inval
 [cases.test_mount_rdonly_mutate]
-# OP=0 => mkdir
-# OP=1 => remove
-# OP=2 => rename
-# OP=3 => setattr
-# OP=4 => removeattr
-# OP=5 => set
-# OP=6 => writable file open
-# OP=7 => mkconsistent
-# OP=8 => grow
-defines.OP = [0, 1, 2, 3, 4, 5, 6, 7, 8]
-death = 'lfs3_m_isrdonly'
+# see test_mount_rdonly_write for OP
+defines.OP = 'range(24)'
+if = [
+    'OP != 19 || LFS3_IFDEF_GC(true, false)',
+    'OP != 20 || LFS3_IFYES_GBMAP(false, !GBMAP, false)',
+    'OP != 21 || LFS3_IFYES_GBMAP(false, GBMAP, false)',
+    '(OP != 22 && OP != 23) || LFS3_IFDEF_GBMAP(GBMAP, false)',
+]
+# the asserts check lfs3_m_isrdonly or lfs3_o_isrdonly
+death = 'isrdonly'
 code = '''
-    lfs3_t lfs3;
-    lfs3_format(&lfs3,
-            LFS3_F_RDWR
-                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
-            CFG) => 0;
-    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
-    lfs3_mkdir(&lfs3, "dir") => 0;
-    lfs3_file_t file;
-    lfs3_file_open(&lfs3, &file, "cat",
-            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
-    lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
-    lfs3_file_close(&lfs3, &file) => 0;
-    lfs3_setattr(&lfs3, "cat", 'a', "purr", strlen("purr")) => 0;
-    lfs3_unmount(&lfs3) => 0;
+    // gc with work that writes, for OP=19
+    struct lfs3_cfg cfg = *CFG;
+    #ifdef LFS3_GC
+    cfg.gc_flags = LFS3_GC_COMPACT;
+    #endif
 
-    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_t lfs3;
+    lfs3_file_t file;
+    test_mount_rdonly_mkimage(&lfs3, &file, &cfg, GBMAP);
     lfs3_emubd_simreset(CFG) => 0;
-    if (OP == 0) {
-        lfs3_mkdir(&lfs3, "dog");
-    } else if (OP == 1) {
-        lfs3_remove(&lfs3, "cat");
-    } else if (OP == 2) {
-        lfs3_rename(&lfs3, "cat", "dog");
-    } else if (OP == 3) {
-        lfs3_setattr(&lfs3, "cat", 'a', "hiss", strlen("hiss"));
-    } else if (OP == 4) {
-        lfs3_removeattr(&lfs3, "cat", 'a');
-    } else if (OP == 5) {
-        lfs3_set(&lfs3, "cat", "woof", strlen("woof"));
-    } else if (OP == 6) {
-        lfs3_file_open(&lfs3, &file, "cat", LFS3_O_WRONLY);
-    } else if (OP == 7) {
-        lfs3_fs_mkconsistent(&lfs3);
-    } else if (OP == 8) {
-        lfs3_fs_grow(&lfs3, BLOCK_COUNT);
-    }
+    test_mount_rdonly_write(&lfs3, &file, &cfg, OP);
 '''
 death_code = '''
+    assert(TEST_DEATH.reads == 0);
     assert(TEST_DEATH.progs == 0);
     assert(TEST_DEATH.erases == 0);
+'''
+
+# test that with LFS3_NO_ASSERT every call that would write to a rdonly
+# mount returns LFS3_ERR_INVAL, before touching the disk, and changes
+# nothing
+[cases.test_mount_rdonly_inval]
+# see test_mount_rdonly_write for OP
+defines.OP = 'range(24)'
+if = [
+    'OP != 19 || LFS3_IFDEF_GC(true, false)',
+    'OP != 20 || LFS3_IFYES_GBMAP(false, !GBMAP, false)',
+    'OP != 21 || LFS3_IFYES_GBMAP(false, GBMAP, false)',
+    '(OP != 22 && OP != 23) || LFS3_IFDEF_GBMAP(GBMAP, false)',
+]
+ifdef = 'LFS3_NO_ASSERT'
+code = '''
+    // gc with work that writes, for OP=19
+    struct lfs3_cfg cfg = *CFG;
+    #ifdef LFS3_GC
+    cfg.gc_flags = LFS3_GC_COMPACT;
+    #endif
+
+    lfs3_t lfs3;
+    lfs3_file_t file;
+    test_mount_rdonly_mkimage(&lfs3, &file, &cfg, GBMAP);
+
+    // count syncs with a far-off injected sync error
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 1000, 0) => 0;
+    lfs3_emubd_simreset(CFG) => 0;
+    test_mount_rdonly_write(&lfs3, &file, &cfg, OP) => LFS3_ERR_INVAL;
+    assert(lfs3_emubd_reads(CFG) == 0);
+    assert(lfs3_emubd_progs(CFG) == 0);
+    assert(lfs3_emubd_erases(CFG) == 0);
+    assert(lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) == 1000);
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 0, 0) => 0;
+
+    // the mount and our file still work
+    uint8_t rbuf[256];
+    lfs3_file_read(&lfs3, &file, rbuf, sizeof(rbuf)) => strlen("meow");
+    assert(memcmp(rbuf, "meow", strlen("meow")) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // and nothing changed
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.block_count == BLOCK_COUNT-1);
+    assert(((fsinfo.flags & LFS3_IFDEF_GBMAP(LFS3_I_GBMAP, 0)) != 0)
+            == GBMAP);
+    #ifdef LFS3_GBMAP
+    lfs3_fs_nextbad(&lfs3, 0) => LFS3_ERR_NOENT;
+    #endif
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "dir", &info) => 0;
+    assert(info.type == LFS3_TYPE_DIR);
+    lfs3_stat(&lfs3, "dog", &info) => LFS3_ERR_NOENT;
+    lfs3_get(&lfs3, "cat", rbuf, sizeof(rbuf)) => strlen("meow");
+    assert(memcmp(rbuf, "meow", strlen("meow")) == 0);
+    lfs3_getattr(&lfs3, "cat", 'a', rbuf, sizeof(rbuf)) => strlen("purr");
+    assert(memcmp(rbuf, "purr", strlen("purr")) == 0);
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
 '''
 
 # test that a configuration with every optional field zeroed works, and
