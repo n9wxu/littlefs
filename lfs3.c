@@ -19764,6 +19764,8 @@ static int lfs3_salvage_bookmarks(lfs3_t *lfs3) {
     lfs3_did_t did = LFS3_DID_ROOT;
     lfs3_mdir_t mdir;
     mdir.mid = -1;
+    bool created = false;
+    lfs3_did_t created_did = 0;
     while (true) {
         // does our did have a bookmark?
         lfs3_mdir_t mdir_;
@@ -19773,6 +19775,14 @@ static int lfs3_salvage_bookmarks(lfs3_t *lfs3) {
             return tag;
         }
         if (tag == LFS3_ERR_NOENT) {
+            // can't find the bookmark we just created? damage left the
+            // entries out of order, creating more won't help
+            if (created && did == created_did) {
+                return LFS3_ERR_CORRUPT;
+            }
+            created = true;
+            created_did = did;
+
             LFS3_WARN("Recreating bookmark of did 0x%"PRIx32, did);
             int err = lfs3_mdir_commit(lfs3, &mdir_, LFS3_RATTRS(
                     LFS3_RATTR(2, LFS3_TAG_BOOKMARK, +1, LFS3_FROM_LEB128),
@@ -19863,53 +19873,52 @@ again:;
 
     // entries are sorted by did, so check each did once
     lfs3_did_t checked = LFS3_DID_ROOT;
+    bool unnamed = false;
+    bool removed = false;
     while (true) {
         lfs3_did_t did;
         lfs3_stag_t tag = lfs3_salvage_next(lfs3, &mdir, &did);
         if (tag < 0) {
             if (tag == LFS3_ERR_NOENT) {
+                // what we removed may have named more directories
+                if (removed) {
+                    goto again;
+                }
                 return 0;
             }
             return tag;
         }
 
         if (did != checked) {
-            lfs3_sbool_t named = lfs3_salvage_isnamed(lfs3, did);
+            // the root is always reachable, even if damage left its
+            // entries out of order
+            lfs3_sbool_t named = (did == LFS3_DID_ROOT)
+                    ? true
+                    : lfs3_salvage_isnamed(lfs3, did);
             if (named < 0) {
                 return named;
             }
 
-            if (!named) {
+            unnamed = !named;
+            if (unnamed) {
                 LFS3_WARN("Removing unreachable did 0x%"PRIx32, did);
-                while (true) {
-                    lfs3_stag_t tag_ = lfs3_mtree_namelookup(lfs3,
-                            did, NULL, 0,
-                            &mdir, NULL);
-                    if (tag_ < 0 && tag_ != LFS3_ERR_NOENT) {
-                        return tag_;
-                    }
-
-                    lfs3_did_t did_;
-                    tag_ = lfs3_salvage_next(lfs3, &mdir, &did_);
-                    if (tag_ < 0 && tag_ != LFS3_ERR_NOENT) {
-                        return tag_;
-                    }
-                    if (tag_ == LFS3_ERR_NOENT || did_ != did) {
-                        break;
-                    }
-
-                    err = lfs3_mdir_commit(lfs3, &mdir, LFS3_RATTRS(
-                            LFS3_RATTR(1, LFS3_tag_RM, -1),
-                            LFS3_RATTR_NULL));
-                    if (err) {
-                        return err;
-                    }
-                }
-                goto again;
             }
-
             checked = did;
         }
+
+        // remove each entry where we find it, a lookup by did may not
+        // lead here if damage left the entries out of order
+        if (unnamed) {
+            err = lfs3_mdir_commit(lfs3, &mdir, LFS3_RATTRS(
+                    LFS3_RATTR(1, LFS3_tag_RM, -1),
+                    LFS3_RATTR_NULL));
+            if (err) {
+                return err;
+            }
+            removed = true;
+            continue;
+        }
+
         mdir.mid += 1;
     }
 }

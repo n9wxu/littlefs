@@ -903,3 +903,59 @@ code = '''
         lfs3_unmount(&lfs3) => 0;
     }
 '''
+
+
+## Salvage ##
+
+# an entry out of order, a lookup by its did doesn't lead to it, and no
+# name reaches it, a salvage removes it where it is
+[cases.test_crafted_salvage_order]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // an entry of a did no directory names, between the root's bookmark
+    // and the root's other entries, a lookup of its did ends up past
+    // them, everything is in the mroot
+    lfs3_set(&lfs3, "a", "a", 1) => 0;
+    lfs3_set(&lfs3, "b", "b", 1) => 0;
+    lfs3_set(&lfs3, "c", "c", 1) => 0;
+    assert(lfs3.mtree.r.weight == 0);
+    lfs3_mdir_t mdir;
+    lfs3_mtree_lookup(&lfs3, 1, &mdir) => 0;
+    lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+            LFS3_RATTR(3, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+            LFS3_RATTR_ARG(0x10),
+            LFS3_RATTR_ARG("x"),
+            LFS3_RATTR_NULL)) => 0;
+
+    // and damage that needs a salvage, a grm past the end of the mtree
+    uint8_t grm[LFS3_GRM_DSIZE];
+    lfs3_size_t grm_size = test_crafted_enc(grm, "l", 1 << lfs3.mbits);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GRMDELTA, 0,
+            grm, grm_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // the entry is gone, the root's entries are still here
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "/") => 0;
+    struct lfs3_info info;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    const char *names[] = {"a", "b", "c", "f"};
+    for (int i = 0; i < 4; i++) {
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, names[i]) == 0);
+    }
+    lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+    lfs3_dir_close(&lfs3, &dir) => 0;
+    test_crafted_read(&lfs3, "f") => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CK) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
