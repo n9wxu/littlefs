@@ -1543,6 +1543,133 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that a stickynote keeps its directory from being removed
+#
+# An open file that was never synced is a child of its directory, so
+# lfs3_remove of the directory returns LFS3_ERR_NOTEMPTY rather than
+# discard the file's unsynced data. Once the file is closed without a
+# sync the stickynote goes, and the directory can be removed; once
+# synced, the file is a regular file, and must be removed first
+#
+# DESYNC=false => an in-sync uncreat, listed as a stickynote
+# DESYNC=true => an uncreat opened with LFS3_O_DESYNC, not listed
+# CLOSE=0 => close without syncing
+# CLOSE=1 => sync, then close
+# REMOUNT=0 => don't remount
+# REMOUNT=1 => remount after close
+[cases.test_stickynotes_uncreat_rmdir]
+defines.DESYNC = [false, true]
+defines.CLOSE = [0, 1]
+defines.REMOUNT = [0, 1]
+defines.MKCONSISTENT = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mkdir(&lfs3, "batcave") => 0;
+
+    // create an uncreat in a directory
+    lfs3_file_t uncreat;
+    lfs3_file_open(&lfs3, &uncreat, "batcave/batman",
+            LFS3_O_RDWR
+                | LFS3_O_CREAT
+                | LFS3_O_EXCL
+                | ((DESYNC) ? LFS3_O_DESYNC : 0)) => 0;
+    lfs3_file_write(&lfs3, &uncreat,
+            "WoOoOoOoOoO", strlen("WoOoOoOoOoO"))
+            => strlen("WoOoOoOoOoO");
+
+    if (MKCONSISTENT) {
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+    }
+
+    // the directory isn't empty, even when the stickynote isn't listed
+    lfs3_remove(&lfs3, "batcave") => LFS3_ERR_NOTEMPTY;
+    lfs3_mkdir(&lfs3, "robin") => 0;
+    lfs3_rename(&lfs3, "robin", "batcave") => LFS3_ERR_NOTEMPTY;
+    lfs3_remove(&lfs3, "robin") => 0;
+
+    // nothing changed
+    struct lfs3_info info;
+    lfs3_stat(&lfs3, "batcave", &info) => 0;
+    assert(strcmp(info.name, "batcave") == 0);
+    assert(info.type == LFS3_TYPE_DIR);
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "batcave") => 0;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    assert(strcmp(info.name, ".") == 0);
+    assert(info.type == LFS3_TYPE_DIR);
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    assert(strcmp(info.name, "..") == 0);
+    assert(info.type == LFS3_TYPE_DIR);
+    if (!DESYNC) {
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "batman") == 0);
+        assert(info.type == LFS3_TYPE_STICKYNOTE);
+        assert(info.size == 0);
+    }
+    lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+    lfs3_dir_close(&lfs3, &dir) => 0;
+
+    // we should still be able to read our uncreat
+    lfs3_file_rewind(&lfs3, &uncreat) => 0;
+    uint8_t rbuf[256];
+    lfs3_file_read(&lfs3, &uncreat, rbuf, sizeof(rbuf))
+            => strlen("WoOoOoOoOoO");
+    assert(memcmp(rbuf, "WoOoOoOoOoO", strlen("WoOoOoOoOoO")) == 0);
+
+    // close without syncing, or sync and close
+    if (CLOSE == 0) {
+        lfs3_file_desync(&lfs3, &uncreat) => 0;
+    } else {
+        lfs3_file_sync(&lfs3, &uncreat) => 0;
+    }
+    lfs3_file_close(&lfs3, &uncreat) => 0;
+
+    if (REMOUNT == 1) {
+        lfs3_unmount(&lfs3) => 0;
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    }
+    if (MKCONSISTENT) {
+        lfs3_fs_mkconsistent(&lfs3) => 0;
+    }
+
+    // never synced? the stickynote is gone, and so can the directory be
+    if (CLOSE == 0) {
+        lfs3_stat(&lfs3, "batcave/batman", &info) => LFS3_ERR_NOENT;
+        lfs3_remove(&lfs3, "batcave") => 0;
+
+    // synced? the file stays, and so does the directory until it's gone
+    } else {
+        lfs3_stat(&lfs3, "batcave/batman", &info) => 0;
+        assert(info.type == LFS3_TYPE_REG);
+        assert(info.size == strlen("WoOoOoOoOoO"));
+        lfs3_remove(&lfs3, "batcave") => LFS3_ERR_NOTEMPTY;
+        lfs3_remove(&lfs3, "batcave/batman") => 0;
+        lfs3_remove(&lfs3, "batcave") => 0;
+    }
+
+    // the directory is gone, after a remount too
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_stat(&lfs3, "batcave", &info) => LFS3_ERR_NOENT;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, ".") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "..") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test we can rename stickynotes
 [cases.test_stickynotes_uncreat_mv]
 # CLOSE=0 => don't close (before end of test)

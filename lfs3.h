@@ -1863,7 +1863,14 @@ int lfs3_set(lfs3_t *lfs3, const char *path,
 
 // Removes a file or directory
 //
-// If removing a directory, the directory must be empty.
+// If removing a directory, the directory must be empty. A file in it that
+// an open handle created and has never synced counts, though it's listed
+// as LFS3_TYPE_STICKYNOTE, or not at all while the handle is
+// desynchronized, since removing the directory would discard the file's
+// unsynced data. Once the handle is closed without a sync the file is
+// gone, once synced it's a regular file. A file removed while a handle
+// still has it open also counts, until the handle is closed.
+//
 // Returns 0 on success, or LFS3_ERR_NOENT if the path, or one of its
 // parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory,
 // LFS3_ERR_INVAL if the path is empty or climbs above the root,
@@ -1878,7 +1885,8 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 // Rename or move a file or directory
 //
 // If the destination exists, it must match the source in type.
-// If the destination is a directory, the directory must be empty.
+// If the destination is a directory, the directory must be empty, as for
+// lfs3_remove.
 // A directory can not be moved into itself or one of its children.
 //
 // Returns 0 on success, or LFS3_ERR_NOENT if the source, or a parent of

@@ -1152,6 +1152,10 @@ writes its contents. Until then:
 3. If power is lost, the stickynote is left behind invisible, and the next
    time the filesystem is written to (or when `lfs3_fs_mkconsistent` or gc
    runs) littlefs scans the mtree and removes it.
+4. A stickynote is an entry of its directory, listed or not, so removing
+   the directory returns `LFS3_ERR_NOTEMPTY` while the handle is open.
+   Removing the directory would throw away data the application hasn't
+   synced yet, without asking.
 
 Removing or renaming over a file that is still open reuses the same idea in
 reverse. The entry is turned back into a stickynote and the open handles
