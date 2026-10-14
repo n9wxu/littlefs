@@ -91,9 +91,11 @@ It has three uses:
   ones Status fields cite.
 
 - **On-disk format.** Disk version 0.0 (`LFS3_DISK_VERSION 0x00000000`,
-  `lfs3.h:26`), as written by `b10efaa`. Version 0.0 marks the format as
-  experimental. PR #1111 says the released v3 will refuse to mount it
-  (LFS3-MOUNT-24).
+  `lfs3.h:26`), as written by `b10efaa`, and 0.1, as written by
+  `v3-integration`, which adds the fork's format changes, mounts v0.0, and
+  upgrades a v0.0 image before its first write (Q24, LFS3-MOUNT-28).
+  Versions 0.x mark the format as experimental. PR #1111 says the released
+  v3 will refuse to mount them (LFS3-MOUNT-24).
 
 - **API.** The 55 functions declared in `lfs3.h` on `v3-integration` (the
   50 of `b10efaa`, and `lfs3_fs_health`, `lfs3_fs_mkbad`, `lfs3_fs_mkgood`,
@@ -5156,9 +5158,8 @@ the final mroot has no `VERSION` tag.
   removed writes nothing (LFS3-MOUNT-16).
 - **Fail:** a mount succeeds, or returns another error.
 - **Verified by:** as listed; NEW-161.
-- **Status:** Partly tested: the version numbers are. A missing tag is not
-  implemented at `b10efaa` and `v3-integration` (00bba274), where it reads
-  as v0.0.
+- **Status:** Tested on v3-integration (c65e1894, 38d17a1c). Not
+  implemented at `b10efaa`, where a missing tag read as v0.0.
 - **When:** every CI run.
 
 #### LFS3-MOUNT-06
@@ -5188,9 +5189,9 @@ whether the image sets a flag the driver doesn't set or lacks one it does;
 - **Fail:** a mount succeeds, or `lfs3.h` or SPEC.md says the flags need
   only be understood.
 - **Verified by:** as listed; NEW-162; review of `lfs3.h` and SPEC.md.
-- **Status:** Partly tested: flags the driver doesn't set are. An image
-  lacking one of the driver's flags is refused at `b10efaa` and
-  `v3-integration` (00bba274), untested, and `lfs3.h` says "understand"
+- **Status:** Tested on v3-integration (221b4656, c65e1894), and `lfs3.h`
+  and SPEC.md say "match" (38d17a1c). At `b10efaa` an image lacking one of
+  the driver's flags was refused, untested, and `lfs3.h` said "understand"
   (4-api R10).
 - **When:** every CI run.
 
@@ -5355,10 +5356,10 @@ buffer it allocated, when `lfs3_mount` fails.
   mismatch with counters and valgrind, and finds no prog, no erase and no
   leak, in B-DEF.
 - **Fail:** any prog, erase or leak.
-- **Verified by:** `mount::fail_nowrite`, which runs 18 mount failures,
+- **Verified by:** `mount::fail_nowrite`, which runs 20 mount failures,
   read-write and read-only, with and without mount-time work; `mount::nomem`
   for the buffers.
-- **Status:** Tested on v3-integration (52246be8, d18d0ac8).
+- **Status:** Tested on v3-integration (52246be8, d18d0ac8, c65e1894).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-17
@@ -5591,8 +5592,8 @@ shall never change it.
   it before such a call, or leaves it v0.0 after one returns 0.
 - **Verified by:** NEW-163; `mount::incompat_minor`,
   `mount::incompat_major`; `make test-dbg` (NEW-154).
-- **Status:** Not implemented at `b10efaa` and `v3-integration`
-  (00bba274), where the driver is v0.0.
+- **Status:** Tested on v3-integration (38d17a1c). Not implemented at
+  `b10efaa`, where every image claimed v0.0 (4-api R24).
 - **When:** every CI run.
 
 ### 6.16 Configuration validation (CFG)
@@ -7374,14 +7375,15 @@ driver rejects.
   one rule each.
 - **Pass:** every script decodes every image with `-e` and exits 0; every
   variant is rejected (`-e` exits 2) or shown the way the driver sees it
-  (a commit the driver drops is not shown); an incompatible VERSION and a
-  one-block mptr are rejected.
+  (a commit the driver drops is not shown); an incompatible VERSION, a
+  missing VERSION (LFS3-MOUNT-05) and a one-block mptr are rejected, and
+  an older minor version is accepted (LFS3-MOUNT-28).
 - **Fail:** any check fails.
 - **Verified by:** `make test-dbg` (NEW-154).
-- **Status:** Tested on v3-integration (cc19a932): `make test-dbg` passes
-  537 of 537 checks, in the CI job `test-dbg`. The scripts at 3c0afc90
-  passed 248, the valid images and the bit-7 commits they already kept
-  (issue #13).
+- **Status:** Tested on v3-integration (cc19a932, c65e1894, 38d17a1c):
+  `make test-dbg` passes 564 of 564 checks, in the CI job `test-dbg`. The
+  scripts at 3c0afc90 passed 248, the valid images and the bit-7 commits
+  they already kept (issue #13).
 - **When:** every CI run.
 
 ### 6.23 Error handling for unattended systems (ERR)
@@ -8361,20 +8363,20 @@ features than the driver writes (for example no mtree) is refused, even
 read-only (4-api R10). Options: (a) exact match, documented; (b) accept any
 subset of the flags the driver knows.
 
-**Decided** on 2026-10-13 (issue #11): (a). A mount, read-only or not,
-refuses an image whose rcompat flags differ from the driver's with
-`LFS3_ERR_NOTSUP`, and `lfs3.h` and SPEC.md say "match", not "understood".
-An rcompat flag changes how the image is read, so a driver reads only the
-layout it writes and tests, and an image with fewer features is the work of
-a different driver, which can read it.
+**Decided** on 2026-10-13 (issue #11; 221b4656, 38d17a1c): (a). A mount,
+read-only or not, refuses an image whose rcompat flags differ from the
+driver's with `LFS3_ERR_NOTSUP`, and `lfs3.h` and SPEC.md say "match", not
+"understood". An rcompat flag changes how the image is read, so a driver
+reads only the layout it writes and tests, and an image with fewer
+features is the work of a different driver, which can read it.
 
 **Q5. A missing version tag.** It is read as version 0.0
 (`lfs3.c:15572-15594` at `b10efaa`). Options: (a) accept, and document the
 default in SPEC.md; (b) refuse with `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP`.
 
-**Decided** on 2026-10-13 (issue #11): (b), with `LFS3_ERR_CORRUPT`, as for
-a missing geometry (Q22). Format always writes a version, so an mroot
-without one is damage, not an older format.
+**Decided** on 2026-10-13 (issue #11; c65e1894): (b), with
+`LFS3_ERR_CORRUPT`, as for a missing geometry (Q22). Format always writes
+a version, so an mroot without one is damage, not an older format.
 
 **Q6. A degraded mount.** At `b10efaa` a gcksum mismatch, an undecodable grm
 or gbmap, or an unreadable metadata block failed the mount or blocked all
@@ -8608,11 +8610,17 @@ format change during the alpha. This fork's format additions (the
 `DIRTY` tag, the settled generation and wcompat `SETTLED`) are guarded so
 that older v0.0 drivers either ignore them or refuse to write (SPEC.md).
 
-**Decided** on 2026-10-13 (issue #11): (b). This driver is v0.1: format
-writes v0.1, a mount accepts v0.0 and v0.1, and the first commit of a
-read-write mount to a v0.0 mroot upgrades its `VERSION` to v0.1, as v2 did
-for its minor versions. Each later format change during the alpha bumps the
-minor version again, so an image says which drivers wrote it.
+**Decided** on 2026-10-13 (issue #11; 38d17a1c): (b). This driver is
+v0.1: format writes v0.1, a mount accepts v0.0 and v0.1, and the first
+commit of a read-write mount to a v0.0 mroot upgrades its `VERSION` to
+v0.1, as v2 did for its minor versions. Each later format change during the
+alpha bumps the minor version again, so an image says which drivers wrote
+it. As in v2, whose `lfs_fs_forceconsistency` called `lfs_fs_desuperblock`
+first, the upgrade is the first commit of `lfs3_fs_mkconsistent`, which
+every call that changes files, directories or attributes runs first;
+mount-time settling, a salvage, `lfs3_fs_grow`, `lfs3_fs_mkbad`,
+`lfs3_fs_mkgood` and gc work other than `MKCONSISTENT` leave it to the
+next such call (LFS3-MOUNT-28).
 
 **Q25. `LFS3_ERR_BUSY` for the root.** `lfs3_remove` and `lfs3_rename` of
 the root return `LFS3_ERR_BUSY`, as Linux does; v2 returned
@@ -8730,14 +8738,11 @@ test in a new environment (9.2).
 | LFS3-GC-01 | Partly | every CI run | per-call work bound |
 | LFS3-GC-11 | Partly | every CI run | block types from `LFS3_T_MTREEONLY` |
 | LFS3-GC-14 | Partly | every CI run | `GC_COMPACT_THRESH=-1` |
-| LFS3-MOUNT-05 | Partly | every CI run | mroot without `VERSION` (NEW-161) |
-| LFS3-MOUNT-06 | Partly | every CI run | rcompat flags lacking one of the driver's (NEW-162) |
 | LFS3-MOUNT-12 | Partly | every CI run | format with `name_limit` 32 and `file_limit` 1000; `lfs3_fs_stat` |
 | LFS3-MOUNT-13 | Untested | before v3-beta | image without limit tags |
 | LFS3-MOUNT-18 | Partly | every CI run | counters around `lfs3_unmount` |
 | LFS3-MOUNT-24 | Not implemented | before v3-beta | v0.0 and v0.1 images refused by the release |
 | LFS3-MOUNT-27 | Partly | every CI run | plain mount after formatting with every flag |
-| LFS3-MOUNT-28 | Not implemented | every CI run | format writes v0.1; a v0.0 image upgraded at the first write, never read-only (NEW-163) |
 | LFS3-CFG-02 | Untested | every CI run | death test: invalid sizes |
 | LFS3-CFG-03 | Untested | before v3-beta | death test: `block_size` below the minimum |
 | LFS3-CFG-04 | Untested | every CI run | `block_recycles` bounds |
@@ -8928,7 +8933,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 4-api R6 | `LFS3_RDONLY` with `LFS3_CKMETAPARITY`, `LFS3_GBMAP` or `LFS3_GC` does not compile | `lfs3.c:15206-15207, 10483-10509, 15097, 15143-15146` | run | BUILD-04 | cc461256; none (no job builds them) |
 | 4-api R7 | `lfs3_set` ignores `file_limit` | `lfs3.c:15045-15071` | probe | KV-04 | d88ee2fc; `kv::set_fbig` |
 | 4-api R8 | `lfs3_init` frees pointers it never set when an early allocation fails | `lfs3.c:15175-15222, 15400-15418` | probe | RES-06 | 90c12e41; `mount::nomem` |
-| 4-api R10 | `lfs3.h` says rcompat flags must be understood, while mount requires them to equal the driver's, so an image with fewer flags, no `MTREE` say, is refused, even read-only | `lfs3.h:920-926`, `lfs3.c:15596-15621` | code | MOUNT-06 | open (Q4) |
+| 4-api R10 | `lfs3.h` says rcompat flags must be understood, while mount requires them to equal the driver's, so an image with fewer flags, no `MTREE` say, is refused, even read-only | `lfs3.h:920-926`, `lfs3.c:15596-15621` | code | MOUNT-06 | Q4 kept the match: 38d17a1c (`lfs3.h`, SPEC.md); `mount::incompat_rcompat_mismatch` (221b4656) |
 | 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | open (Q2); `mount::rdonly_mutate` checks the assert |
 | 4-api R17 | `lfs3_fromleb128` shifts signed values (undefined behaviour for large fifth bytes) | `lfs3_util.c:37-56` | code | GEN-03 | fb675e5b; `make test-sanitize` |
 | 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | ecf44d33; `threadsafe::*`, `make test-threadsafe` |
@@ -8936,7 +8941,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 4-api R21 | The `lfs3_strspn` fallback is wrong for sets of two or more characters | `lfs3_util.h:719-734` | code | BUILD-09 | afcabca0; none (no unit case) |
 | 4-api R22 | `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the header hides it | `lfs3.h:1511` | code | BUILD-10 | 71a6f970; `make test-nomalloc` builds it |
 | 4-api R23 | Stale header text: `lfs3_fs_unck`, `lfs3_info.type`, the `gc_compact_thresh` percentage | `lfs3.h:1801-1810, 721, 625` | code | DOC-06, DOC-08, DOC-10 | 170f0110 (`lfs3_info.type`), the `lfs3.h` commit of issue #10 (`lfs3_fs_unck`); the percentage still reads "~88%" for 87.5% |
-| 4-api R24 | Every alpha image claims disk version 0.0, so images of incompatible alpha commits can't be told apart | `lfs3.h:26` | code | MOUNT-28 | open (Q24) |
+| 4-api R24 | Every alpha image claims disk version 0.0, so images of incompatible alpha commits can't be told apart | `lfs3.h:26` | code | MOUNT-28 | 38d17a1c (v0.1, Q24); `mount::version_upgrade` |
 | 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | 83f8cdea; `make test-rdonly` |
 | 4-api R27 | `dirs::rm_many_2layers` under power loss with `N=4` is excluded as a known bug | `tests/test_dirs.toml:3442` | maintainer | PL-27 | caaea78c (the exclusion removed; the case passes); `dirs::rm_many_2layers` |
 | 4-api R28 | `lfs3_format` with `block_count` 1 writes block 0, then asserts in the bd wrapper | `lfs3.c:570` | probe | MOUNT-03 | dda5cc34, 67f5b135; `mount::format_tiny` |
