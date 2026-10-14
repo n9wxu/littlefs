@@ -283,6 +283,7 @@ static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
     assert(!err);
 
     uint8_t (*old)[1024] = NULL;
+    lfs3_size_t old_eoff[2] = {0, 0};
     if (damage == 0 || damage == 3) {
         // compact until a compaction stays in the pair, so the other
         // block holds the older state, a relocation's other block holds
@@ -303,6 +304,16 @@ static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
                 err = cfg->read(cfg, mdir.r.blocks[j], 0,
                         old[j], cfg->block_size);
                 assert(!err);
+
+                // and where its erased bytes start, a rollback leaves
+                // them erased
+                lfs3_rbyd_t rbyd;
+                err = lfs3_rbyd_fetch(lfs3, &rbyd, mdir.r.blocks[j], 0);
+                assert(!err || err == LFS3_ERR_CORRUPT);
+                old_eoff[j] = (!err
+                            && lfs3_rbyd_eoff(&rbyd) < cfg->block_size)
+                        ? lfs3_rbyd_eoff(&rbyd)
+                        : cfg->block_size;
             }
         }
 
@@ -362,6 +373,9 @@ static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
             assert(!err);
             err = cfg->prog(cfg, mdir.r.blocks[j], 0,
                     old[j], cfg->block_size);
+            assert(!err);
+            err = lfs3_emubd_mkunprogged(cfg, mdir.r.blocks[j],
+                    old_eoff[j], cfg->block_size-old_eoff[j]);
             assert(!err);
         }
         free(old);

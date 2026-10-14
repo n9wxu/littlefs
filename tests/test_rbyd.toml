@@ -18054,6 +18054,9 @@ code = '''
         if (FILL == 1) {
             TEST_ERASED_VALUES_FILL(v, 0);
             CFG->prog(CFG, rbyd.blocks[0], 0, fill, BLOCK_SIZE) => 0;
+            // the fill is what the erase left, so the block is still
+            // erased, the prog-once check must not count it
+            lfs3_emubd_mkunprogged(CFG, rbyd.blocks[0], 0, BLOCK_SIZE) => 0;
             lfs3_bd_droprcache(&lfs3);
         }
         for (lfs3_size_t k = 0; k < 4; k++) {
@@ -18089,9 +18092,14 @@ code = '''
                 }
                 TEST_ERASED_VALUES_CK(rbyd, false);
 
-                // restore our block
+                // restore our block, the bytes after our commit are
+                // erased again, so the next commit can prog them
                 CFG->erase(CFG, rbyd.blocks[0]) => 0;
                 CFG->prog(CFG, rbyd.blocks[0], 0, image, BLOCK_SIZE) => 0;
+                if (eoff < BLOCK_SIZE) {
+                    lfs3_emubd_mkunprogged(CFG, rbyd.blocks[0],
+                            eoff, BLOCK_SIZE-eoff) => 0;
+                }
                 lfs3_bd_droprcache(&lfs3);
             }
             TEST_ERASED_VALUES_CK(rbyd, true);
