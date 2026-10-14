@@ -18584,19 +18584,22 @@ static int lfs3_data_readgeometry(lfs3_t *lfs3, lfs3_data_t *data,
 }
 
 static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
-    // check the disk version
+    // check the disk version, format always writes one, so an mroot
+    // without one is damage, not an older format
     uint8_t version[2] = {0, 0};
     lfs3_data_t data;
     lfs3_stag_t tag = lfs3_mdir_lookup(lfs3, mroot, LFS3_TAG_VERSION,
             &data);
-    if (tag < 0 && tag != LFS3_ERR_NOENT) {
+    if (tag < 0) {
+        if (tag == LFS3_ERR_NOENT) {
+            LFS3_ERROR("No version found");
+            return LFS3_ERR_CORRUPT;
+        }
         return tag;
     }
-    if (tag != LFS3_ERR_NOENT) {
-        lfs3_ssize_t d = lfs3_data_read(lfs3, &data, version, 2);
-        if (d < 0) {
-            return d;
-        }
+    lfs3_ssize_t d = lfs3_data_read(lfs3, &data, version, 2);
+    if (d < 0) {
+        return d;
     }
 
     if (version[0] != LFS3_DISK_VERSION_MAJOR

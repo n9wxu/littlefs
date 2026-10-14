@@ -737,6 +737,15 @@ class Checker:
                             blocks is None,
                             'decodes as %r' % (blocks,))
 
+            # an mroot without a version is damage, lfs3_mountmroot
+            # refuses it
+            if hasattr(mod, 'Lfs3'):
+                class NoVersion:
+                    version = None
+                self.check('%s: no version' % script,
+                        not mod.Lfs3.ckversion(NoVersion()),
+                        'accepted')
+
             # version is two bytes, missing bytes are zero
             if hasattr(mod, 'Config'):
                 class Rattr:

@@ -1766,6 +1766,36 @@ code = '''
     lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_NOTSUP;
 '''
 
+# test that we fail if we find no version, format always writes one, so
+# an mroot without one is corruption, not an older format
+[cases.test_mount_no_version]
+in = 'lfs3.c'
+code = '''
+    // create a superblock
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // delete the version
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+            LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_VERSION, 0),
+            LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount should now fail
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+    // and there's nothing to salvage the version from
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG)
+            => LFS3_ERR_CORRUPT;
+'''
+
 # test that we fail to mount incompatible rcompat flags
 [cases.test_mount_incompat_rcompat]
 in = 'lfs3.c'
@@ -3416,7 +3446,9 @@ code = '''
 # FAILURE=15 => unknown config
 # FAILURE=16 => out of phase
 # FAILURE=17 => gcksum mismatch
-defines.FAILURE = 'range(18)'
+# FAILURE=18 => no version
+# FAILURE=19 => missing rcompat flag
+defines.FAILURE = 'range(20)'
 # M=0 => rdwr
 # M=1 => rdwr with mount-time work
 # M=2 => rdonly
@@ -3558,6 +3590,16 @@ code = '''
         ERR = LFS3_ERR_CORRUPT;
         // a read-only mount without checks mounts degraded
         rdonly_ok = (M == 2);
+    } else if (FAILURE == 18) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_VERSION, 0),
+                LFS3_RATTR_NULL)) => 0;
+        ERR = LFS3_ERR_CORRUPT;
+    } else if (FAILURE == 19) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_RCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(lfs3_rcompat(&lfs3) & ~LFS3_RCOMPAT_GRM),
+                LFS3_RATTR_NULL)) => 0;
     }
     if (FAILURE != 16) {
         lfs3_unmount(&lfs3) => 0;

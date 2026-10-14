@@ -2049,7 +2049,7 @@ The filesystem's format-time configuration is stored in config tags (the
 | tag      | name        | data                                    | default      |
 |----------|-------------|-----------------------------------------|--------------|
 | `0x0131` | `MAGIC`     | `"littlefs"`                            | required     |
-| `0x0134` | `VERSION`   | u8 major, u8 minor                      | v0.0         |
+| `0x0134` | `VERSION`   | u8 major, u8 minor                      | required     |
 | `0x0135` | `RCOMPAT`   | rcompat flags, le, any length           | 0            |
 | `0x0136` | `WCOMPAT`   | wcompat flags, le, any length           | 0            |
 | `0x0137` | `OCOMPAT`   | ocompat flags, le, any length           | 0            |
@@ -2059,7 +2059,9 @@ The filesystem's format-time configuration is stored in config tags (the
 
 Only the active mroot's config counts. The other mroots in the chain only
 need `MAGIC`. The driver writes every config tag except `OCOMPAT` at format
-time, and treats a missing tag as its default.
+time, and treats a missing tag as its default. An active mroot without a
+required tag is damage, not an older format, and fails to mount with
+`LFS3_ERR_CORRUPT`.
 
 The tags are described in detail under [Tag reference](#tag-reference).
 
@@ -2168,11 +2170,11 @@ with other drivers, and notes where the v0.0 driver differs.
 
 1. **Version** - A driver must refuse to mount a filesystem whose major
    version differs from its own, or whose minor version is newer than its
-   own. Minor versions are for backwards-compatible additions. The driver's
-   version is v0.0, and a filesystem without a `VERSION` tag is treated as
-   v0.0. v0.0 is experimental: a released v3 driver will refuse v0.0
-   filesystems, and two v0.0 filesystems from different alpha revisions of
-   the driver may not be compatible.
+   own, and must treat an active mroot without a `VERSION` tag as damage.
+   Minor versions are for backwards-compatible additions. The driver's
+   version is v0.0. v0.0 is experimental: a released v3 driver will refuse
+   v0.0 filesystems, and two v0.0 filesystems from different alpha
+   revisions of the driver may not be compatible.
 
 2. **rcompat flags** - A driver must refuse to mount a filesystem with any
    rcompat flag it doesn't understand. The v0.0 driver is stricter: it
@@ -2363,9 +2365,10 @@ Version fields:
    feature additions.
 
 This specification describes version v0.0 (`00 00`), the experimental
-version. Missing bytes read as zero, so a missing `VERSION` tag means v0.0.
-Note the header's `LFS3_DISK_VERSION` macros allow 16-bit major and minor
-versions, but only 8 bits of each are stored.
+version. Missing bytes of the tag read as zero, but the tag itself is
+required: an active mroot without one fails to mount with
+`LFS3_ERR_CORRUPT`. Note the header's `LFS3_DISK_VERSION` macros allow
+16-bit major and minor versions, but only 8 bits of each are stored.
 
 ---
 #### `0x0135` LFS3_TAG_RCOMPAT
