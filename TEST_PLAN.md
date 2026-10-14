@@ -2349,7 +2349,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-09 | P0 | `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz` | as planned | 2a241e3b | done |
 | NEW-10 | P0 | `exhaustion::spam_file_pl_fuzz` | as planned | 9904cc94, afdf7f05 | done |
 | NEW-11 | P0 | `powerloss::preerase_pl_fuzz` | as planned | b037389d | done, in B-BIG |
-| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762, e28de123, cc0e7927 | done |
+| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762, e28de123, cc0e7927, 5f9cac38, cd376adf, 63d5a045 | done |
 | NEW-13 | P0 | `badblocks::live_readerror` | as planned | 650b1ee3 | done |
 | NEW-14 | P0 | `badblocks::silent_nockprogs` | as planned | 9f136f90 | done |
 | NEW-15 | P0 | `exhaustion::readback` | as planned | 51b30dd1 | done |

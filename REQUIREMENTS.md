@@ -6173,6 +6173,12 @@ part way, and shall never program bytes a failed write left in its caches.
   `make test-progonce` passes all 668,218 permutations in B-DEF, and the
   suites the fix touched (bd, ck, rbyd, salvage) pass with the check in
   B-BIG, both locally with clang; the job has not run on GitHub since.
+  The suites merged later failed 132 more the same way: `crafted::mutate`
+  and `ck::file_ck_heals` put back or mutated blocks through prog, marking
+  even a commit's unprogrammed padding as programmed (F-20). With their
+  erased bytes marked unprogrammed from the last checksum (5f9cac38,
+  cd376adf, 63d5a045), `make test-progonce` passes all 668,661
+  permutations in B-DEF at 606323b3.
   Before 0c531757, a failed crystallization left its data block marked
   erased past the bytes it had programmed, and the next one flushed the
   failed attempt's prog cache into its own checksum (issue #3).
