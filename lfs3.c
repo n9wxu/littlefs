@@ -8135,6 +8135,17 @@ static inline bool lfs3_t_compact(uint32_t flags) {
 }
 #endif
 
+// work that writes, which a read-only mount can't do, note the
+// LFS3_M_*, LFS3_CK_* and LFS3_GC_* work flags share these bits
+#ifndef LFS3_RDONLY
+static inline bool lfs3_t_iswrwork(uint32_t flags) {
+    return lfs3_t_ismkconsistent(flags)
+            || lfs3_t_islookahead(flags)
+            || LFS3_IFDEF_PREERASE(lfs3_t_ispreerase(flags), false)
+            || lfs3_t_compact(flags);
+}
+#endif
+
 static inline bool lfs3_t_isckmeta(uint32_t flags) {
     return flags & LFS3_T_CKMETA;
 }
@@ -15519,6 +15530,15 @@ int lfs3_file_opencfg(lfs3_t *lfs3, lfs3_file_t *file,
                     | LFS3_A_RDWR
                     | LFS3_A_LAZY)) == 0);
     }
+
+    // writing to a read-only mount is a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
+    if (lfs3_m_isrdonly(lfs3->flags)
+            && (!lfs3_o_isrdonly(flags)
+                || lfs3_o_iscreat(flags)
+                || lfs3_o_istrunc(flags))) {
+        return LFS3_ERR_INVAL;
+    }
     #endif
 
     int err = lfs3_file_opencfg_(lfs3, file, path, flags,
@@ -16905,8 +16925,12 @@ fragment:;
 lfs3_ssize_t lfs3_file_write(lfs3_t *lfs3, lfs3_file_t *file,
         const void *buffer, lfs3_size_t size) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
-    // can't write to readonly files
+    // can't write to readonly files, and every file of a read-only
+    // mount is one, without asserts we refuse before any I/O
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
+    if (lfs3_o_isrdonly(file->b.h.flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // torn? only lfs3_file_resync can recover
     if (lfs3_o_istorn(file->b.h.flags)) {
@@ -17650,8 +17674,12 @@ lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file) {
 #ifndef LFS3_RDONLY
 int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
-    // can't write to readonly files
+    // can't write to readonly files, and every file of a read-only
+    // mount is one, without asserts we refuse before any I/O
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
+    if (lfs3_o_isrdonly(file->b.h.flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // torn? only lfs3_file_resync can recover
     if (lfs3_o_istorn(file->b.h.flags)) {
@@ -17751,8 +17779,12 @@ failed:;
 #ifndef LFS3_RDONLY
 int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
-    // can't write to readonly files
+    // can't write to readonly files, and every file of a read-only
+    // mount is one, without asserts we refuse before any I/O
     LFS3_ASSERT(!lfs3_o_isrdonly(file->b.h.flags));
+    if (lfs3_o_isrdonly(file->b.h.flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // torn? only lfs3_file_resync can recover
     if (lfs3_o_istorn(file->b.h.flags)) {
@@ -19908,6 +19940,17 @@ int lfs3_mount(lfs3_t *lfs3, uint32_t flags,
     LFS3_ASSERT(lfs3_m_isrevperturb(flags) || !lfs3_t_ispreerase(flags));
     #endif
 
+    // writing to a read-only mount is a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(flags)
+            && (lfs3_t_iswrwork(flags)
+                || lfs3_m_issettle(flags)
+                || lfs3_m_issalvage(flags))) {
+        return LFS3_ERR_INVAL;
+    }
+    #endif
+
     int err = lfs3_init(lfs3,
             flags & (
                 LFS3_IFDEF_RDONLY(0, LFS3_M_RDWR)
@@ -20345,6 +20388,19 @@ int lfs3_fs_stat(lfs3_t *lfs3, struct lfs3_fsinfo *fsinfo) {
                         ? LFS3_I_PREERASE
                         : 0, 0));
 
+    // a read-only mount can't do the work that writes, and these flags
+    // aren't stored on disk, mount assumes the work is there and only
+    // doing it clears them, so here they would say nothing
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        fsinfo->flags &= ~(
+                LFS3_I_MKCONSISTENT
+                    | LFS3_I_LOOKAHEAD
+                    | LFS3_IFDEF_PREERASE(LFS3_I_PREERASE, 0)
+                    | LFS3_I_COMPACT);
+    }
+    #endif
+
     // return filesystem config, this may come from disk
     fsinfo->block_size = lfs3->cfg->block_size;
     fsinfo->block_count = lfs3->block_count;
@@ -20622,7 +20678,14 @@ static int lfs3_fs_fixorphans(lfs3_t *lfs3) {
 #ifndef LFS3_RDONLY
 static int lfs3_fs_mkconsistent_(lfs3_t *lfs3) {
     // filesystem must be writeable
+    //
+    // most calls that write start here, so this is where a write to a
+    // read-only mount is caught, a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // fix pending grms
     if (lfs3_grm_count(lfs3) > 0) {
@@ -21346,6 +21409,14 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags) {
             || !lfs3_t_ispreerase(flags));
     #endif
 
+    // writing to a read-only mount is a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(lfs3->flags) && lfs3_t_iswrwork(flags)) {
+        return LFS3_ERR_INVAL;
+    }
+    #endif
+
     // try moving data off of every suspect block again
     #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
     lfs3->gbmap.suspects.stuck = 0;
@@ -21431,6 +21502,15 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
         return 0;
     }
 
+    // writing to a read-only mount is a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(lfs3->flags)
+            && lfs3_t_iswrwork(lfs3->cfg->gc_flags)) {
+        return LFS3_ERR_INVAL;
+    }
+    #endif
+
     // run gc a configurable number of steps
     int err = lfs3_fs_gc_(lfs3, &lfs3->gc,
             lfs3->cfg->gc_flags,
@@ -21474,8 +21554,12 @@ int lfs3_fs_unck(lfs3_t *lfs3, uint32_t flags) {
 // attempt to grow the filesystem
 #ifndef LFS3_RDONLY
 int lfs3_fs_grow(lfs3_t *lfs3, lfs3_size_t block_count_) {
-    // filesystem must be writeable
+    // filesystem must be writeable, without asserts we refuse before
+    // any I/O
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // shrinking the filesystem is not supported, and we can't grow past
     // our block device
@@ -21648,6 +21732,13 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
         return LFS3_ERR_NOENT;
     }
 
+    // filesystem must be writeable, checked here as well as in
+    // lfs3_fs_mkconsistent so a read-only mount does no I/O
+    LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        return LFS3_ERR_INVAL;
+    }
+
     // bad blocks live in the gbmap, and without it nothing keeps them
     // out of use, so refuse while any are marked or waiting to be
     // marked, lfs3_fs_mkgood clears them
@@ -21699,8 +21790,12 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
 // mark/unmark bad blocks
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static int lfs3_fs_mkbad_(lfs3_t *lfs3, lfs3_block_t block, bool bad) {
-    // filesystem must be writeable
+    // filesystem must be writeable, without asserts we refuse before
+    // any I/O
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+    if (lfs3_m_isrdonly(lfs3->flags)) {
+        return LFS3_ERR_INVAL;
+    }
 
     // the mroot anchor can't move, so can't be bad
     if (block < 2 || block >= lfs3->block_count) {
@@ -21872,6 +21967,15 @@ int lfs3_trv_open(lfs3_t *lfs3, lfs3_trv_t *trv, uint32_t flags) {
     #if !defined(LFS3_RDONLY) && defined(LFS3_PREERASE)
     LFS3_ASSERT(lfs3_m_isrevperturb(lfs3->flags)
             || !lfs3_t_ispreerase(flags));
+    #endif
+
+    // writing to a read-only mount is a bug in the caller, but without
+    // asserts we still refuse it, before any I/O
+    #ifndef LFS3_RDONLY
+    if (lfs3_m_isrdonly(lfs3->flags)
+            && (!lfs3_t_isrdonly(flags) || lfs3_t_iswrwork(flags))) {
+        return LFS3_ERR_INVAL;
+    }
     #endif
 
     // setup traversal state

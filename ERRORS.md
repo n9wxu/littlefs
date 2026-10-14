@@ -207,7 +207,10 @@ The caller passed an invalid argument: an empty path, or one that climbs
 above the root with `..`; a directory renamed into itself; a seek past
 `file_limit`; a block count smaller than the filesystem or larger than the
 device for `lfs3_fs_grow`; a block out of range, or 0 or 1, for
-`lfs3_fs_mkbad` and `lfs3_fs_mkgood`.
+`lfs3_fs_mkbad` and `lfs3_fs_mkgood`; a write to a read-only mount
+(`LFS3_M_RDONLY`), work flags that write included, see `lfs3_mount` in
+`lfs3.h`, or through a file opened read-only. These two also assert; with
+`LFS3_NO_ASSERT` they return this before any I/O, and change nothing.
 
 **Fail.** This is a bug in the caller; never retry unchanged.
 
