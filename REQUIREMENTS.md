@@ -965,16 +965,22 @@ resynced handles write it.
 
 #### LFS3-PL-17
 
-littlefs shall make the data of an `lfs3_file_write` on a handle opened
-with `LFS3_O_SYNC` durable when the write returns.
+littlefs shall make the data of an `lfs3_file_write`, and the size and
+content an `lfs3_file_truncate` or `lfs3_file_fruncate` leaves, on a
+handle opened with `LFS3_O_SYNC` durable when the call returns.
 
 - **Source:** Stated: `lfs3.h:141` ("Sync metadata on every write").
+  Truncate and fruncate: Q8, decided on 2026-10-13 (issue #11), see
+  LFS3-SYNC-12.
 - **Measure:** file content after a power loss at any later point.
 - **Pass:** `powerloss_p1::osync_pl` passes under `-Plinear` in B-DEF, with
-  `LFS3_O_SYNC` and with `LFS3_M_SYNC`.
-- **Fail:** data from a returned write is missing after remount.
-- **Verified by:** `powerloss_p1::osync_pl`.
-- **Status:** Tested on v3-integration (cba1a7d5).
+  `LFS3_O_SYNC` and with `LFS3_M_SYNC`, its operations writes (half),
+  truncates and fruncates (a quarter each) to random sizes.
+- **Fail:** a returned write, truncate or fruncate is missing after
+  remount.
+- **Verified by:** `powerloss_p1::osync_pl` (NEW-57).
+- **Status:** Partly tested: writes, on v3-integration (cba1a7d5);
+  `osync_pl` doesn't truncate yet.
 - **When:** every CI run.
 
 #### LFS3-PL-18
@@ -3444,29 +3450,51 @@ littlefs shall not change what other handles and `lfs3_stat` see when
 
 #### LFS3-SYNC-11
 
-littlefs shall flush after every write on a handle opened with
-`LFS3_O_FLUSH`, or on any handle when mounted with `LFS3_M_FLUSH`.
+littlefs shall flush after every write, truncate and fruncate on a handle
+opened with `LFS3_O_FLUSH`, or on any handle when mounted with
+`LFS3_M_FLUSH`.
 
-- **Source:** Stated: `lfs3.h:140, 246`.
-- **Measure:** cache state after each write.
-- **Pass:** `fsync::sync_*` with `FLUSH` 1 to 3 pass in B-DEF.
+- **Source:** Stated: `lfs3.h:140, 246`. Truncate and fruncate: Q8,
+  decided on 2026-10-13 (issue #11), every call that changes the file.
+- **Measure:** cache state after each write, truncate and fruncate.
+- **Pass:** `fsync::sync_*` with `FLUSH` 1 to 3 pass in B-DEF, and
+  `fsync::sync_o_tsrr` (NEW-162), with `LFS3_O_FLUSH` and with
+  `LFS3_M_FLUSH`, finds that after each truncate and fruncate, each
+  after a write, `lfs3_file_flush` programs and erases nothing, while
+  without a sync an open reader, `lfs3_stat` and a second mount still see
+  the file as last synced, in B-DEF.
 - **Fail:** data stays in the cache.
-- **Verified by:** as listed.
-- **Status:** Tested.
+- **Verified by:** as listed; NEW-162.
+- **Status:** Partly tested: writes; truncate and fruncate are NEW-162,
+  not written.
 - **When:** every CI run.
 
 #### LFS3-SYNC-12
 
-littlefs shall sync after every write on a handle opened with
-`LFS3_O_SYNC`, or on any handle when mounted with `LFS3_M_SYNC`.
+littlefs shall sync after every write, truncate and fruncate on a handle
+opened with `LFS3_O_SYNC`, or on any handle when mounted with
+`LFS3_M_SYNC`.
 
-- **Source:** Stated: `lfs3.h:141, 247`.
-- **Measure:** content seen by other handles after each write.
-- **Pass:** `fsync::sync_*` with `SYNC` 1 to 3 pass in B-DEF.
-- **Fail:** a write is not visible to other handles after it returns.
-- **Verified by:** as listed. Truncate and fruncate are not synced; see open
-  question Q8.
-- **Status:** Tested.
+- **Source:** Stated: `lfs3.h:141, 247`. Truncate and fruncate: Q8,
+  decided on 2026-10-13 (issue #11): an application that opens a file
+  `LFS3_O_SYNC` expects every change it makes to be on disk when the call
+  returns (principle 3). At `00bba274` they were not synced ("note
+  LFS3_O_SYNC does _not_ sync truncates", `tests/test_fsync.toml`).
+- **Measure:** content and size seen by other handles, by `lfs3_stat` and
+  by a second mount after each write, truncate and fruncate.
+- **Pass:** `fsync::sync_*` with `SYNC` 1 to 3 pass in B-DEF;
+  `fsync::sync_o_tsrr` (NEW-162), with `LFS3_O_SYNC` and with
+  `LFS3_M_SYNC`, finds after each truncate and fruncate, which shrink,
+  grow past the start and shrink to nothing, that an open reader,
+  `lfs3_stat` and a second, read-only mount see the new size and
+  content, in B-DEF; and `fsync::rwtfrwtf_sparse_fuzz` passes with a
+  model that takes each truncate and fruncate with `SYNC` 2 and 3 as
+  synced.
+- **Fail:** a write, truncate or fruncate is not visible to other handles
+  after it returns.
+- **Verified by:** as listed; NEW-162.
+- **Status:** Partly tested: writes; truncate and fruncate are NEW-162,
+  not written.
 - **When:** every CI run.
 
 #### LFS3-SYNC-13
@@ -9251,8 +9279,8 @@ are mapped at the end of 6.4.
 | `lfs3_file_read` | INT-20, FILE-01, FILE-04 |
 | `lfs3_file_write` | PL-06, PL-17, FILE-02, FILE-03, FILE-07, FILE-26, FILE-27, SYNC-05, SYNC-20, PERF-10 |
 | `lfs3_file_seek` | FILE-06, FILE-07, FILE-20, FILE-26, KV-04 |
-| `lfs3_file_truncate` | PL-13, FILE-08, FILE-18, FILE-26, SYNC-05 |
-| `lfs3_file_fruncate` | PL-13, FILE-09, FILE-10, FILE-26, SYNC-05, DOC-18 |
+| `lfs3_file_truncate` | PL-13, PL-17, FILE-08, FILE-18, FILE-26, SYNC-05, SYNC-11, SYNC-12 |
+| `lfs3_file_fruncate` | PL-13, PL-17, FILE-09, FILE-10, FILE-26, SYNC-05, SYNC-11, SYNC-12, DOC-18 |
 | `lfs3_file_tell` | FILE-02, FILE-06, FILE-08, FILE-09, FILE-20 |
 | `lfs3_file_rewind` | FILE-20, BUILD-11 |
 | `lfs3_file_size` | FILE-02, FILE-19, FILE-22, SYNC-09 |
