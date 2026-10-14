@@ -6154,6 +6154,11 @@ code = '''
 ## other corner cases
 
 # test formatting with 0 or 1 bad, this should just error
+#
+# a bad block that silently drops progs (PROGNOOP, ERASENOOP) can only be
+# found by checking progs, without them format notices one such block
+# only if the bytes it left read back as an invalid tag, as 0xff does and
+# 0x00 doesn't, so with one such block we check progs
 [cases.test_badblocks_mrootanchor_format]
 defines.BADBLOCKS = [0x1, 0x2, 0x3]
 defines.BADBLOCK_BEHAVIOR = [
@@ -6163,6 +6168,11 @@ defines.BADBLOCK_BEHAVIOR = [
     'LFS3_EMUBD_BADBLOCK_PROGNOOP',
     'LFS3_EMUBD_BADBLOCK_ERASENOOP',
 ]
+defines.CKPROGS = '''
+    BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_PROGNOOP
+        && BADBLOCKS != 0x3
+'''
+if = 'LFS3_IFDEF_CKPROGS(true, !CKPROGS)'
 code = '''
     if (BADBLOCKS & 0x1) {
         lfs3_emubd_mkbad(CFG, 0) => 0;
@@ -6172,7 +6182,10 @@ code = '''
     }
 
     lfs3_t lfs3;
-    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((CKPROGS) ? LFS3_IFDEF_CKPROGS(LFS3_F_CKPROGS, -1) : 0),
+            CFG) => LFS3_ERR_CORRUPT;
 '''
 
 # test blocks 0 or 1 going bad, this should just error
