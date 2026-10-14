@@ -1100,6 +1100,9 @@ code = '''
 
 # test that lfs3_fs_gc and lfs3_fs_ck mark pending bad blocks and write
 # them to disk
+#
+# note gc only does this when gc_flags allow it some work, gc with no
+# flags does nothing, see test_gc_noflags
 [cases.test_badblocks_gbmap_gc]
 defines.BADBLOCK_BEHAVIOR = [
     'LFS3_EMUBD_BADBLOCK_PROGERROR',
@@ -1110,7 +1113,7 @@ defines.CKPROGS = 'BADBLOCK_BEHAVIOR >= LFS3_EMUBD_BADBLOCK_READERROR'
 # GC=false => lfs3_fs_ck
 # GC=true  => lfs3_fs_gc
 defines.GC = [false, true]
-defines.GC_FLAGS = 0
+defines.GC_FLAGS = 'LFS3_GC_MKCONSISTENT'
 defines.GC_STEPS = [1, -1]
 defines.SIZE = 'BLOCK_SIZE'
 if = [

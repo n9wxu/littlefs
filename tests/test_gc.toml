@@ -3066,6 +3066,127 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that gc with no gc_flags does nothing, it shouldn't read or write
+# anything even with work pending, gc_flags is the work gc is allowed to
+# do
+[cases.test_gc_noflags]
+defines.GC_FLAGS = 0
+defines.GC_STEPS = [1, -1]
+defines.N = 4
+defines.SIZE = '2*BLOCK_SIZE'
+ifdef = 'LFS3_GC'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write some files
+    uint32_t prng = 42;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // with the gbmap, leave a bad block marked in the gbmap but not on
+    // disk, and another waiting to be marked
+    #ifdef LFS3_GBMAP
+    if (GBMAP) {
+        lfs3_alloc_ckpoint(&lfs3) => 0;
+        lfs3_sblock_t bad = lfs3_alloc_findfree(&lfs3, NULL);
+        assert(bad >= 2);
+        lfs3_alloc_pushbad(&lfs3, bad);
+        lfs3_alloc_ckpoint(&lfs3) => 0;
+        bad = lfs3_alloc_findfree(&lfs3, NULL);
+        assert(bad >= 2);
+        lfs3_alloc_pushbad(&lfs3, bad);
+        assert(lfs3_alloc_cansyncgbmap(&lfs3));
+        assert(lfs3_alloc_canflushbad(&lfs3));
+    }
+    #endif
+
+    // mount leaves work to do
+    uint32_t work = LFS3_I_COMPACT | LFS3_I_CKMETA | LFS3_I_CKDATA;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    uint32_t flags = fsinfo.flags;
+    assert((flags & work) == work);
+
+    // count reads, progs and erases, and syncs with a sync error too
+    // far off to fire
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 1000, 0) => 0;
+    lfs3_emubd_sio_t reads = lfs3_emubd_reads(CFG);
+    lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+    lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+
+    // gc with no flags does nothing
+    for (lfs3_size_t i = 0; i < 4; i++) {
+        lfs3_fs_gc(&lfs3) => 0;
+    }
+    assert(lfs3_emubd_reads(CFG) == reads);
+    assert(lfs3_emubd_progs(CFG) == progs);
+    assert(lfs3_emubd_erases(CFG) == erases);
+    assert(lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_SYNC) == 1000);
+    lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_SYNC, 0, 0) => 0;
+
+    // and leaves the work pending
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags == flags);
+    #ifdef LFS3_GBMAP
+    if (GBMAP) {
+        assert(lfs3_alloc_cansyncgbmap(&lfs3));
+        assert(lfs3_alloc_canflushbad(&lfs3));
+    }
+    #endif
+
+    // which a check still does
+    lfs3_fs_ck(&lfs3,
+            LFS3_CK_MKCONSISTENT
+                | LFS3_CK_LOOKAHEAD
+                | LFS3_CK_COMPACT
+                | LFS3_CK_CKMETA
+                | LFS3_CK_CKDATA) => 0;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(!(fsinfo.flags & work));
+    #ifdef LFS3_GBMAP
+    if (GBMAP) {
+        assert(!(fsinfo.flags & LFS3_I_BADBLOCKS));
+        assert(!lfs3_alloc_cansyncgbmap(&lfs3));
+        assert(!lfs3_alloc_canflushbad(&lfs3));
+    }
+    #endif
+
+    // and our files are still there
+    prng = 42;
+    for (lfs3_size_t i = 0; i < N; i++) {
+        char name[256];
+        sprintf(name, "squid%03x", i);
+        uint8_t wbuf[SIZE];
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_t file;
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        uint8_t rbuf[SIZE];
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that gc work clears flags in lfs3_fs_stat after lfs3_fs_unck
 [cases.test_gc_iflags_unck]
 # AFTER=0 => after running lfs3_fs_gc

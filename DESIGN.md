@@ -1790,6 +1790,10 @@ steps, each roughly one block of work, of whichever kinds of work
    (by default 7/8 of a block), before a write has to.
 5. **ckmeta** and **ckdata**: check checksums.
 
+Once that work is done, gc also marks queued bad blocks and writes the gbmap
+to disk. With `gc_flags` 0 the application allows no work, and a call
+returns without reading or writing anything.
+
 Internally, gc is just a traversal object, the same one behind the traversal
 API, stored in `lfs3_t`. It's opt-in because it makes `lfs3_t` bigger. The
 same work can be done to completion with `lfs3_fs_ck` or at mount with the

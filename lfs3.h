@@ -708,6 +708,10 @@ struct lfs3_cfg {
     #endif
 
     // Flags indicating what gc work to do during lfs3_gc calls.
+    //
+    // With any flag set, gc also marks queued bad blocks and writes the
+    // gbmap to disk once that work is done. With none, 0, lfs3_fs_gc does
+    // nothing, it returns 0 without reading or writing.
     #ifdef LFS3_GC
     uint32_t gc_flags;
     #endif
@@ -2385,6 +2389,7 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags);
 // Perform any janitorial work that may be pending
 //
 // The exact janitorial work depends on the configured flags and steps.
+// With gc_flags 0 this does nothing, see gc_flags.
 //
 // Calling this function is not required, but may allow the offloading of
 // expensive janitorial work to a less time-critical code path.

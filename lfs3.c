@@ -21424,6 +21424,13 @@ int lfs3_fs_gc(lfs3_t *lfs3) {
             || !lfs3_t_ispreerase(lfs3->cfg->gc_flags));
     #endif
 
+    // no gc flags? gc_flags is the work allowed in the application's
+    // idle time, so do nothing, not even marking bad blocks or syncing
+    // the gbmap
+    if (!lfs3->cfg->gc_flags) {
+        return 0;
+    }
+
     // run gc a configurable number of steps
     int err = lfs3_fs_gc_(lfs3, &lfs3->gc,
             lfs3->cfg->gc_flags,
