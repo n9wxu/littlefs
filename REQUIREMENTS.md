@@ -1909,20 +1909,36 @@ block when an erase silently does nothing.
 
 littlefs shall, without `LFS3_M_CKPROGS`, either mount and return
 previously synced data or return `LFS3_ERR_CORRUPT`, after progs or erases
-silently did nothing.
+silently did nothing. A compaction that reads back tags it did not write
+shall take its block for bad and relocate, so that such a block never
+makes a write fail with `LFS3_ERR_NOSPC` or an assert while free good
+blocks remain.
 
 - **Source:** Derived: without read-back, a lost prog looks like a power
-  loss before the commit, or like a rollback that the gcksum catches.
-- **Measure:** mount result and data returned.
+  loss before the commit, or like a rollback that the gcksum catches. A
+  compaction is the exception: it builds its tree from the tags it has
+  just progged, read back from its block (`lfs3_rbyd_appendcompaction`),
+  so it sees a block that kept what it held.
+- **Measure:** mount result and data returned; the result of writes whose
+  compaction goes to such a block.
 - **Pass:** `badblocks::silent_nockprogs`, a fuzz with `BADBLOCK_BEHAVIOR`
   in {3, 4} and no `LFS3_M_CKPROGS`, finishes with every read returning
-  either data that some sync committed or `LFS3_ERR_CORRUPT`, with no
-  assert, in B-DEF.
-- **Fail:** an assert, a crash, or data that no sync committed.
-- **Verified by:** `badblocks::silent_nockprogs` (NEW-14).
-- **Status:** Tested on v3-integration (9f136f90). The limitation is
+  either data that some sync committed or `LFS3_ERR_CORRUPT`, and every
+  write its size or `LFS3_ERR_CORRUPT`, with no assert, in B-DEF.
+  `badblocks::silent_split` and `badblocks::silent_btree`, with the blocks
+  that an mroot split or a B-tree first compacts into bad, reading back
+  0x00, 0xff or what they held, find every write and commit succeed, the
+  mdirs and B-tree in good blocks, and everything readable after.
+- **Fail:** an assert, a crash, data that no sync committed, or
+  `LFS3_ERR_NOSPC` while free good blocks remain.
+- **Verified by:** `badblocks::silent_nockprogs` (NEW-14);
+  `badblocks::silent_split`, `badblocks::silent_btree` (NEW-180).
+- **Status:** Tested on v3-integration (9f136f90). Known defect (D-41): a
+  compaction that read back zeros built its tree over them until the block
+  ran out, and the `LFS3_ERR_RANGE` that followed made an mdir split
+  return `LFS3_ERR_NOSPC` and a B-tree relocation assert. The limitation is
   documented by LFS3-DOC-12.
-- **When:** nightly.
+- **When:** nightly; `silent_split` and `silent_btree` every CI run.
 
 #### LFS3-FAIL-08
 
@@ -9151,6 +9167,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
 | D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | 0487ffd3; `ck::file_ck_heals` |
 | D-37 | A commit whose first following byte failed to read with `LFS3_ERR_CORRUPT` set its perturb bit from a 0 in place of the byte; with an erase that leaves old bytes (`ERASE_VALUE=-1`), a wrong guess let fetch take an older commit left there, and those after it, for later commits, so a remount found commits never made since format: 1 permutation of `files::close_error` with `ERASE_VALUE=-1` | `lfs3_rbyd_appendcksum_` | run | INT-03 | 4cb4d237; `rbyd::erased_unreadable`, `files::close_error` with `ERASE_VALUE=-1` |
+| D-41 | Without `LFS3_M_CKPROGS`, a compaction into a block whose progs silently did nothing read back the block's old bytes, 0x00 on a block never written, as null tags, and built its tree over them until the block ran out; the `LFS3_ERR_RANGE` made an mdir split return `LFS3_ERR_NOSPC` ("an entry can't be split") on a disk about a quarter full, and tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in a B-tree relocation: 2 of 2,400 permutations of `badblocks::silent_nockprogs` with `-DSEED='range(200)'` and `ERASE_VALUE` -1 or 0x00 | `lfs3_rbyd_appendcompaction` | run | FAIL-07 | Open |
 
 ### A.3 From the analyses
 
