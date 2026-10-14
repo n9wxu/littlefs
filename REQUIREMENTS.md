@@ -8575,7 +8575,7 @@ shall return 0 unless data blocks are damaged too.
 
 ## 7. Summary
 
-Counts by area and by status on `v3-integration` at `9a2148ff`. T = Tested,
+Counts by area and by status on `v3-integration` at `fb975393`. T = Tested,
 P = Partly tested, U = Untested, N = Not implemented, Q = Open question,
 K = Known defect. `scripts/reqstatus.py REQUIREMENTS.md` prints this table
 from the Status fields (3.2), and with `-c v3-integration` checks that every
@@ -8583,52 +8583,52 @@ commit they cite is on that branch.
 
 | Area | Code | Total | T | P | U | N | Q | K |
 |---|---|---|---|---|---|---|---|---|
-| General and portability | GEN | 9 | 6 | 0 | 1 | 0 | 2 | 0 |
+| General and portability | GEN | 9 | 8 | 0 | 1 | 0 | 0 | 0 |
 | Power-loss resilience | PL | 27 | 23 | 2 | 2 | 0 | 0 | 0 |
-| Error detection and integrity | INT | 26 | 24 | 1 | 1 | 0 | 0 | 0 |
+| Error detection and integrity | INT | 27 | 25 | 1 | 1 | 0 | 0 | 0 |
 | Flash failure handling | FAIL | 20 | 19 | 1 | 0 | 0 | 0 | 0 |
-| Bad-block tracking | BAD | 17 | 17 | 0 | 0 | 0 | 0 | 0 |
+| Bad-block tracking | BAD | 18 | 18 | 0 | 0 | 0 | 0 | 0 |
 | Metadata | META | 17 | 15 | 1 | 1 | 0 | 0 | 0 |
 | Files and data | FILE | 27 | 24 | 1 | 2 | 0 | 0 | 0 |
 | Sync model and stickynotes | SYNC | 20 | 18 | 2 | 0 | 0 | 0 | 0 |
 | Directories and paths | DIR | 20 | 19 | 0 | 1 | 0 | 0 | 0 |
-| Custom attributes | ATTR | 14 | 12 | 1 | 1 | 0 | 0 | 0 |
+| Custom attributes | ATTR | 14 | 13 | 1 | 0 | 0 | 0 | 0 |
 | Key-value API | KV | 9 | 6 | 1 | 2 | 0 | 0 | 0 |
 | Block allocation | ALLOC | 17 | 15 | 2 | 0 | 0 | 0 | 0 |
 | Pre-erase | PRE | 9 | 9 | 0 | 0 | 0 | 0 | 0 |
-| Garbage collection and traversals | GC | 18 | 15 | 3 | 0 | 0 | 0 | 0 |
-| Format, mount, grow, compatibility and versioning | MOUNT | 27 | 20 | 4 | 2 | 1 | 0 | 0 |
-| Configuration validation | CFG | 17 | 6 | 4 | 7 | 0 | 0 | 0 |
+| Garbage collection and traversals | GC | 19 | 16 | 3 | 0 | 0 | 0 | 0 |
+| Format, mount, grow, compatibility and versioning | MOUNT | 28 | 21 | 4 | 2 | 1 | 0 | 0 |
+| Configuration validation | CFG | 17 | 7 | 4 | 6 | 0 | 0 | 0 |
 | Resource bounds | RES | 8 | 4 | 4 | 0 | 0 | 0 | 0 |
 | Performance | PERF | 14 | 4 | 2 | 7 | 0 | 0 | 1 |
 | Thread safety | THR | 4 | 3 | 0 | 1 | 0 | 0 | 0 |
 | Build configurations | BUILD | 20 | 5 | 6 | 9 | 0 | 0 | 0 |
-| Continuous integration | CI | 13 | 7 | 3 | 3 | 0 | 0 | 0 |
-| Documentation | DOC | 20 | 9 | 6 | 0 | 4 | 1 | 0 |
+| Continuous integration | CI | 13 | 6 | 4 | 3 | 0 | 0 | 0 |
+| Documentation | DOC | 20 | 10 | 6 | 0 | 4 | 0 | 0 |
 | Error handling for unattended systems | ERR | 7 | 7 | 0 | 0 | 0 | 0 | 0 |
 | Graceful degradation | DEG | 16 | 16 | 0 | 0 | 0 | 0 | 0 |
-| **All** | | **396** | **303** | **44** | **40** | **5** | **3** | **1** |
+| **All** | | **400** | **311** | **45** | **38** | **5** | **0** | **1** |
 
-By level: 224 stated, 128 derived, 44 proposals. By When: 323 every CI run,
-43 nightly, 30 before v3-beta.
+By level: 224 stated, 131 derived, 45 proposals. By When: 329 every CI run,
+43 nightly, 28 before v3-beta.
 
-303 requirements (77%) are fully checked by a case that runs on every push,
-or by review; 44 are partly checked. Of the 40 untested, most are build,
+311 requirements (78%) are fully checked by a case that runs on every push,
+or by review; 45 are partly checked. Of the 38 untested, most are build,
 configuration and performance checks that need a new job or bench
-assertion (section 9). Three wait on an open question: Q2 (LFS3-GEN-06),
-Q21 (LFS3-GEN-07) and Q9 (LFS3-DOC-14). One known defect remains,
-LFS3-PERF-07, measured at `b10efaa` and not measured again.
+assertion (section 9). None waits on an open question: the owner decided
+Q2, Q9 and Q21 on 2026-10-13, and LFS3-GEN-06, GEN-07 and DOC-14 are
+tested. One known defect remains, LFS3-PERF-07, measured at `b10efaa` and
+not measured again.
 
 The first version of this document (`c27a2d46`) described `b10efaa`: 107
 requirements tested, 63 partly tested, 100 untested and 64 known defects
-(62 by Status; its table counted two more). Of those 62, 46 are now tested;
+(62 by Status; its table counted two more). Of those 62, 48 are now tested;
 9 are fixed but only partly tested (LFS3-BUILD-02 to BUILD-06, LFS3-CI-06
 to CI-08, LFS3-DOC-10), 4 fixed and untested (LFS3-BUILD-08 to BUILD-11),
-2 wait on a decision (LFS3-GEN-06, Q2; LFS3-DOC-14, Q9), and one,
-LFS3-PERF-07, has not been measured again. Appendix A names the fixing
-commit and test of every defect. 39 requirements were
-added since: GEN-09, INT-24 to INT-26, BAD-16, BAD-17, FILE-27, SYNC-20,
-ATTR-14, GC-17, GC-18, PERF-14, THR-04, CI-12, CI-13, DOC-20, ERR-01 to
+and one, LFS3-PERF-07, has not been measured again. Appendix A names the
+fixing commit and test of every defect. 43 requirements were added since:
+GEN-09, INT-24 to INT-27, BAD-16 to BAD-18, FILE-27, SYNC-20, ATTR-14,
+GC-17 to GC-19, PERF-14, THR-04, MOUNT-28, CI-12, CI-13, DOC-20, ERR-01 to
 ERR-07 and DEG-01 to DEG-16.
 
 ## 8. Open questions
@@ -9015,10 +9015,19 @@ mount flag `LFS3_M_SALVAGE` (LFS3-DEG-16). A pair loses at most its commits
 since its last compaction, and only a pair no block reads is dropped
 (principle 2); the repair is never automatic (principles 2 and 4).
 
+**Q28. Does a removed but open file keep its directory non-empty?** A file
+removed while a handle still has it open (a zombie) keeps its directory
+non-empty until the handle closes: `lfs3_remove` of the directory returns
+`LFS3_ERR_NOTEMPTY`, though nothing lists the file and its syncs do
+nothing (LFS3-DIR-03; found while testing Q7). Options: (a) keep it so, as
+`lfs3.h` says; (b) let the directory go once only zombies are left in it,
+and the handles stay zombies. Open.
+
 ### 8.1 Still open
 
-Q11 (`LFS3_M_CKREADS`), which is the maintainer's plan. The owner decided
-the other open questions on 2026-10-13 (issue #11).
+Q11 (`LFS3_M_CKREADS`), which is the maintainer's plan, and Q28, found
+while testing Q7. The owner decided the other open questions on 2026-10-13
+(issue #11).
 
 ### 8.2 Decisions without a question number
 
@@ -9056,7 +9065,7 @@ another build, schedule or geometry. The description is short; the
 requirement's Pass condition is the exact specification. Documentation
 requirements checked by review are not listed.
 
-65 requirements still need a new test (9.1) and 18 an existing
+61 requirements still need a new test (9.1) and 18 an existing
 test in a new environment (9.2).
 
 ### 9.1 New tests

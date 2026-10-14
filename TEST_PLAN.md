@@ -1179,15 +1179,15 @@ have not yet run on GitHub, and `nightly.yml` has not run there at all
 - **P0** tests are needed for "done" (section 7): recovery from every flash
   failure in the matrix of section 4, and a regression test for every known
   defect that has a behavioural requirement. There were 54 at `b10efaa`;
-  the issues resolved since added NEW-130 to NEW-156, so there are 81. 79
-  are done and 2 partly done (6.7).
+  the issues resolved since added NEW-130 to NEW-156 and NEW-180, so there
+  are 82. 81 are done and NEW-53 is partly done (6.7).
 - **P1** tests cover the remaining features and failure modes, including
   behaviours whose intent is still an open question in REQUIREMENTS.md
-  section 8. There were 37; with NEW-157 to NEW-160 there are 41. They are
+  section 8. There were 37; with NEW-157 to NEW-169 there are 50. They are
   also required for "done" (section 7), except where a test waits on an
-  open question. 40 are done, and NEW-86 is not written.
+  open question. 49 are done, and NEW-86 is not written.
 - **P2** tests are lower-value checks, benches and reports. There are 38.
-  They are tracked but not required for "done". 4 are done and 5 partly.
+  They are tracked but not required for "done". 5 are done and 6 partly.
 
 NEW-130 to NEW-134 were each used twice, by the agents of issues #1 and #9
 (6.2) and of issues #2, #3, #13, #14 and #18 (6.3), and NEW-130 to NEW-133
@@ -2631,11 +2631,11 @@ B-BIG and 668,220 in B-TS:
 | Entry 2, a green baseline | yes | – |
 | Entry 3, the P0 extensions | yes | E-1 to E-12 are all done (6.4) |
 | Entry 4, a PR-tier workflow | in part | `test.yml` has a job for every PR-tier job but J-BUILD's matrix (5.5); only run 36985477685, on an earlier commit, has run on GitHub, and the jobs added since have passed only in the `lfs3-ci` image |
-| Exit 1, tests exist | no | P0: NEW-49's B-NA half waits on Q2, and NEW-53's build matrix is partly done. P1: NEW-86 is not written |
+| Exit 1, tests exist | no | P0: NEW-53's build matrix is partly done. P1: NEW-86 is not written |
 | Exit 2, PR and nightly tiers pass | no | the nightly tier has never run on GitHub (J-PL, J-GEO, J-YES, J-BENCH and the B-BIG sanitizer run); B-NS and the J-DEFINES matrices have no job (5.5) |
 | Exit 3, release tier passes once | no | no tag yet; J-ARCH-BIG has no job, and J-PL-DEEP runs `permute(2)` on `test_dirs` only |
 | Exit 4, flash-failure matrix closed | no | 230 of 247 cells are T; 3 R cells and 11 of the 14 P cells wait on J-PL, and 3 P cells on the B-tree bad-block cases that `LFS3_YES_GBMAP` excludes (F23) |
-| Exit 5, known defects resolved | no | LFS3-PERF-07 is not measured again; LFS3-GEN-06 and LFS3-DOC-14 wait on Q2 and Q9; the fixes for LFS3-BUILD-08 to BUILD-11 have no regression test, and LFS3-BUILD-02 to BUILD-06, CI-06 to CI-08 and DOC-10 are only partly tested |
+| Exit 5, known defects resolved | no | LFS3-PERF-07 is not measured again; the fixes for LFS3-BUILD-08 to BUILD-11 have no regression test, and LFS3-BUILD-02 to BUILD-06, CI-06 to CI-08 and DOC-10 are only partly tested |
 | Exit 6, no hidden exclusions | yes | no condition in `tests/` excludes a failing permutation; the remaining limits are for run time, and the nightly behaviour-4 job is allowed to fail for the reason in 5.4 |
 | Exit 7, results recorded | no | the issues' resolution comments record each suite run, but there has been no exit run (8.6) |
 
@@ -2865,11 +2865,12 @@ modelled device, and the assumptions say which real devices that covers.
 
 ### 9.4 Other risks
 
-- **Open questions block tests.** The B-NA half of NEW-49 (Q2) and
-  NEW-102 (Q9) wait on decisions in REQUIREMENTS.md section 8; Q3, Q15 and
-  Q21, which held up NEW-41's error codes, NEW-86 and NEW-68, are decided.
-  If the decisions take long, those tests should be written against the
-  current behaviour and marked, rather than left out.
+- **Open questions block tests.** None does now. Q2, Q9 and Q21, which
+  held up the B-NA half of NEW-49, NEW-102 and NEW-68, were decided on
+  2026-10-13 and those tests are done; Q3 and Q15, which held up NEW-41's
+  error codes and NEW-86, were decided before. Q11 is still open and holds
+  up no test. A test that a new question holds up should be written against
+  the current behaviour and marked, rather than left out.
 - **Test-side defects.** Seven defects in test code (F-4 to F-10) were found
   in a few days of running the suite under new conditions, and nine more
   (F-11 to F-19) while resolving the fork's issues, two of them in emubd's
