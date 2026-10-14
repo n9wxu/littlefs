@@ -1378,10 +1378,13 @@ when to pay:
 | every data read                      | `LFS3_M_CKDATACKSUMS` (`LFS3_CKDATACKSUMS`)   |
 
 CKMETA checks metadata (mdirs and B-tree nodes), CKDATA checks metadata and
-data. The last four are compile-time options, so builds that don't use them
-don't pay for their code. Their runtime costs differ a lot: CKPROGS doubles
-the bus traffic of every write, and CKDATACKSUMS re-reads the whole
-checksummed prefix of a block on every read, up to a block per read.
+data. For one file, that's the mdir holding its entry, which also holds a
+small file's data, read again and compared with what the handle last saw,
+its B-tree nodes and, with CKDATA, its data blocks. The last four are
+compile-time options, so builds that don't use them don't pay for their
+code. Their runtime costs differ a lot: CKPROGS doubles the bus traffic of
+every write, and CKDATACKSUMS re-reads the whole checksummed prefix of a
+block on every read, up to a block per read.
 
 All of this is detection, not correction. A failed check returns
 `LFS3_ERR_CORRUPT`, unless a read retried within `ck_retries` passes, and

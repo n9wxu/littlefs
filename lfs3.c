@@ -17902,6 +17902,47 @@ failed:;
 }
 #endif
 
+// check the mdir holding a file's entry, which also holds a small file's
+// data and the file's bshrub
+//
+// we check it the way lfs3_fs_ck does: fetch it again, which reads it
+// again up to ck_retries times if a read fails, ck_passes times, and
+// compare its cksum with the one we track, an mdir that reads, but not
+// as we last saw it, fell back to an older commit
+static int lfs3_file_ckmdir(lfs3_t *lfs3, const lfs3_file_t *file) {
+    lfs3_size_t passes = LFS3_IFDEF_GBMAP(
+            (lfs3->cfg->ck_passes) ? lfs3->cfg->ck_passes : 1,
+            1);
+    for (lfs3_size_t i = 0; i < passes; i++) {
+        // read past any cached copy, we want what's on disk
+        lfs3_bd_droprcache(lfs3);
+
+        // a read-only mount would take what reads, but a check must
+        // not, so fetch strictly
+        lfs3_mdir_t mdir;
+        int err = lfs3_mdir_fetchretry(lfs3, &mdir,
+                file->b.h.mdir.mid, file->b.h.mdir.r.blocks,
+                false);
+        if (err) {
+            return err;
+        }
+
+        if (mdir.r.cksum != file->b.h.mdir.r.cksum) {
+            LFS3_ERROR("Found mdir cksum mismatch %"PRId32" "
+                        "0x{%"PRIx32",%"PRIx32"}, "
+                        "cksum %08"PRIx32" (!= %08"PRIx32")",
+                    lfs3_dbgmbid(lfs3, mdir.mid),
+                    mdir.r.blocks[0],
+                    mdir.r.blocks[1],
+                    mdir.r.cksum,
+                    file->b.h.mdir.r.cksum);
+            return LFS3_ERR_CORRUPT;
+        }
+    }
+
+    return 0;
+}
+
 // file check function
 int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
     LFS3_ASSERT(lfs3_handle_isopen(lfs3, &file->b.h));
@@ -17918,6 +17959,15 @@ int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
         return LFS3_ERR_BADFD;
     }
     #endif
+
+    // validate the mdir holding our entry, inline data, and bshrub?
+    if (lfs3_t_isckmeta(flags)
+            || lfs3_t_isckdata(flags)) {
+        int err = lfs3_file_ckmdir(lfs3, file);
+        if (err) {
+            return err;
+        }
+    }
 
     // validate ungrafted data block?
     if (lfs3_t_isckdata(flags)

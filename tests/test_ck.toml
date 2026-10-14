@@ -5964,6 +5964,262 @@ code = '''
     free(saved);
 '''
 
+# lfs3_file_ck checks the mdir holding the file's entry
+#
+# With LFS3_CK_CKMETA or LFS3_CK_CKDATA, lfs3_file_ck fetches the mdir
+# again, reading again up to ck_retries times, and compares it with what
+# the handle last saw. The mdir holds the file's name and struct, and a
+# small file's data in its shrub, so a flip there, a rollback, or a block
+# that doesn't read is found, and an intact mdir passes. A file with a
+# B-tree still gets its B-tree and data checks
+#
+# DAMAGE=0 => none
+# DAMAGE=1 => flip bits a checksum covers in the mdir's newer block,
+#             among them the file's data if it's in the mdir
+# DAMAGE=2 => roll the mdir back to before the file's sync
+# DAMAGE=3 => the newer block fails its next 2 reads
+# DAMAGE=4 => clobber the file's first B-tree node
+# DAMAGE=5 => clobber the file's first data block
+#
+# MTREE=false => the file's entry is in the mroot
+# MTREE=true => the file's entry is in an mdir of the mtree
+[cases.test_ck_file_ckmeta_mdir]
+defines.CK = ['LFS3_CK_CKMETA', 'LFS3_CK_CKDATA']
+defines.DAMAGE = [0, 1, 2, 3, 4, 5]
+defines.MTREE = [false, true]
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    'FRAGMENT_SIZE/2',
+    '8*BLOCK_SIZE',
+]
+# no shrub for the large file, so it has B-tree nodes
+defines.SHRUB_SIZE = '(SIZE > BLOCK_SIZE) ? 0 : BLOCK_SIZE/4'
+defines.CK_RETRIES = [0, 3]
+# random flips, in addition to the first and last checksummed bit, and
+# the first and last bit of the file's data if it's in the mdir
+defines.FLIPS = 8
+defines.SEED = 42
+if = [
+    'DAMAGE < 4 || SIZE > BLOCK_SIZE',
+    'DAMAGE == 3 || CK_RETRIES == 0',
+]
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // empty files until there's an mtree, if asked
+    lfs3_size_t n = 0;
+    while (MTREE && lfs3.mtree.r.weight == 0) {
+        assert(n < 4*BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "spider%026d", (int)n);
+        lfs3_set(&lfs3, name, "", 0) => 0;
+        n += 1;
+    }
+
+    // save and restore blocks behind littlefs's back
+    #define TEST_CKMDIR_SAVE(block, buf) do { \
+        int err_ = CFG->read(CFG, (block), 0, (buf), BLOCK_SIZE); \
+        assert(!err_); \
+    } while (0)
+    #define TEST_CKMDIR_LOAD(block, buf) do { \
+        int err_ = CFG->erase(CFG, (block)); \
+        assert(!err_); \
+        err_ = CFG->prog(CFG, (block), 0, (buf), BLOCK_SIZE); \
+        assert(!err_); \
+        lfs3_bd_droprcache(&lfs3); \
+    } while (0)
+    uint8_t *old[2];
+    uint8_t *new[2];
+    for (int j = 0; j < 2; j++) {
+        old[j] = malloc(BLOCK_SIZE);
+        new[j] = malloc(BLOCK_SIZE);
+        assert(old[j] && new[j]);
+    }
+
+    // write our file, keeping its mdir as it was before the sync
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE+1);
+    assert(wbuf && rbuf);
+    uint32_t prng = SEED;
+    for (lfs3_size_t j = 0; j < SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_block_t pair[2] = {
+        file.b.h.mdir.r.blocks[0],
+        file.b.h.mdir.r.blocks[1],
+    };
+    TEST_CKMDIR_SAVE(pair[0], old[0]);
+    TEST_CKMDIR_SAVE(pair[1], old[1]);
+    lfs3_file_sync(&lfs3, &file) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // open the file, a check compares the mdir with what this handle saw
+    lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+    assert(lfs3_mptr_cmp(file.b.h.mdir.r.blocks, pair) == 0);
+    assert((lfs3_mptr_cmp(file.b.h.mdir.r.blocks, lfs3.mroot.r.blocks) != 0)
+            == MTREE);
+    lfs3_block_t newer = file.b.h.mdir.r.blocks[0];
+    TEST_CKMDIR_SAVE(pair[0], new[0]);
+    TEST_CKMDIR_SAVE(pair[1], new[1]);
+
+    // an intact mdir passes
+    lfs3_file_ck(&lfs3, &file, CK) => 0;
+
+    // flip bits in the newer block
+    if (DAMAGE == 1) {
+        // which bytes do checksums cover? the revision count, then each
+        // tag up to the end of the last commit, except the padding after
+        // each commit's checksum
+        lfs3_mdir_t mdir;
+        lfs3_mdir_fetch(&lfs3, &mdir,
+                file.b.h.mdir.mid, file.b.h.mdir.r.blocks) => 0;
+        assert(mdir.r.blocks[0] == newer);
+        assert(mdir.r.cksum == file.b.h.mdir.r.cksum);
+        assert(mdir.r.eoff != (lfs3_size_t)-1);
+        lfs3_size_t eoff = mdir.r.eoff
+                & ~(LFS3_RBYD_ISPERTURB | LFS3_RBYD_ISSETTLED);
+        uint8_t *covered = malloc(BLOCK_SIZE);
+        uint8_t *nbuf = malloc(BLOCK_SIZE);
+        assert(covered && nbuf);
+        memset(covered, 0, BLOCK_SIZE);
+        memset(covered, 1, 4);
+        lfs3_size_t off = 4;
+        while (off < eoff) {
+            lfs3_tag_t tag;
+            lfs3_rid_t weight;
+            lfs3_size_t size;
+            lfs3_ssize_t d = lfs3_bd_readtag(&lfs3,
+                    newer, off, -1,
+                    &tag, &weight, &size, NULL, NULL);
+            assert(d > 0);
+            if (lfs3_tag_isalt(tag)) {
+                memset(&covered[off], 1, d);
+                off += d;
+            } else if (lfs3_tag_suptype(tag) == LFS3_TAG_CKSUM) {
+                memset(&covered[off], 1, d+4);
+                off += d + size;
+            } else {
+                memset(&covered[off], 1, d+size);
+                off += d + size;
+            }
+        }
+        assert(off == eoff);
+
+        // and where's our data, if it's in the mdir? the last copy
+        TEST_CKMDIR_SAVE(newer, nbuf);
+        lfs3_ssize_t data = -1;
+        if (SIZE <= FRAGMENT_SIZE) {
+            for (lfs3_size_t o = 4; o + SIZE <= eoff; o++) {
+                if (memcmp(&nbuf[o], wbuf, SIZE) == 0) {
+                    data = o;
+                }
+            }
+            assert(data >= 0);
+        }
+        printf("mdir 0x%"PRIx32", eoff %"PRId32", data %"PRId32"\n",
+                newer, eoff, (int32_t)data);
+
+        for (lfs3_size_t f = 0; f < 4+FLIPS; f++) {
+            lfs3_size_t badbit;
+            if (f == 0) {
+                badbit = 0;
+            } else if (f == 1) {
+                badbit = 8*eoff - 1;
+                while (!covered[badbit/8]) {
+                    badbit -= 8;
+                }
+            } else if (f == 2 && data >= 0) {
+                badbit = 8*data;
+            } else if (f == 3 && data >= 0) {
+                badbit = 8*(data + SIZE) - 1;
+            } else {
+                do {
+                    badbit = TEST_PRNG(&prng) % (8*eoff);
+                } while (!covered[badbit/8]);
+            }
+            printf("flipping 0x%x.%x+%x\n", newer, badbit/8, badbit%8);
+            lfs3_emubd_flipbit(CFG, newer, badbit) => 0;
+            lfs3_file_ck(&lfs3, &file, CK) => LFS3_ERR_CORRUPT;
+            lfs3_emubd_flipbit(CFG, newer, badbit) => 0;
+            lfs3_file_ck(&lfs3, &file, CK) => 0;
+        }
+        free(covered);
+        free(nbuf);
+
+    // roll the mdir back
+    } else if (DAMAGE == 2) {
+        TEST_CKMDIR_LOAD(pair[0], old[0]);
+        TEST_CKMDIR_LOAD(pair[1], old[1]);
+        lfs3_file_ck(&lfs3, &file, CK) => LFS3_ERR_CORRUPT;
+        TEST_CKMDIR_LOAD(pair[0], new[0]);
+        TEST_CKMDIR_LOAD(pair[1], new[1]);
+
+    // fail reads of the newer block, ck_retries reads it again
+    } else if (DAMAGE == 3) {
+        lfs3_emubd_mktransient(CFG, newer, 2) => 0;
+        lfs3_file_ck(&lfs3, &file, CK)
+                => (CK_RETRIES >= 2) ? 0 : LFS3_ERR_CORRUPT;
+        lfs3_emubd_mktransient(CFG, newer, 0) => 0;
+
+    // clobber a B-tree node or data block, the mdir check passes, and
+    // the checks after it still run
+    } else if (DAMAGE == 4 || DAMAGE == 5) {
+        lfs3_sblock_t node = -1;
+        lfs3_sblock_t block = -1;
+        lfs3_btrv_t btrv;
+        lfs3_btrv_init(&btrv);
+        while (node < 0 || block < 0) {
+            lfs3_data_t data;
+            lfs3_stag_t tag = lfs3_bshrub_traverse(&lfs3, &file.b, &btrv,
+                    NULL, NULL, &data);
+            assert(tag >= 0);
+            if (tag == LFS3_TAG_BRANCH && node < 0) {
+                node = ((const lfs3_rbyd_t*)data.u.buffer)->blocks[0];
+            } else if (tag == LFS3_TAG_BLOCK && block < 0) {
+                lfs3_bptr_t bptr;
+                lfs3_data_readbptr(&lfs3, &data, &bptr) => 0;
+                block = lfs3_bptr_block(&bptr);
+            }
+        }
+        lfs3_block_t clobbered = (DAMAGE == 4) ? node : block;
+        printf("clobbering 0x%x\n", clobbered);
+        TEST_CKMDIR_SAVE(clobbered, old[0]);
+        memset(new[0], 0xcc, BLOCK_SIZE);
+        TEST_CKMDIR_LOAD(clobbered, new[0]);
+        lfs3_file_ck(&lfs3, &file, CK)
+                => (DAMAGE == 4 || CK == LFS3_CK_CKDATA)
+                    ? LFS3_ERR_CORRUPT
+                    : 0;
+        TEST_CKMDIR_LOAD(clobbered, old[0]);
+    }
+
+    // with everything back, everything checks and reads
+    lfs3_file_ck(&lfs3, &file, CK) => 0;
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY | CK) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int j = 0; j < 2; j++) {
+        free(old[j]);
+        free(new[j]);
+    }
+    free(wbuf);
+    free(rbuf);
+    #undef TEST_CKMDIR_SAVE
+    #undef TEST_CKMDIR_LOAD
+'''
+
 # flips in gbmap nodes are found by metadata checks
 #
 # Every flip lands in bytes a checksum covers, the tags of a node up to

@@ -893,14 +893,14 @@ struct lfs3_cfg {
     #endif
 
     // Number of times to read a block again when it fails a check, in
-    // lfs3_fs_ck, lfs3_fs_gc, traversals, and mounts with LFS3_M_CKMETA
-    // or LFS3_M_CKDATA, and when the block device fails a read that
-    // decides a metadata pair's latest state. Data blocks and B-tree
-    // nodes are read again where their checksums are recorded. A metadata
-    // pair is read again, at mount and while mounted, when a read of a
-    // revision count or of its newer block's log fails: littlefs never
-    // takes the older block for the latest because a read failed, the
-    // pair is damaged instead, see lfs3_mount.
+    // lfs3_fs_ck, lfs3_fs_gc, lfs3_file_ck, traversals, and mounts with
+    // LFS3_M_CKMETA or LFS3_M_CKDATA, and when the block device fails a
+    // read that decides a metadata pair's latest state. Data blocks and
+    // B-tree nodes are read again where their checksums are recorded. A
+    // metadata pair is read again, at mount and while mounted, when a read
+    // of a revision count or of its newer block's log fails: littlefs
+    // never takes the older block for the latest because a read failed,
+    // the pair is damaged instead, see lfs3_mount.
     //
     // A read can fail while the supply is low and pass later, so a failed
     // check doesn't prove the data is lost. With LFS3_GBMAP, a block that
@@ -922,7 +922,8 @@ struct lfs3_cfg {
 
     // Number of times lfs3_fs_ck, and mounts and formats with
     // LFS3_M_CKMETA, LFS3_M_CKDATA, LFS3_F_CKMETA or LFS3_F_CKDATA, check
-    // every block.
+    // every block, and lfs3_file_ck reads the metadata pair holding the
+    // file.
     //
     // A bit that reads differently each time, such as one left
     // metastable by a power loss, is more likely to be caught by more
@@ -2191,11 +2192,24 @@ int lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file);
 // With LFS3_THREADSAFE, also an error from lock or unlock.
 lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file);
 
-// Check a file for errors and other work
+// Check a file for errors
+//
+// With LFS3_CK_CKMETA, the metadata pair holding the file's entry, which
+// also holds a small file's data, is read again and must read as this
+// handle last saw it, and the nodes of the file's B-tree are checked.
+// With LFS3_CK_CKDATA, the file's data blocks are checked too. As in
+// lfs3_fs_ck, what fails is read again, see ck_retries, and the metadata
+// pair is read ck_passes times. A metadata pair rolled back before the
+// file was opened reads as the handle saw it, lfs3_fs_ck finds that
+// through the global checksum.
+//
+// A check that fails changes nothing, so the handle can be used again
+// once its blocks read.
 //
 // Returns 0 on success, or LFS3_ERR_CORRUPT if a checksum mismatch is
-// found, LFS3_ERR_BADFD if the handle is torn, or LFS3_ERR_IO if the block
-// device fails. With LFS3_THREADSAFE, also an error from lock or unlock.
+// found that reading again doesn't fix, LFS3_ERR_BADFD if the handle is
+// torn, or LFS3_ERR_IO if the block device fails. With LFS3_THREADSAFE,
+// also an error from lock or unlock.
 int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags);
 
 
