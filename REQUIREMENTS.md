@@ -5780,11 +5780,18 @@ part way, and shall never program bytes a failed write left in its caches.
   part way through a write) run with the check.
 - **Status:** Tested on v3-integration (0c531757, b75e9ae5):
   `badblocks::crystal_ioerror` and `badblocks::graft_torn` pass in B-DEF,
-  B-YGB and B-BIG, and the whole suite passes with the check in the CI job
-  `test-progonce` (1c768762). Before 0c531757, a failed crystallization left
-  its data block marked erased past the bytes it had programmed, and the
-  next one flushed the failed attempt's prog cache into its own checksum
-  (issue #3).
+  B-YGB and B-BIG, and the whole suite passed with the check in the CI job
+  `test-progonce` at 1c768762. From a2403505 and 3aa6ae9f the job failed 19
+  permutations of `rbyd::erased_values`, `ck::rollback` and
+  `salvage::damage`, which put blocks back from saved images through prog,
+  so their erased bytes counted as programmed; littlefs programmed no byte
+  twice. With those bytes marked unprogrammed (e28de123, cc0e7927),
+  `make test-progonce` passes all 668,218 permutations in B-DEF, and the
+  suites the fix touched (bd, ck, rbyd, salvage) pass with the check in
+  B-BIG, both locally with clang; the job has not run on GitHub since.
+  Before 0c531757, a failed crystallization left its data block marked
+  erased past the bytes it had programmed, and the next one flushed the
+  failed attempt's prog cache into its own checksum (issue #3).
 - **When:** every CI run.
 
 #### LFS3-CFG-16

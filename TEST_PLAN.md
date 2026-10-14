@@ -1879,7 +1879,10 @@ defines; procedure; pass and fail; extension needed.
 - **Covers:** CFG-15; strengthens NEW-04, NEW-11, NEW-23, NEW-24, NEW-60.
 - **Procedure:** Run every suite with `-DCKPROGONCE=true` in B-DEF and B-BIG,
   excluding `BADBLOCK_BEHAVIOR` 3 and 4 (which break the device model on
-  purpose).
+  purpose). A case that puts a block back from a saved image, or progs what
+  an erase would have left, marks the bytes the image had erased as not
+  programmed with `lfs3_emubd_mkunprogged`, as `rbyd::erased_values`,
+  `ck::rollback` and `salvage::damage` do (cc0e7927).
 - **Pass:** the check never fires.
 - **Fail:** any byte programmed twice without an erase.
 - **Extension:** E-1.
@@ -2211,7 +2214,7 @@ last column gives its commits on `v3-integration`.
 
 | Ext | What | Where | Used by | Done in |
 |---|---|---|---|---|
-| E-1 | **Prog-once check.** A bitmap per block of programmed bytes, cleared by erase. A prog that touches a programmed byte fails the test with the block and offset. Selected by a `ck_progonce` field in `struct lfs3_emubd_cfg` and a `CKPROGONCE` define. Also gives per-block prog counts | `bd/lfs3_emubd.c`, `runners/test_defines.h` | NEW-04, NEW-11, NEW-12, NEW-23, NEW-24, NEW-60 | 7f5c964c, b75e9ae5 (`make test-progonce`) |
+| E-1 | **Prog-once check.** A bitmap per block of programmed bytes, cleared by erase. A prog that touches a programmed byte fails the test with the block and offset. Selected by a `ck_progonce` field in `struct lfs3_emubd_cfg` and a `CKPROGONCE` define. Also gives per-block prog counts. `lfs3_emubd_mkprogged` marks a block programmed; `lfs3_emubd_mkunprogged` marks a range not programmed, for a test that puts back an image with erased bytes | `bd/lfs3_emubd.c`, `runners/test_defines.h` | NEW-04, NEW-11, NEW-12, NEW-23, NEW-24, NEW-60 | 7f5c964c, b75e9ae5 (`make test-progonce`), e28de123 |
 | E-2 | **Device error hook.** `lfs3_emubd_mkioerror(cfg, op, n)`: the n-th read, prog or erase returns `LFS3_ERR_IO` (or any given code) | `bd/lfs3_emubd.c` | NEW-19 | d04bbf9d |
 | E-3 | **Sync failure.** `lfs3_emubd_mkbadsync` and `lfs3_emubd_mkgoodsync`. Added with `bd5bb8c2`; the n-th sync fails through E-2's `LFS3_EMUBD_OP_SYNC` | `bd/lfs3_emubd.c` | NEW-18 | bd5bb8c2; the n-th sync through E-2, 1ba341e7 |
 | E-4 | **Torn tail.** A power-loss behaviour, `POWERLOSS_BEHAVIOR=5`, in which the interrupted prog leaves its first `prog_size` bytes erased and programs or disturbs some of the bytes after them (3-alloc B17) | `bd/lfs3_emubd.c` | NEW-60 | a71f5c8a |
@@ -2334,7 +2337,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-09 | P0 | `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz` | as planned | 2a241e3b | done |
 | NEW-10 | P0 | `exhaustion::spam_file_pl_fuzz` | as planned | 9904cc94, afdf7f05 | done |
 | NEW-11 | P0 | `powerloss::preerase_pl_fuzz` | as planned | b037389d | done, in B-BIG |
-| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762 | done |
+| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762, e28de123, cc0e7927 | done |
 | NEW-13 | P0 | `badblocks::live_readerror` | as planned | 650b1ee3 | done |
 | NEW-14 | P0 | `badblocks::silent_nockprogs` | as planned | 9f136f90 | done |
 | NEW-15 | P0 | `exhaustion::readback` | as planned | 51b30dd1 | done |
