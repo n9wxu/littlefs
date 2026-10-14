@@ -6452,7 +6452,13 @@ code = '''
     const char *path_b = paths[MDIRS][1];
 
     // save and restore a pair's blocks behind littlefs's back
+    //
+    // a device that reverts writes leaves a block's erased bytes, those
+    // after its last commit, erased, so we note where they start, in
+    // <bufs>_eoff, and keep them erased for the prog-once check when we
+    // put the block back
     uint8_t *a_old[2], *a_new[2], *b_old[2];
+    lfs3_size_t a_old_eoff[2], a_new_eoff[2], b_old_eoff[2];
     for (int j = 0; j < 2; j++) {
         a_old[j] = malloc(BLOCK_SIZE);
         a_new[j] = malloc(BLOCK_SIZE);
@@ -6464,6 +6470,13 @@ code = '''
             int err_ = CFG->read(CFG, (pair)[j_], 0, \
                     (bufs)[j_], BLOCK_SIZE); \
             assert(!err_); \
+            lfs3_rbyd_t rbyd_; \
+            err_ = lfs3_rbyd_fetch(&lfs3, &rbyd_, (pair)[j_], 0); \
+            assert(!err_ || err_ == LFS3_ERR_CORRUPT); \
+            (bufs##_eoff)[j_] = (!err_ \
+                        && lfs3_rbyd_eoff(&rbyd_) < BLOCK_SIZE) \
+                    ? lfs3_rbyd_eoff(&rbyd_) \
+                    : BLOCK_SIZE; \
         } \
     } while (0)
     #define TEST_ROLLBACK_LOAD(pair, bufs) do { \
@@ -6472,6 +6485,9 @@ code = '''
             assert(!err_); \
             err_ = CFG->prog(CFG, (pair)[j_], 0, \
                     (bufs)[j_], BLOCK_SIZE); \
+            assert(!err_); \
+            err_ = lfs3_emubd_mkunprogged(CFG, (pair)[j_], \
+                    (bufs##_eoff)[j_], BLOCK_SIZE-(bufs##_eoff)[j_]); \
             assert(!err_); \
         } \
         lfs3_bd_droprcache(&lfs3); \

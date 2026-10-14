@@ -1879,7 +1879,10 @@ defines; procedure; pass and fail; extension needed.
 - **Covers:** CFG-15; strengthens NEW-04, NEW-11, NEW-23, NEW-24, NEW-60.
 - **Procedure:** Run every suite with `-DCKPROGONCE=true` in B-DEF and B-BIG,
   excluding `BADBLOCK_BEHAVIOR` 3 and 4 (which break the device model on
-  purpose).
+  purpose). A case that puts a block back from a saved image, or progs what
+  an erase would have left, marks the bytes the image had erased as not
+  programmed with `lfs3_emubd_mkunprogged`, as `rbyd::erased_values`,
+  `ck::rollback` and `salvage::damage` do (cc0e7927).
 - **Pass:** the check never fires.
 - **Fail:** any byte programmed twice without an erase.
 - **Extension:** E-1.
@@ -2214,7 +2217,7 @@ last column gives its commits on `v3-integration`.
 
 | Ext | What | Where | Used by | Done in |
 |---|---|---|---|---|
-| E-1 | **Prog-once check.** A bitmap per block of programmed bytes, cleared by erase. A prog that touches a programmed byte fails the test with the block and offset. Selected by a `ck_progonce` field in `struct lfs3_emubd_cfg` and a `CKPROGONCE` define. Also gives per-block prog counts | `bd/lfs3_emubd.c`, `runners/test_defines.h` | NEW-04, NEW-11, NEW-12, NEW-23, NEW-24, NEW-60 | 7f5c964c, b75e9ae5 (`make test-progonce`) |
+| E-1 | **Prog-once check.** A bitmap per block of programmed bytes, cleared by erase. A prog that touches a programmed byte fails the test with the block and offset. Selected by a `ck_progonce` field in `struct lfs3_emubd_cfg` and a `CKPROGONCE` define. Also gives per-block prog counts. `lfs3_emubd_mkprogged` marks a block programmed; `lfs3_emubd_mkunprogged` marks a range not programmed, for a test that puts back an image with erased bytes | `bd/lfs3_emubd.c`, `runners/test_defines.h` | NEW-04, NEW-11, NEW-12, NEW-23, NEW-24, NEW-60 | 7f5c964c, b75e9ae5 (`make test-progonce`), e28de123 |
 | E-2 | **Device error hook.** `lfs3_emubd_mkioerror(cfg, op, n)`: the n-th read, prog or erase returns `LFS3_ERR_IO` (or any given code) | `bd/lfs3_emubd.c` | NEW-19 | d04bbf9d |
 | E-3 | **Sync failure.** `lfs3_emubd_mkbadsync` and `lfs3_emubd_mkgoodsync`. Added with `bd5bb8c2`; the n-th sync fails through E-2's `LFS3_EMUBD_OP_SYNC` | `bd/lfs3_emubd.c` | NEW-18 | bd5bb8c2; the n-th sync through E-2, 1ba341e7 |
 | E-4 | **Torn tail.** A power-loss behaviour, `POWERLOSS_BEHAVIOR=5`, in which the interrupted prog leaves its first `prog_size` bytes erased and programs or disturbs some of the bytes after them (3-alloc B17) | `bd/lfs3_emubd.c` | NEW-60 | a71f5c8a |
@@ -2242,7 +2245,7 @@ last column gives its commits on `v3-integration`.
 | NEW-63 | `ck::launder` | INT-24, proposed from the result (and INT-18 to INT-20, DOC-13) | flip a bit in the source of an mdir compaction, a B-tree relocation and a crystallization, with each of `LFS3_M_CKFETCHES`, `LFS3_M_CKMETAPARITY`, `LFS3_M_CKDATACKSUMS` and none; then compact or relocate; then `lfs3_fs_ck` | with the matching check option the copy is refused with `LFS3_ERR_CORRUPT`; without, `lfs3_fs_ck` before the copy reports the flip. Records whether a flip can be copied into a fresh checksum; propose a requirement from the result | – |
 | NEW-64 | `ck::ckmeta_gbmap` | INT-22 | B-YGB; flip bits in gbmap nodes; `lfs3_fs_ck(LFS3_CK_CKMETA)` | `LFS3_ERR_CORRUPT` (D) | – |
 | NEW-65 | `ck::rollback` | INT-06, INT-09, INT-21 | deterministic: commit X to mdir A, Y to mdir B; restore A's older block (mount must fail); restore B's (mount succeeds, `lfs3_fs_cksum` differs); restore A after mount (`lfs3_fs_ck` fails); also namespace operations after the rollback | as the three requirements; no assert | – |
-| NEW-66 | `rbyd::erased_values`, `mtree::ecksum_disturb` | INT-03, INT-04 | fill the erased region after each commit with every byte value and with random data; flip a bit in the prog unit after the last commit and commit again | no extra commit is accepted; the disturbed block is compacted, not appended | – |
+| NEW-66 | `rbyd::erased_values`, `rbyd::erased_unreadable`, `mtree::ecksum_disturb` | INT-03, INT-04 | fill the erased region after each commit with every byte value and with random data; with a noop erase, commit A and B, erase, and commit A again failing each read in turn with `LFS3_ERR_CORRUPT`; flip a bit in the prog unit after the last commit and commit again | no extra commit is accepted; the disturbed block is compacted, not appended | – |
 | NEW-67 | `ck::file_ckdata_blocks` | INT-13 | flip bits in each data block of a B-tree file; `lfs3_file_ck(LFS3_CK_CKDATA)` and open with `LFS3_O_CKDATA` | `LFS3_ERR_CORRUPT` | – |
 | NEW-68 | `mount::crafted_*` | GEN-07 | internal; checksum-valid images with an out-of-range block, offset, size, weight and alt jump, built by committing raw tags | `LFS3_ERR_CORRUPT`, no assert (B-DEF), no sanitizer report (B-NA). Waits on open question Q21 | – |
 | NEW-69 | `make test-balance`, nightly job `test-balance` | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
@@ -2346,7 +2349,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-09 | P0 | `badblocks::region_pl_fuzz`, `badblocks::alternating_pl_fuzz` | as planned | 2a241e3b | done |
 | NEW-10 | P0 | `exhaustion::spam_file_pl_fuzz` | as planned | 9904cc94, afdf7f05 | done |
 | NEW-11 | P0 | `powerloss::preerase_pl_fuzz` | as planned | b037389d | done, in B-BIG |
-| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762 | done |
+| NEW-12 | P0 | emubd prog-once check, all suites | `make test-progonce` (`-DCKPROGONCE=1` on every suite), job `test-progonce` | 7f5c964c, b75e9ae5, 1c768762, e28de123, cc0e7927 | done |
 | NEW-13 | P0 | `badblocks::live_readerror` | as planned | 650b1ee3 | done |
 | NEW-14 | P0 | `badblocks::silent_nockprogs` | as planned | 9f136f90 | done |
 | NEW-15 | P0 | `exhaustion::readback` | as planned | 51b30dd1 | done |
@@ -2400,7 +2403,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-63 | P1 | `ck::launder` | as planned | 69ce4c06 | done |
 | NEW-64 | P1 | `ck::ckmeta_gbmap` | as planned | 36762484 | done |
 | NEW-65 | P1 | `ck::rollback` | as planned | 6d53943f | done |
-| NEW-66 | P1 | `rbyd::erased_values`, `mtree::ecksum_disturb` | as planned | f6e23134, 1a17402f | done |
+| NEW-66 | P1 | `rbyd::erased_values`, `rbyd::erased_unreadable`, `mtree::ecksum_disturb` | as planned | f6e23134, 1a17402f, 4cb4d237 | done |
 | NEW-67 | P1 | `ck::file_ckdata_blocks` | as planned | 23b617c1 | done |
 | NEW-68 | P1 | `mount::crafted_*` | as planned | – | waits on Q21 |
 | NEW-69 | P1 | `make test-balance`, nightly job `test-balance` | as planned | 35d965ef | done, nightly; not yet run on GitHub |

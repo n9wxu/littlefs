@@ -317,6 +317,16 @@ lfs3_emubd_sio_t lfs3_emubd_blockprogs(const struct lfs3_cfg *cfg,
 // prog before the block's next erase fails the test
 int lfs3_emubd_mkprogged(const struct lfs3_cfg *cfg, lfs3_block_t block);
 
+// Mark a range of bytes in a block as not programmed, as if the block's
+// last erase had left the values they hold, so that with ck_progonce they
+// may be programmed before the block's next erase
+//
+// A test that puts back an older image of a block, or progs what an
+// erase would have left, uses this to keep the image's erased bytes
+// erased. Without ck_progonce this does nothing.
+int lfs3_emubd_mkunprogged(const struct lfs3_cfg *cfg, lfs3_block_t block,
+        lfs3_off_t off, lfs3_size_t size);
+
 // Mark a block as bad, this is equivalent to setting wear to maximum
 int lfs3_emubd_mkbad(const struct lfs3_cfg *cfg, lfs3_block_t block);
 

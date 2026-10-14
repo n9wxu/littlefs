@@ -5119,25 +5119,36 @@ static int lfs3_rbyd_appendcksum_(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
             return err;
         }
 
-        // we don't want the next commit to appear as valid, so we
-        // intentionally perturb the commit if this happens, this is
-        // roughly equivalent to inverting all tags' valid bits
-        perturb = ((e >> 7) == lfs3_parity(cksum));
-
-        // calculate the erased-state checksum
-        lfs3_ecksum_t ecksum;
-        err = lfs3_ecksum_read(lfs3, &ecksum,
-                rbyd->blocks[0], off_);
-        if (err && err != LFS3_ERR_CORRUPT) {
-            return err;
-        }
-
-        err = lfs3_rbyd_appendrattr_(lfs3, rbyd, 
-                LFS3_TAG_ECKSUM, 0,
-                LFS3_FROM_ECKSUM, 0, LFS3_RATTRS(
-                    LFS3_RATTR_ARG(&ecksum)));
+        // can't read it? then we can't choose a perturb bit that keeps
+        // what's there, which an erase may leave as anything, from
+        // parsing as our next commit once it reads again, so end the
+        // commit at the end of the block, as if no ecksum fit
+        //
+        // note this implicitly marks the rbyd as unerased
         if (err) {
-            return err;
+            off_ = lfs3->cfg->block_size;
+
+        } else {
+            // we don't want the next commit to appear as valid, so we
+            // intentionally perturb the commit if this happens, this is
+            // roughly equivalent to inverting all tags' valid bits
+            perturb = ((e >> 7) == lfs3_parity(cksum));
+
+            // calculate the erased-state checksum
+            lfs3_ecksum_t ecksum;
+            err = lfs3_ecksum_read(lfs3, &ecksum,
+                    rbyd->blocks[0], off_);
+            if (err && err != LFS3_ERR_CORRUPT) {
+                return err;
+            }
+
+            err = lfs3_rbyd_appendrattr_(lfs3, rbyd,
+                    LFS3_TAG_ECKSUM, 0,
+                    LFS3_FROM_ECKSUM, 0, LFS3_RATTRS(
+                        LFS3_RATTR_ARG(&ecksum)));
+            if (err) {
+                return err;
+            }
         }
 
     // at least space for a cksum?

@@ -1229,7 +1229,8 @@ low two bits of the block address.
 #### LFS3-INT-03
 
 littlefs shall ensure that the erased bytes after a commit never parse as a
-valid tag, whatever the erased value.
+valid tag, whatever the erased value, including when they fail to read
+while the commit is written.
 
 - **Source:** Stated: #1111 "Pre-erased block tracking" ("We also make no
   assumptions about erase value"); the perturb bit, `lfs3.c:4430-4434`.
@@ -1239,11 +1240,17 @@ valid tag, whatever the erased value.
   `rbyd::erased_values`, which fills the erased region after each commit
   with every byte value 0x00 to 0xff and with random data, and with a noop
   erase fills the whole block before the commits, finds no extra commit, in
-  B-DEF.
+  B-DEF; `rbyd::erased_unreadable`, which with a noop erase commits A and
+  B, erases, and commits A again failing each read in turn with
+  `LFS3_ERR_CORRUPT`, finds A without B.
 - **Fail:** fetch accepts bytes that were never written as part of a
   commit.
-- **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`.
-- **Status:** Tested on v3-integration (f6e23134).
+- **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`;
+  `rbyd::erased_unreadable`.
+- **Status:** Tested on v3-integration (f6e23134, 4cb4d237). Known defect
+  before 4cb4d237 (D-37): a commit whose next byte failed to read with
+  `LFS3_ERR_CORRUPT` guessed its perturb bit, and with an erase that leaves
+  old bytes an older commit after it could parse as a later one.
 - **When:** every CI run.
 
 #### LFS3-INT-04
@@ -6086,11 +6093,18 @@ part way, and shall never program bytes a failed write left in its caches.
   part way through a write) run with the check.
 - **Status:** Tested on v3-integration (0c531757, b75e9ae5):
   `badblocks::crystal_ioerror` and `badblocks::graft_torn` pass in B-DEF,
-  B-YGB and B-BIG, and the whole suite passes with the check in the CI job
-  `test-progonce` (1c768762). Before 0c531757, a failed crystallization left
-  its data block marked erased past the bytes it had programmed, and the
-  next one flushed the failed attempt's prog cache into its own checksum
-  (issue #3).
+  B-YGB and B-BIG, and the whole suite passed with the check in the CI job
+  `test-progonce` at 1c768762. From a2403505 and 3aa6ae9f the job failed 19
+  permutations of `rbyd::erased_values`, `ck::rollback` and
+  `salvage::damage`, which put blocks back from saved images through prog,
+  so their erased bytes counted as programmed; littlefs programmed no byte
+  twice. With those bytes marked unprogrammed (e28de123, cc0e7927),
+  `make test-progonce` passes all 668,218 permutations in B-DEF, and the
+  suites the fix touched (bd, ck, rbyd, salvage) pass with the check in
+  B-BIG, both locally with clang; the job has not run on GitHub since.
+  Before 0c531757, a failed crystallization left its data block marked
+  erased past the bytes it had programmed, and the next one flushed the
+  failed attempt's prog cache into its own checksum (issue #3).
 - **When:** every CI run.
 
 #### LFS3-CFG-16
@@ -7219,10 +7233,16 @@ error-code check of LFS3-ERR-01.
   commands pass in the `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
 - **Fail:** a target without a job, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Tested in the `lfs3-ci` image on v3-integration (345c40f7,
-  1c768762, ecf44d33): every target has a job and passes; the jobs have not
-  run on GitHub yet. Untested at fd3157e3, where only `make test-rdonly` had
-  a job.
+- **Status:** Partly tested. Every target has a job, and each job's
+  commands passed in the `lfs3-ci` image on v3-integration (345c40f7,
+  1c768762, ecf44d33). On GitHub, run 38513008452 on 3fbdca6b passed
+  test-rdonly, test-compat-gbmap, test-nomalloc, test-threadsafe and the
+  error-code job test-errs, and failed test-progonce in all three shards.
+  test-progonce failed from a2403505 on, 18 permutations and 19 from
+  3aa6ae9f, all in cases that put block images back through prog
+  (LFS3-CFG-15); cc0e7927 fixes those cases, and `make test-progonce`
+  passes locally, but the job has not passed on GitHub yet. Untested at
+  fd3157e3, where only `make test-rdonly` had a job.
 - **When:** every CI run.
 
 #### LFS3-CI-13
@@ -9130,6 +9150,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
 | D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | 0487ffd3; `ck::file_ck_heals` |
+| D-37 | A commit whose first following byte failed to read with `LFS3_ERR_CORRUPT` set its perturb bit from a 0 in place of the byte; with an erase that leaves old bytes (`ERASE_VALUE=-1`), a wrong guess let fetch take an older commit left there, and those after it, for later commits, so a remount found commits never made since format: 1 permutation of `files::close_error` with `ERASE_VALUE=-1` | `lfs3_rbyd_appendcksum_` | run | INT-03 | 4cb4d237; `rbyd::erased_unreadable`, `files::close_error` with `ERASE_VALUE=-1` |
 
 ### A.3 From the analyses
 
