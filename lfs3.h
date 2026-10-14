@@ -1015,7 +1015,11 @@ struct lfs3_attr {
     //
     // Note some of this range is reserved:
     // 0x00-0x7f - Free for custom attributes
-    // 0x80-0xff - May be assigned a standard attribute
+    // 0x80-0xbf - Reserved for standard attributes
+    // 0xc0-0xff - Suggested for system attributes
+    //
+    // littlefs accepts every type, but a type in 0x80-0xbf may be
+    // assigned a standard attribute in the future.
     uint8_t type;
 
     // Flags that control how attr is read/written/removed

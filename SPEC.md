@@ -1761,16 +1761,18 @@ The data is the attribute's value, any number of bytes. An attribute must
 fit in a metadata block with its entry; the driver refuses one that
 doesn't with `LFS3_ERR_NOSPC` (see [Open points](#open-points)).
 
-The attribute types are divided into ranges:
+The attribute types are divided into ranges, as the v3-alpha announcement
+sets them out:
 
 - `0x00-0x7f` - Free for user attributes (uattrs).
-- `0x80-0xff` - Reserved for standard attributes (sattrs).
+- `0x80-0xbf` - Reserved for standard attributes.
+- `0xc0-0xff` - Suggested for system attributes.
 
-The v3-alpha announcement further splits the reserved range into
-`0x80-0xbf` for standard attributes and `0xc0-0xff` for system attributes,
-while the header only says `0x80-0xff` "may be assigned a standard
-attribute". No standard attributes are defined yet, and a portable driver
-should work with any attributes missing.
+Types `0x80-0xff` are all stored as sattrs. The ranges are a convention:
+the driver accepts every type, so an application that already uses a type
+keeps working if a standard attribute is later assigned to it. No standard
+attributes are defined yet, and a portable driver should work with any
+attributes missing.
 
 For example, a uattr of type `0x61` with value `"attr"` on the file at rid
 2, and a uattr of type `0x7f` with value `"root"` on the root directory:
@@ -2873,8 +2875,10 @@ the base of both attribute ranges.
 
 bits: `v--- -111 +aaa aaaa`
 
-A standard attribute, type `0x80-0xff`, stored as `0x0700 | (type & 0x7f)`.
-Same layout as `UATTR`. No standard attributes are defined yet.
+An attribute of type `0x80-0xff`, stored as `0x0700 | (type & 0x7f)`:
+`0x80-0xbf` are reserved for standard attributes and `0xc0-0xff` suggested
+for system attributes, see [Custom attributes](#custom-attributes). Same
+layout as `UATTR`. No standard attributes are defined yet.
 
 ---
 #### `0x1xxx` LFS3_TAG_SHRUB
@@ -3075,10 +3079,10 @@ this document leave a question open.
 7. **Version width.** The version macros allow 16-bit major and minor
    versions, but `VERSION` stores 8 bits of each.
 
-8. **Custom attribute ranges.** `lfs3.h` reserves types `0x80-0xff` for
-   standard attributes, while the v3-alpha announcement reserves
-   `0x80-0xbf` and encourages `0xc0-0xff` for system attributes. No
-   standard attributes are defined.
+8. **Custom attribute ranges.** `lfs3.h` and this document follow the
+   v3-alpha announcement: `0x80-0xbf` are reserved for standard attributes
+   and `0xc0-0xff` suggested for system attributes, and the driver accepts
+   every type. No standard attributes are defined.
 
 9. **Limits.** The format puts no limit on names or attribute sizes beyond
    `NAMELIMIT`, but an entry and its attributes must fit in a metadata

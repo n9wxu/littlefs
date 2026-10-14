@@ -2375,9 +2375,11 @@ lessons from v2 are built into the format:
    migrator" ([#1114]).
 
 Custom attributes keep their single-byte types, but the upper half of the
-type space is now set aside for future standard attributes, which is much
-easier to do while the format is changing anyway. [SPEC.md](SPEC.md) has the
-details of every one of these.
+type space is now set aside, which is much easier to do while the format is
+changing anyway: `0x80-0xbf` for future standard attributes, and
+`0xc0-0xff` suggested for system attributes. The ranges are a convention,
+littlefs accepts every type. [SPEC.md](SPEC.md) has the details of every one
+of these.
 
 ## What's next
 
