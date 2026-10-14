@@ -71,8 +71,10 @@ class DRange:
         else:
             return (self.start-1 - self.stop) // -self.step + 1
 
+    # note i is a size_t, cast it so a negative start doesn't wrap at
+    # 32 bits on 32-bit targets
     def next(self, i):
-        return '(%s)*%d + %d' % (i, self.step, self.start)
+        return '(intmax_t)(%s)*%d + %d' % (i, self.step, self.start)
 
 
 class BenchCase:
