@@ -5430,7 +5430,7 @@ shall then report none of `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD`,
   read-only mount.
 - **Verified by:** `runners/rdonly_runner.c` through `make test-rdonly`,
   which fails any read-only mount that doesn't report the flag; B-DEF cases
-  with `LFS3_M_RDONLY`; `mount::rdonly_workflags` (NEW-161), `mount::flags`.
+  with `LFS3_M_RDONLY`; `mount::rdonly_workflags` (NEW-162), `mount::flags`.
 - **Status:** Tested on v3-integration (83f8cdea, c2dfab01) and
   `v3-q-rdonly` (291a1038): `mount::rdonly_workflags` passes 3
   permutations in B-DEF and B-YGB and 6 in B-BIG, and failed before the
