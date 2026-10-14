@@ -623,27 +623,75 @@ any block device operation, changing nothing.
 
 #### LFS3-GEN-07
 
-littlefs shall return `LFS3_ERR_CORRUPT`, without asserting and without
-accessing memory or storage out of range, when a checksum-valid image
-contains an out-of-range block address, offset, size, weight or alt jump.
+littlefs shall treat a checksum-valid image whose values are malformed as
+damage: a call that needs a malformed value shall return
+`LFS3_ERR_CORRUPT`, and a read-only mount shall mount degraded where it can
+do without the value (LFS3-DEG-03). No call shall assert, loop without end,
+or access memory or storage out of range because of such a value, in any
+build, including `LFS3_NO_ASSERT`. The values are: a block address outside
+the filesystem or in the mroot anchor; an offset, size or checksummed size
+outside its block or outside what its checksum covers; a trunk outside its
+block; a weight that disagrees with what it weighs; an alt jump that leaves
+the rbyd, and a walk of alts or of B-tree branches that comes back to
+where it was; a tag littlefs never writes, when it would be copied; a grm
+or gbmap outside the filesystem; an mdir with more rids than it has mids,
+or an empty one in the mtree; an mtree leaf that is not one mdir's mids; a
+geometry without room for the mroot anchor; a B-tree node too full to
+split; a name longer than `LFS3_NAME_MAX`; and a file larger than the file
+limit.
 
-- **Source:** Proposal. The decoders do not range-check on-disk values and
-  assert instead (2-files B13, 1-meta 7.7, 4-api R12). littlefs is often
-  used on removable media and with images built elsewhere.
-- **Measure:** return value and sanitizer reports while mounting, reading
-  and traversing crafted images.
-- **Pass:** for each field in the list, a crafted image with that field out
-  of range gives `LFS3_ERR_CORRUPT` from the first call that uses it, with no
-  assert in B-DEF and no sanitizer report in B-NA.
-- **Fail:** an assert, a crash, a sanitizer report or a result other than
-  `LFS3_ERR_CORRUPT`.
-- **Verified by:** NEW: crafted-image suite (extends `mtree::truncated_*`).
-- **Status:** Open question (Q21). Untested: no crafted-image suite exists
-  (NEW-68 waits on Q21). 42e7f9eb, e5646435 and 7d27de3d turned the asserts
-  on alts, on metadata that reads differently and on bit-7 tags into
-  `LFS3_ERR_CORRUPT`; the range asserts in the decoders remain
-  (`lfs3_data_readshrub`, `lfs3_data_readgrm`, block pointers, branches).
-- **When:** before v3-beta.
+- **Source:** Proposal, decided by Q21 (principle 2): removable media,
+  images built on a host, and bit flips that a checksum misses all reach
+  the driver this way. At `b10efaa` the decoders did not range-check
+  on-disk values and asserted instead (2-files B13, 1-meta 7.7), which
+  becomes undefined behaviour with `LFS3_NO_ASSERT`.
+- **Measure:** return values, asserts, hangs and sanitizer reports while
+  mounting, reading, listing, traversing, checking and writing crafted
+  images, and images whose metadata blocks are changed at random and
+  signed again.
+- **Pass:** for each value in the list, a crafted image gives
+  `LFS3_ERR_CORRUPT` from the first call that needs the value, and a
+  read-only mount succeeds with `LFS3_I_DEGRADED` when the value is in an
+  mdir of the mtree, the grm or the gbmap; a gbmap that marks the mroot
+  anchor free, or whose erased-state checksum is larger than a block, is
+  dropped and rebuilt by the allocation that reads it, and writes
+  succeed. In the mutation test every call returns 0 or an `enum lfs3_err`
+  code the changed image accounts for (`LFS3_ERR_CORRUPT`, or what the
+  change made the image say, such as `LFS3_ERR_NOTSUP` for a changed
+  config tag or `LFS3_ERR_INVAL` for a seek past a changed file limit).
+  Nothing asserts in B-DEF, B-YGB and B-BIG, nothing hangs, and nothing
+  gives a sanitizer report under `make test-sanitize` or in B-NA built
+  with ASan and UBSan.
+- **Fail:** an assert, a crash, a hang, a sanitizer report, or any other
+  result.
+- **Verified by:** `crafted::*` (NEW-68): one case per class of value,
+  built by committing raw tags with `lfs3_mdir_commit` and by writing
+  rbyds the test signs; and `crafted::mutate`, which changes bytes of
+  metadata blocks at random, signs them again keeping the gcksum, then
+  reads, lists, traverses, checks and writes, with plain mounts, salvaging
+  and checking mounts, and in B-BIG mounts that check fetches, parity and
+  data checksums.
+- **Status:** Tested on v3-integration (9cfedb6e, ba67125f, 8e61fd48,
+  b2ac4ca0, 79b5fcb1, 9113bd1c): `crafted::*` passes in B-DEF (172
+  permutations), B-YGB (175) and B-BIG (476), under ASan and UBSan in
+  B-DEF with and without `LFS3_NO_ASSERT` and in B-BIG with it, and
+  every code returned is one `lfs3.h` lists. Before 9cfedb6e, 29 of the
+  42 crafted permutations of B-DEF asserted or returned something other
+  than `LFS3_ERR_CORRUPT`, and 3, an alt and two B-tree branches that
+  lead back, hung; the mutation test found more, in alt walks, B-tree
+  merges and compactions, and D-38 to D-40. 42e7f9eb, e5646435 and
+  7d27de3d had turned the asserts on alts, on metadata that reads
+  differently and on bit-7 tags into `LFS3_ERR_CORRUPT` (LFS3-GEN-09).
+  Not covered: the asserts that a compaction fits, after
+  `lfs3_rbyd_compact` and `lfs3_rbyd_commit` in `lfs3_btree_commit_` and
+  `lfs3_btree_commitroot_`, and that a bshrub doesn't split, in
+  `lfs3_bshrub_commit`, which an rbyd that compacts larger than its
+  estimate could reach, though no test has; structures that share a
+  block, two B-trees with one node, which a write through one damages in
+  the other; and an mroot of the chain past the geometry's block count,
+  checked against the configured one, as the geometry is read after the
+  chain.
+- **When:** every CI run.
 
 #### LFS3-GEN-08
 
@@ -6109,6 +6157,10 @@ part way, and shall never program bytes a failed write left in its caches.
   Before 0c531757, a failed crystallization left its data block marked
   erased past the bytes it had programmed, and the next one flushed the
   failed attempt's prog cache into its own checksum (issue #3).
+  With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed
+  after appending to its leaf left the cached leaf claiming those bytes
+  erased, and the next commit programmed them again (D-40), until 79b5fcb1;
+  `crafted::mutate` checks this in B-BIG.
 - **When:** every CI run.
 
 #### LFS3-CFG-16
@@ -8494,8 +8546,12 @@ shall return 0 unless data blocks are damaged too.
   mount read-write or check after the salvage, or one that mounts without
   the flag before a salvage completes.
 - **Verified by:** NEW-149, NEW-150, NEW-151.
-- **Status:** Tested on v3-integration (3aa6ae9f). Not implemented at
-  195ed2ef.
+- **Status:** Tested on v3-integration (3aa6ae9f, ba67125f, 8e61fd48,
+  b2ac4ca0). Not implemented at 195ed2ef. A salvage looped on entries out
+  of order and on an mroot with no entries, and asserted on a gbmap it
+  hadn't built (D-38, D-39), until ba67125f, 8e61fd48 and b2ac4ca0;
+  `crafted::salvage_order`, `crafted::salvage_empty` and
+  `crafted::mutate` check these.
 - **When:** every CI run.
 
 ## 7. Summary
@@ -8845,12 +8901,12 @@ robustness against checksum-valid but malformed images in scope for v3?
 Metadata that reads differently from its fetch, and bit-7 tags, now
 return `LFS3_ERR_CORRUPT` instead of asserting (LFS3-GEN-09).
 
-**Decided** on 2026-10-13 (issue #11): yes. An image whose checksums pass
-but whose values are malformed is damage, and littlefs reports it as
-`LFS3_ERR_CORRUPT`, or mounts degraded where a read-only mount can,
-without an assert or undefined behaviour in any build (LFS3-GEN-07,
-principle 2). Removable media, images built on a host, and bit flips that
-a checksum misses all reach the driver this way.
+**Decided** on 2026-10-13 (issue #11; 9cfedb6e, 9113bd1c): yes. An image
+whose checksums pass but whose values are malformed is damage, and
+littlefs reports it as `LFS3_ERR_CORRUPT`, or mounts degraded where a
+read-only mount can, without an assert or undefined behaviour in any
+build (LFS3-GEN-07, principle 2). Removable media, images built on a
+host, and bit flips that a checksum misses all reach the driver this way.
 
 **Q22. The error for a missing geometry tag.** `LFS3_ERR_INVAL` at
 `b10efaa`; `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` would match the other
@@ -8989,7 +9045,6 @@ test in a new environment (9.2).
 | ID | Status | When | Test needed |
 |---|---|---|---|
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
-| LFS3-GEN-07 | Open question | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-INT-08 | Untested | every CI run | fuzz: `lfs3_fs_cksum` changes after every model-changing call |
 | LFS3-META-17 | Untested | every CI run | internal check: estimate at least the compacted size |
 | LFS3-FILE-02 | Untested | every CI run | zero-size write changes nothing |
@@ -9154,6 +9209,9 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
 | D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | 0487ffd3; `ck::file_ck_heals` |
 | D-37 | A commit whose first following byte failed to read with `LFS3_ERR_CORRUPT` set its perturb bit from a 0 in place of the byte; with an erase that leaves old bytes (`ERASE_VALUE=-1`), a wrong guess let fetch take an older commit left there, and those after it, for later commits, so a remount found commits never made since format: 1 permutation of `files::close_error` with `ERASE_VALUE=-1` | `lfs3_rbyd_appendcksum_` | run | INT-03 | 4cb4d237; `rbyd::erased_unreadable`, `files::close_error` with `ERASE_VALUE=-1` |
+| D-38 | A salvage that found an entry no name reaches removed the entries of its did by looking the did up, and scanned again; with entries out of order the lookup led elsewhere, nothing was removed, and the scan never ended. A bookmark the salvage recreated but couldn't find again would be recreated without end. Past an mdir with no entries, as damage can leave an mroot without the root's bookmark, the salvage stepped back to the same mdir without end; and recreating the root's bookmark, at mid 0, moved the empty grm to mid 1, so the next mount removed the entry there | `lfs3_salvage_orphans`, `lfs3_salvage_bookmarks`, `lfs3_salvage_next`, `lfs3_mdir_commit_` | run (`crafted::mutate`, 6 of 160 salvaging runs hung; in B-BIG, 2 of 600) | DEG-16, GEN-07 | ba67125f, 8e61fd48; `crafted::salvage_order`, `crafted::salvage_empty` |
+| D-39 | A salvage that dropped an mdir before it could build its gbmap appended a gbmap delta without a root: `lfs3_rbyd_appendgdelta` asserted that the windows matched, and `lfs3_data_frombranch` that block 0xffffffff was a block | `lfs3_salvage_drop`, `lfs3_rbyd_appendgdelta`, `lfs3_fs_commitgdelta` | run (`crafted::mutate` in B-BIG, 28 permutations) | DEG-16 | b2ac4ca0; `crafted::mutate` in B-YGB and B-BIG |
+| D-40 | With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed after appending to its leaf left the cached leaf claiming the appended bytes erased, and the next commit programmed them again | `lfs3_btree_commit`, `lfs3_bshrub_commit` | run (`crafted::mutate` in B-BIG, emubd's erase check) | CFG-15 | 79b5fcb1; `crafted::mutate` in B-BIG |
 
 ### A.3 From the analyses
 
@@ -9166,7 +9224,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 1-meta 0.5 | `lfs3_fs_consumegdelta` does not check the GBMAPDELTA lookup error and reads stale or uninitialised data (also 3-alloc B4, 4-api R14) | `lfs3.c:7744-7755` | code | META-11 | b2ae1491; `mount::readerror` |
 | 1-meta 0.7b | `LFS3_PMUL_CRC32C` does not compile: `lfs3_fromle32_` is undefined | `lfs3_util.c:210` | run | BUILD-05 | a2a3117d; none (no job builds it) |
 | 1-meta 0.7c | Under `LFS3_CKDATACKSUMS` the B-tree BNAME rattr and the stickynote-to-file name supply too few arguments; AddressSanitizer reports a stack-buffer-overflow in about 150 `btree::find*` permutations in B-BIG | `lfs3.c:6044, 3461-3465` | run (ASan) | GEN-03, BUILD-13 | 7f689b87; `make test-sanitize` in B-BIG |
-| 1-meta 7.7 | Asserts on on-disk values (`lfs3_data_readshrub`, `lfs3_data_readgrm`, `lfs3_rbyd_fetchck`, mtree leaf checks, `lfs3_mroot_parent`, alt jumps) | various | code | GEN-07 | in part: 42e7f9eb, e5646435, 7d27de3d (D-11, D-12); the range asserts are open (Q21) |
+| 1-meta 7.7 | Asserts on on-disk values (`lfs3_data_readshrub`, `lfs3_data_readgrm`, `lfs3_rbyd_fetchck`, mtree leaf checks, `lfs3_mroot_parent`, alt jumps) | various | code | GEN-07 | 42e7f9eb, e5646435, 7d27de3d (D-11, D-12), 9cfedb6e; `crafted::*` |
 | 1-meta 7.14 | `gc_compact_thresh` is checked only with `LFS3_GC` but used in every build | `lfs3.c:15139-15147` | code | CFG-05 | 6152d1bb; `gc::compact_thresh_check` |
 | 2-files B1 | After `lfs3_file_fruncate`, a bad prog during a resumed append relocates from a wrapped `block_pos`, copies nothing, and leaves a negative size and a file that reads as `LFS3_ERR_CORRUPT` | `lfs3.c:13644-13662` | probe | FILE-10 | 036267f1; `badblocks::fruncate_append` |
 | 2-files B2 | `LFS3_O_APPEND` writes check `file_limit` against the position before the append | `lfs3.c:14123-14135` | probe | FILE-03 | c630f695; `fwrite::append_fbig` |
@@ -9179,7 +9237,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 2-files B10 | `lfs3_file_opencfg_` is an undeclared external symbol | `lfs3.c:12590` | code | BUILD-10 | e2ae786a; none (no symbol check) |
 | 2-files B11 | The attribute-flag check uses file-flag helpers, so `LFS3_A_RDONLY \| LFS3_A_LAZY` asserts | `lfs3.c:12810-12816` | code | ATTR-12 | 2c4576bd; `attrs::fattr_rdonly` |
 | 2-files B12 | `fragment_size` 0 (the zeroed default) makes the fragment path loop without progress, committing each time | `lfs3.c:14090` | code | CFG-01 | da4ec17c (asserted, Q15); `mount::zeroed_cfg` |
-| 2-files B13 | Decoded block pointers, branches and shrubs are not range-checked | `lfs3.c:2352-2390, 5174-5201, 6499-6524` | code | GEN-07 | open (Q21) |
+| 2-files B13 | Decoded block pointers, branches and shrubs are not range-checked | `lfs3.c:2352-2390, 5174-5201, 6499-6524` | code | GEN-07 | 9cfedb6e; `crafted::bptr`, `crafted::branch`, `crafted::shrub` |
 | 2-files B14 | `lfs3_file_read` asserts `pos + size <= 0x7fffffff` | `lfs3.c:12983` | code | FILE-04 | 443c0090; `files::read_big` |
 | 2-files B18 | A small append and sync issues 7 `cfg->sync` calls | — | probe | PERF-07 | open; not measured again |
 | 2-files B19 | `.github/workflows/test.yml` is the 2022 v2 workflow and cannot pass on v3 | `.github/workflows/test.yml` | code | CI-01, CI-02, CI-04, CI-06, CI-07 | 162b05f7, da14f0ea, 41165ec9; CI run 36985477685 |

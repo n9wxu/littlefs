@@ -1515,6 +1515,8 @@ typedef struct lfs3_btrv {
     lfs3_sbid_t bid;
     lfs3_rbyd_t rbyd;
     lfs3_srid_t rid;
+    // how deep we are, a corrupt branch can loop
+    lfs3_block_t depth;
 } lfs3_btrv_t;
 
 typedef struct lfs3_mtortoise {

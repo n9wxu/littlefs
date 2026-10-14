@@ -1,0 +1,1437 @@
+# Test images whose checksums pass but whose values are malformed
+#
+# littlefs reports these as damage, LFS3_ERR_CORRUPT, or mounts degraded
+# where a read-only mount can do without the damaged part, and never
+# asserts, loops forever, or reads out of range (LFS3-GEN-07). These are
+# internal tests so they can craft such images: commit raw tags with
+# lfs3_mdir_commit, and write rbyds, or change metadata blocks, and sign
+# them again.
+after = ['test_mount', 'test_ck']
+in = 'lfs3.c'
+
+# Test both with and without the gbmap if available
+defines.GBMAP = [false, true]
+if = 'LFS3_IFYES_GBMAP(GBMAP, true, !GBMAP)'
+
+code = '''
+#include <stdarg.h>
+
+// walk a metadata block's commits as lfs3_rbyd_fetch_ does, up to limit
+//
+// with sign, set each tag's valid bit and each commit's checksum to
+// match what comes before them, so whatever we changed passes, without
+// sign, stop at the first commit that doesn't check
+//
+// returns the end of the last commit that checks, its canonical checksum
+// in cksum_, and where the data of its gcksumdelta starts in gdelta_, -1
+// if it has none
+static lfs3_size_t test_crafted_sign(uint8_t *buf, lfs3_size_t block_size,
+        lfs3_block_t block, lfs3_size_t limit, bool sign,
+        uint32_t *cksum_, lfs3_ssize_t *gdelta_) {
+    uint32_t cksum = lfs3_crc32c(0, buf, sizeof(uint32_t));
+    uint32_t ccksum = cksum;
+    bool perturb = false;
+    lfs3_ssize_t gdelta = -1;
+    lfs3_size_t eoff = 0;
+    *cksum_ = 0;
+    *gdelta_ = -1;
+
+    lfs3_size_t off = sizeof(uint32_t);
+    while (off < limit && off <= block_size-4) {
+        // valid bit
+        if (sign) {
+            buf[off] = (buf[off] & 0x7f) | ((uint8_t)lfs3_parity(cksum) << 7);
+        } else if ((buf[off] >> 7) != lfs3_parity(cksum)) {
+            break;
+        }
+
+        // decode the tag
+        lfs3_size_t tag_dsize = lfs3_min(LFS3_TAG_DSIZE, block_size-off);
+        lfs3_tag_t tag = (((lfs3_tag_t)buf[off] << 8) | buf[off+1]) & 0x7fff;
+        lfs3_size_t d = 2;
+        uint32_t weight;
+        lfs3_ssize_t d_ = lfs3_fromleb128(&weight, &buf[off+d], tag_dsize-d);
+        if (d_ < 0 || weight > 0x7fffffff) {
+            break;
+        }
+        d += d_;
+        uint32_t size;
+        d_ = lfs3_fromleb128(&size, &buf[off+d], tag_dsize-d);
+        if (d_ < 0 || size > 0x0fffffff) {
+            break;
+        }
+        d += d_;
+        if (!lfs3_tag_isalt(tag) && off+d + size > block_size) {
+            break;
+        }
+
+        cksum ^= buf[off] & 0x80;
+        cksum = lfs3_crc32c(cksum, &buf[off], d);
+
+        if (!lfs3_tag_isalt(tag)) {
+            // not an end-of-commit cksum
+            if (lfs3_tag_suptype(tag) != LFS3_TAG_CKSUM) {
+                if (tag == LFS3_TAG_GCKSUMDELTA) {
+                    gdelta = off+d;
+                }
+                cksum = lfs3_crc32c(cksum, &buf[off+d], size);
+
+            // end of commit
+            } else {
+                if (size < sizeof(uint32_t)
+                        || lfs3_tag_phase(tag) != (block & 0x3)) {
+                    break;
+                }
+                if (sign) {
+                    lfs3_tole32(cksum, &buf[off+d]);
+                } else if (lfs3_fromle32(&buf[off+d]) != cksum) {
+                    break;
+                }
+
+                eoff = off+d + size;
+                *cksum_ = ccksum;
+                *gdelta_ = gdelta;
+                gdelta = -1;
+                perturb = lfs3_tag_perturb(tag);
+                cksum = ccksum ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
+            }
+        }
+
+        if (lfs3_tag_istrunk(tag)) {
+            ccksum = cksum ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
+        }
+
+        off += d + ((lfs3_tag_isalt(tag)) ? 0 : size);
+    }
+
+    return eoff;
+}
+
+
+// encode leb128s (l) and le32s (w) for crafted tags, returns the size
+static lfs3_size_t test_crafted_enc(uint8_t *buf, const char *fmt, ...) {
+    va_list va;
+    va_start(va, fmt);
+    lfs3_size_t d = 0;
+    for (const char *f = fmt; *f; f++) {
+        uint32_t word = va_arg(va, uint32_t);
+        if (*f == 'l') {
+            lfs3_ssize_t d_ = lfs3_toleb128(word, &buf[d], 5);
+            assert(d_ > 0);
+            d += d_;
+        } else {
+            lfs3_tole32(word, &buf[d]);
+            d += 4;
+        }
+    }
+    va_end(va);
+    return d;
+}
+
+// a tag for test_crafted_mkrbyd, alts take their jump in size
+typedef struct test_crafted_tag {
+    lfs3_tag_t tag;
+    lfs3_rid_t weight;
+    lfs3_size_t size;
+    const void *data;
+} test_crafted_tag_t;
+
+// write an rbyd of one commit to a block, its trunk starts at its first
+// tag, offset 4, returns its checksum
+static uint32_t test_crafted_mkrbyd(const struct lfs3_cfg *cfg,
+        lfs3_block_t block,
+        const test_crafted_tag_t *tags, lfs3_size_t count) {
+    uint8_t buf[cfg->block_size];
+    memset(buf, 0xff, cfg->block_size);
+    lfs3_tole32(1, &buf[0]);
+
+    lfs3_size_t off = sizeof(uint32_t);
+    for (lfs3_size_t i = 0; i < count; i++) {
+        buf[off+0] = tags[i].tag >> 8;
+        buf[off+1] = tags[i].tag >> 0;
+        off += 2;
+        off += test_crafted_enc(&buf[off], "ll",
+                tags[i].weight, tags[i].size);
+        if (!lfs3_tag_isalt(tags[i].tag)) {
+            memcpy(&buf[off], tags[i].data, tags[i].size);
+            off += tags[i].size;
+        }
+    }
+
+    // end the commit with a cksum, signed below
+    lfs3_tag_t tag = LFS3_TAG_CKSUM | (block & 0x3);
+    buf[off+0] = tag >> 8;
+    buf[off+1] = tag >> 0;
+    buf[off+2] = 0;
+    buf[off+3] = sizeof(uint32_t);
+    off += 4 + sizeof(uint32_t);
+
+    uint32_t cksum;
+    lfs3_ssize_t gdelta;
+    test_crafted_sign(buf, cfg->block_size, block, off, true,
+            &cksum, &gdelta) => off;
+
+    cfg->erase(cfg, block) => 0;
+    cfg->prog(cfg, block, 0, buf, cfg->block_size) => 0;
+    return cksum;
+}
+
+// commit a raw tag to the mdir holding path, or to the mroot's config
+// and gstate if path is NULL
+static void test_crafted_commit(lfs3_t *lfs3, const char *path,
+        lfs3_tag_t tag, lfs3_srid_t weight,
+        const void *buf, lfs3_size_t size) {
+    lfs3_mdir_t mdir = lfs3->mroot;
+    if (path) {
+        lfs3_stag_t tag_ = lfs3_mtree_pathlookup(lfs3, &path, &mdir, NULL);
+        assert(tag_ >= 0 || tag_ == LFS3_ERR_NOENT);
+    }
+
+    lfs3_mdir_commit(lfs3, (path) ? &mdir : &lfs3->mroot, LFS3_RATTRS(
+            LFS3_RATTR(3, tag, -2, LFS3_FROM_BUF, size),
+            LFS3_RATTR_WEIGHT(weight),
+            LFS3_RATTR_ARG(buf),
+            LFS3_RATTR_NULL)) => 0;
+}
+
+// format and mount, and write file f, its blocks are where we put
+// crafted rbyds, so the gbmap and lookahead agree they're in use
+static lfs3_block_t test_crafted_mkfile(lfs3_t *lfs3,
+        const struct lfs3_cfg *cfg, uint32_t fflags) {
+    lfs3_format(lfs3, LFS3_F_RDWR | fflags, cfg) => 0;
+    lfs3_mount(lfs3, LFS3_M_RDWR, cfg) => 0;
+
+    lfs3_file_t file;
+    lfs3_file_open(lfs3, &file, "f",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    uint8_t wbuf[256];
+    memset(wbuf, 'f', sizeof(wbuf));
+    for (lfs3_size_t i = 0; i < 2*cfg->block_size; i += sizeof(wbuf)) {
+        lfs3_file_write(lfs3, &file, wbuf, sizeof(wbuf)) => sizeof(wbuf);
+    }
+    lfs3_file_close(lfs3, &file) => 0;
+
+    lfs3_trv_t trv;
+    lfs3_trv_open(lfs3, &trv, LFS3_T_RDONLY) => 0;
+    while (true) {
+        struct lfs3_tinfo tinfo;
+        lfs3_trv_read(lfs3, &trv, &tinfo) => 0;
+        if (tinfo.btype == LFS3_BTYPE_DATA) {
+            lfs3_trv_close(lfs3, &trv) => 0;
+            return tinfo.block;
+        }
+    }
+}
+
+// read all of a file, returning any error
+static int test_crafted_read(lfs3_t *lfs3, const char *path) {
+    lfs3_file_t file;
+    int err = lfs3_file_open(lfs3, &file, path, LFS3_O_RDONLY);
+    if (err) {
+        return err;
+    }
+
+    while (true) {
+        uint8_t rbuf[256];
+        lfs3_ssize_t d = lfs3_file_read(lfs3, &file, rbuf, sizeof(rbuf));
+        if (d <= 0) {
+            lfs3_file_close(lfs3, &file) => 0;
+            return d;
+        }
+    }
+}
+
+// traverse everything, returning any error
+static int test_crafted_trv(lfs3_t *lfs3, uint32_t flags) {
+    lfs3_trv_t trv;
+    lfs3_trv_open(lfs3, &trv, LFS3_T_RDONLY | flags) => 0;
+    for (lfs3_block_t i = 0;; i++) {
+        assert(i < 4*lfs3->block_count);
+        struct lfs3_tinfo tinfo;
+        int err = lfs3_trv_read(lfs3, &trv, &tinfo);
+        if (err) {
+            lfs3_trv_close(lfs3, &trv) => 0;
+            return (err == LFS3_ERR_NOENT) ? 0 : err;
+        }
+    }
+}
+
+// sign a metadata block again after changing bytes in its first limit
+// bytes, and if it is the latest block of an mdir, fix its gcksumdelta
+// so the gcksum, the xor of every mdir's checksum, still checks
+//
+// cksum is the block's canonical checksum before the change, delta its
+// gcksumdelta, gcksum the filesystem's gcksum, which we update
+static void test_crafted_resign(uint8_t *buf, lfs3_size_t block_size,
+        lfs3_block_t block, lfs3_size_t limit,
+        bool mdir, uint32_t cksum, uint32_t delta, uint32_t *gcksum) {
+    uint32_t cksum_;
+    lfs3_ssize_t gdelta_;
+    test_crafted_sign(buf, block_size, block, limit, true,
+            &cksum_, &gdelta_);
+    if (!mdir || gdelta_ < 0) {
+        return;
+    }
+
+    // the gcksumdelta follows the commit's trunk, so changing it changes
+    // only the commit's checksum, unless what we changed moved it
+    for (int i = 0; i < 3; i++) {
+        uint32_t gcksum_ = *gcksum ^ cksum ^ cksum_;
+        lfs3_tole32(lfs3_crc32c_cube(gcksum_)
+                    ^ lfs3_crc32c_cube(*gcksum)
+                    ^ delta,
+                &buf[gdelta_]);
+
+        uint32_t cksum__;
+        lfs3_ssize_t gdelta__;
+        test_crafted_sign(buf, block_size, block, limit, true,
+                &cksum__, &gdelta__);
+        if (cksum__ == cksum_ && gdelta__ == gdelta_) {
+            *gcksum = gcksum_;
+            return;
+        }
+        if (gdelta__ < 0) {
+            return;
+        }
+        cksum_ = cksum__;
+        gdelta_ = gdelta__;
+    }
+}
+
+// the metadata blocks of a mounted filesystem, the latest block of each
+// mdir and every btree node
+#define TEST_CRAFTED_MAXBLOCKS 256
+typedef struct test_crafted_blocks {
+    lfs3_block_t blocks[TEST_CRAFTED_MAXBLOCKS];
+    bool mdir[TEST_CRAFTED_MAXBLOCKS];
+    lfs3_size_t count;
+} test_crafted_blocks_t;
+
+static void test_crafted_findblocks(lfs3_t *lfs3,
+        test_crafted_blocks_t *blocks) {
+    blocks->count = 0;
+    lfs3_mtrv_t mtrv;
+    lfs3_mtrv_init(&mtrv, LFS3_T_RDONLY);
+    for (lfs3_block_t i = 0;; i++) {
+        assert(i < 2*lfs3->block_count);
+        lfs3_bptr_t bptr;
+        lfs3_stag_t tag = lfs3_mtree_traverse(lfs3, &mtrv, &bptr);
+        if (tag == LFS3_ERR_NOENT) {
+            break;
+        }
+        assert(tag >= 0);
+
+        lfs3_block_t block;
+        if (tag == LFS3_TAG_MDIR) {
+            block = ((const lfs3_mdir_t*)bptr.d.u.buffer)->r.blocks[0];
+        } else if (tag == LFS3_TAG_BRANCH) {
+            block = ((const lfs3_rbyd_t*)bptr.d.u.buffer)->blocks[0];
+        } else {
+            continue;
+        }
+
+        // seen?
+        bool seen = false;
+        for (lfs3_size_t j = 0; j < blocks->count; j++) {
+            if (blocks->blocks[j] == block) {
+                seen = true;
+            }
+        }
+        if (!seen && blocks->count < TEST_CRAFTED_MAXBLOCKS) {
+            blocks->blocks[blocks->count] = block;
+            blocks->mdir[blocks->count] = (tag == LFS3_TAG_MDIR);
+            blocks->count += 1;
+        }
+    }
+}
+
+// the codes a crafted image may give back, damage, and whatever the
+// damage makes the image look like, but never a caller bug, an internal
+// code, or a code littlefs never returns
+static bool test_crafted_iserr(int err) {
+    return err == LFS3_ERR_CORRUPT
+            || err == LFS3_ERR_NOTSUP
+            || err == LFS3_ERR_NOENT
+            || err == LFS3_ERR_EXIST
+            || err == LFS3_ERR_NOTDIR
+            || err == LFS3_ERR_ISDIR
+            || err == LFS3_ERR_NOTEMPTY
+            || err == LFS3_ERR_FBIG
+            || err == LFS3_ERR_NOSPC
+            || err == LFS3_ERR_NOATTR
+            || err == LFS3_ERR_NAMETOOLONG;
+}
+
+#define TEST_CRAFTED_CK(err) \
+    do { \
+        int err_ = (err); \
+        if (err_ < 0 && !test_crafted_iserr(err_)) { \
+            printf("unexpected error %d at %s:%d\n", \
+                    err_, __FILE__, __LINE__); \
+            assert(false); \
+        } \
+    } while (0)
+
+// seeks past the file limit are invalid, and the image decides the
+// file limit
+#define TEST_CRAFTED_CKSEEK(pos) \
+    TEST_CRAFTED_CK(test_crafted_seekerr(pos))
+
+static int test_crafted_seekerr(lfs3_soff_t pos) {
+    return (pos == LFS3_ERR_INVAL) ? 0 : pos;
+}
+
+// read everything below path
+static void test_crafted_walk(lfs3_t *lfs3, const char *path, int depth) {
+    lfs3_dir_t dir;
+    int err = lfs3_dir_open(lfs3, &dir, path);
+    TEST_CRAFTED_CK(err);
+    if (err) {
+        return;
+    }
+
+    for (int i = 0; i < 1000; i++) {
+        struct lfs3_info info;
+        err = lfs3_dir_read(lfs3, &dir, &info);
+        TEST_CRAFTED_CK(err);
+        if (err) {
+            break;
+        }
+        assert(strlen(info.name) <= LFS3_NAME_MAX);
+        if (strcmp(info.name, ".") == 0 || strcmp(info.name, "..") == 0) {
+            continue;
+        }
+
+        char path_[1024];
+        int n = snprintf(path_, sizeof(path_), "%s/%s", path, info.name);
+        if (n < 0 || (size_t)n >= sizeof(path_)) {
+            continue;
+        }
+
+        struct lfs3_info info_;
+        TEST_CRAFTED_CK(lfs3_stat(lfs3, path_, &info_));
+        uint8_t abuf[16];
+        TEST_CRAFTED_CK(lfs3_getattr(lfs3, path_, 'a', abuf, sizeof(abuf)));
+        TEST_CRAFTED_CK(lfs3_sizeattr(lfs3, path_, 'a'));
+
+        if (info.type == LFS3_TYPE_REG) {
+            lfs3_file_t file;
+            err = lfs3_file_open(lfs3, &file, path_, LFS3_O_RDONLY);
+            TEST_CRAFTED_CK(err);
+            if (!err) {
+                TEST_CRAFTED_CK(lfs3_file_size(lfs3, &file));
+                for (int j = 0; j < 1000; j++) {
+                    uint8_t rbuf[256];
+                    lfs3_ssize_t d = lfs3_file_read(lfs3, &file,
+                            rbuf, sizeof(rbuf));
+                    TEST_CRAFTED_CK(d);
+                    if (d <= 0) {
+                        break;
+                    }
+                }
+                // seek to the end and back
+                TEST_CRAFTED_CKSEEK(lfs3_file_seek(lfs3, &file,
+                        0, LFS3_SEEK_END));
+                TEST_CRAFTED_CKSEEK(lfs3_file_seek(lfs3, &file,
+                        0, LFS3_SEEK_SET));
+                TEST_CRAFTED_CK(lfs3_file_ck(lfs3, &file, LFS3_CK_CKDATA));
+                TEST_CRAFTED_CK(lfs3_file_close(lfs3, &file));
+            }
+
+        } else if (info.type == LFS3_TYPE_DIR && depth < 4) {
+            test_crafted_walk(lfs3, path_, depth+1);
+        }
+    }
+
+    TEST_CRAFTED_CK(lfs3_dir_close(lfs3, &dir));
+}
+
+// do everything we can with an image, none of it may assert, and
+// every error must be one of test_crafted_iserr
+static void test_crafted_exercise(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
+        uint32_t flags) {
+    int err = lfs3_mount(lfs3, flags, cfg);
+    TEST_CRAFTED_CK(err);
+    if (err) {
+        return;
+    }
+
+    struct lfs3_fsinfo fsinfo;
+    TEST_CRAFTED_CK(lfs3_fs_stat(lfs3, &fsinfo));
+    test_crafted_walk(lfs3, "/", 0);
+    TEST_CRAFTED_CK(lfs3_fs_usage(lfs3));
+    uint32_t cksum;
+    TEST_CRAFTED_CK(lfs3_fs_cksum(lfs3, &cksum));
+
+    lfs3_trv_t trv;
+    err = lfs3_trv_open(lfs3, &trv, LFS3_T_RDONLY | LFS3_T_CK);
+    TEST_CRAFTED_CK(err);
+    if (!err) {
+        for (lfs3_block_t i = 0; i < 4*lfs3->block_count; i++) {
+            struct lfs3_tinfo tinfo;
+            err = lfs3_trv_read(lfs3, &trv, &tinfo);
+            TEST_CRAFTED_CK(err);
+            if (err) {
+                break;
+            }
+        }
+        TEST_CRAFTED_CK(lfs3_trv_close(lfs3, &trv));
+    }
+
+    if (!lfs3_m_isrdonly(flags)) {
+        TEST_CRAFTED_CK(lfs3_fs_ck(lfs3, LFS3_CK_CK));
+        TEST_CRAFTED_CK(lfs3_fs_mkconsistent(lfs3));
+        TEST_CRAFTED_CK(lfs3_mkdir(lfs3, "crafted"));
+        TEST_CRAFTED_CK(lfs3_set(lfs3, "crafted/a", "hello", 5));
+        TEST_CRAFTED_CK(lfs3_setattr(lfs3, "d0/f2", 'a', "attr", 4));
+        TEST_CRAFTED_CK(lfs3_remove(lfs3, "d1/f1"));
+        TEST_CRAFTED_CK(lfs3_rename(lfs3, "d1/f3", "d2/moved"));
+
+        // append to and truncate files with each layout
+        for (int i = 0; i < 6; i++) {
+            char path[64];
+            sprintf(path, "d0/f%d", i);
+            lfs3_file_t file;
+            err = lfs3_file_open(lfs3, &file, path, LFS3_O_RDWR);
+            TEST_CRAFTED_CK(err);
+            if (err) {
+                continue;
+            }
+            uint8_t wbuf[600];
+            memset(wbuf, 'x', sizeof(wbuf));
+            TEST_CRAFTED_CKSEEK(lfs3_file_seek(lfs3, &file,
+                    0, LFS3_SEEK_END));
+            TEST_CRAFTED_CK(lfs3_file_write(lfs3, &file, wbuf, sizeof(wbuf)));
+            TEST_CRAFTED_CKSEEK(lfs3_file_seek(lfs3, &file,
+                    3, LFS3_SEEK_SET));
+            TEST_CRAFTED_CK(lfs3_file_write(lfs3, &file, wbuf, 10));
+            TEST_CRAFTED_CK(lfs3_file_sync(lfs3, &file));
+            TEST_CRAFTED_CK(lfs3_file_truncate(lfs3, &file, 50));
+            TEST_CRAFTED_CK(lfs3_file_close(lfs3, &file));
+        }
+
+        TEST_CRAFTED_CK(lfs3_fs_ck(lfs3,
+                LFS3_CK_MKCONSISTENT
+                    | LFS3_CK_LOOKAHEAD
+                    | LFS3_CK_COMPACT
+                    | LFS3_CK_CK));
+        test_crafted_walk(lfs3, "/", 0);
+    }
+
+    TEST_CRAFTED_CK(lfs3_unmount(lfs3));
+}
+
+// build an image with each kind of metadata littlefs writes: files of
+// each layout, inlined data, a shrub of fragments, a shrub of block
+// pointers, and a btree, attrs, directories, and enough of them for an
+// mtree
+static void test_crafted_mkfs(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
+        uint32_t fflags) {
+    lfs3_format(lfs3, LFS3_F_RDWR | fflags, cfg) => 0;
+    lfs3_mount(lfs3, LFS3_M_RDWR, cfg) => 0;
+
+    static const lfs3_size_t sizes[6] = {0, 7, 100, 700, 3000, 20000};
+    uint32_t prng = 42;
+    for (int i = 0; i < 3; i++) {
+        char path[64];
+        sprintf(path, "d%d", i);
+        lfs3_mkdir(lfs3, path) => 0;
+
+        for (int j = 0; j < 6; j++) {
+            sprintf(path, "d%d/f%d", i, j);
+            lfs3_file_t file;
+            lfs3_file_open(lfs3, &file, path,
+                    LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+            for (lfs3_size_t k = 0; k < sizes[j]; k += 100) {
+                uint8_t wbuf[100];
+                for (lfs3_size_t l = 0; l < sizeof(wbuf); l++) {
+                    wbuf[l] = 'a' + (TEST_PRNG(&prng) % 26);
+                }
+                lfs3_size_t d = lfs3_min(sizes[j]-k, sizeof(wbuf));
+                lfs3_file_write(lfs3, &file, wbuf, d) => d;
+            }
+            lfs3_file_close(lfs3, &file) => 0;
+            if (j % 2 == 0) {
+                lfs3_setattr(lfs3, path, 'a', "attr", 4) => 0;
+            }
+        }
+    }
+
+    lfs3_mkdir(lfs3, "d0/e") => 0;
+    lfs3_set(lfs3, "d0/e/g", "nested", 6) => 0;
+
+    // enough names to split the mroot into an mtree
+    for (int i = 0; i < 32; i++) {
+        char path[64];
+        sprintf(path, "r%02d", i);
+        lfs3_set(lfs3, path, path, strlen(path)) => 0;
+    }
+}
+
+// save and restore every block on the disk
+static uint8_t *test_crafted_save(const struct lfs3_cfg *cfg) {
+    uint8_t *disk = malloc(cfg->block_size*cfg->block_count);
+    assert(disk);
+    for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
+        cfg->read(cfg, b, 0, &disk[b*cfg->block_size], cfg->block_size) => 0;
+    }
+    return disk;
+}
+
+static void test_crafted_restore(const struct lfs3_cfg *cfg,
+        const uint8_t *disk) {
+    uint8_t buf[cfg->block_size];
+    for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
+        cfg->read(cfg, b, 0, buf, cfg->block_size) => 0;
+        if (memcmp(buf, &disk[b*cfg->block_size], cfg->block_size) != 0) {
+            cfg->erase(cfg, b) => 0;
+            cfg->prog(cfg, b, 0,
+                    &disk[b*cfg->block_size], cfg->block_size) => 0;
+        }
+    }
+}
+'''
+
+
+## Block pointers ##
+
+# block pointers out of range, or outside what their checksum covers
+#
+# BAD=0 => block past the end of the filesystem
+# BAD=1 => block 1, the mroot anchor's
+# BAD=2 => cksize past the end of the block
+# BAD=3 => off past cksize
+# BAD=4 => size past cksize
+[cases.test_crafted_bptr]
+defines.BAD = [0, 1, 2, 3, 4]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // a btree node with one block pointer
+    lfs3_block_t block = (BAD == 0) ? BLOCK_COUNT
+            : (BAD == 1) ? 1
+            : node;
+    lfs3_size_t cksize = (BAD == 2) ? BLOCK_SIZE+1 : 100;
+    lfs3_size_t off = (BAD == 3) ? 101 : 0;
+    lfs3_size_t size = (BAD == 4) ? 101 : 100;
+    uint8_t bptr[LFS3_BPTR_DSIZE];
+    lfs3_size_t bptr_size = test_crafted_enc(bptr, "llllw",
+            size, block, off, cksize, 0);
+    uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+            (const test_crafted_tag_t[]){
+                {LFS3_TAG_BLOCK, 100, bptr_size, bptr}},
+            1);
+
+    // make it file f's btree
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            100, node, 4, cksum);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // reading the block pointer finds the damage
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "f", &info) => 0;
+        assert(info.size == 100);
+        test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+        test_crafted_trv(&lfs3, 0) => LFS3_ERR_CORRUPT;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKDATA) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+
+## Branches ##
+
+# btree branches out of range
+#
+# BAD=0 => block past the end of the filesystem
+# BAD=1 => block 0, the mroot anchor's
+# BAD=2 => null trunk
+# BAD=3 => trunk past the end of the block
+#
+# MTREE=false => a file's btree
+# MTREE=true  => the mtree
+[cases.test_crafted_branch]
+defines.BAD = [0, 1, 2, 3]
+defines.MTREE = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    lfs3_block_t block = (BAD == 0) ? BLOCK_COUNT
+            : (BAD == 1) ? 0
+            : node;
+    lfs3_size_t trunk = (BAD == 2) ? 0
+            : (BAD == 3) ? BLOCK_SIZE
+            : 4;
+    lfs3_size_t weight = (MTREE) ? (1 << lfs3.mbits) : 100;
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            weight, block, trunk, 0);
+    if (MTREE) {
+        test_crafted_commit(&lfs3, NULL, LFS3_TAG_MTREE, 0,
+                btree, btree_size);
+    } else {
+        test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+                btree, btree_size);
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // an mtree we can't follow is no filesystem
+    if (MTREE) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+
+    // a file's btree we can't follow is a damaged file
+    } else {
+        for (int rdonly = 0; rdonly < 2; rdonly++) {
+            lfs3_mount(&lfs3,
+                    (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR,
+                    CFG) => 0;
+            struct lfs3_info info;
+            lfs3_stat(&lfs3, "f", &info) => 0;
+            assert(info.size == 100);
+            test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+            test_crafted_trv(&lfs3, 0) => LFS3_ERR_CORRUPT;
+            lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+            lfs3_unmount(&lfs3) => 0;
+        }
+    }
+'''
+
+# branches whose trunk or weight doesn't match the rbyd they point to,
+# checks and writes find these
+#
+# BAD=0 => weight larger than the rbyd's
+# BAD=1 => weight smaller than the rbyd's
+# BAD=2 => trunk at the rbyd's cksum tag, past its real trunk
+[cases.test_crafted_branch_mismatch]
+defines.BAD = [0, 1, 2]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // a btree node with 10 bytes of data
+    uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+            (const test_crafted_tag_t[]){
+                {LFS3_TAG_DATA, 10, 10, "0123456789"}},
+            1);
+
+    // the data tag is 2+1+1+10 bytes
+    lfs3_size_t weight = (BAD == 0) ? 20 : (BAD == 1) ? 5 : 10;
+    lfs3_size_t trunk = (BAD == 2) ? 4+14 : 4;
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            weight, node, trunk, cksum);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // checks find the mismatch
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    test_crafted_trv(&lfs3, LFS3_T_CKMETA) => LFS3_ERR_CORRUPT;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA) => LFS3_ERR_CORRUPT;
+    lfs3_unmount(&lfs3) => 0;
+
+    // so do writes
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY) => 0;
+    lfs3_file_write(&lfs3, &file, "x", 1) => 1;
+    lfs3_file_sync(&lfs3, &file) => LFS3_ERR_CORRUPT;
+    int err = lfs3_file_close(&lfs3, &file);
+    assert(!err || err == LFS3_ERR_CORRUPT);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+
+## Shrubs ##
+
+# shrub trunks out of range
+#
+# BAD=0 => null trunk
+# BAD=1 => trunk past the end of the block
+# BAD=2 => trunk in the block, without room for a tag
+[cases.test_crafted_shrub]
+defines.BAD = [0, 1, 2]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    lfs3_size_t trunk = (BAD == 0) ? 0
+            : (BAD == 1) ? BLOCK_SIZE
+            : BLOCK_SIZE-2;
+    uint8_t shrub[LFS3_SHRUB_DSIZE];
+    lfs3_size_t shrub_size = test_crafted_enc(shrub, "ll", 100, trunk);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BSHRUB, 0,
+            shrub, shrub_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "f", &info) => 0;
+        assert(info.size == 100);
+        test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+        test_crafted_trv(&lfs3, 0) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+
+## Metadata pointers and the mtree ##
+
+# mdir pointers out of range
+#
+# BAD=0 => block past the end of the filesystem
+# BAD=1 => both blocks the same
+# BAD=2 => block 1, the mroot anchor's
+#
+# MTREE=false => the next mroot in the mroot chain
+# MTREE=true  => an mdir in the mtree
+[cases.test_crafted_mptr]
+defines.BAD = [0, 1, 2]
+defines.MTREE = [false, true]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    uint8_t mptr[LFS3_MPTR_DSIZE];
+    lfs3_size_t mptr_size = test_crafted_enc(mptr, "ll",
+            (BAD == 0) ? BLOCK_COUNT : (BAD == 1) ? node : 1,
+            node);
+    if (!MTREE) {
+        test_crafted_commit(&lfs3, NULL, LFS3_TAG_MROOT, 0,
+                mptr, mptr_size);
+
+    // an mtree of one mdir
+    } else {
+        uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+                (const test_crafted_tag_t[]){
+                    {LFS3_TAG_MDIR, 1 << lfs3.mbits, mptr_size, mptr}},
+                1);
+        uint8_t btree[LFS3_BTREE_DSIZE];
+        lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+                1 << lfs3.mbits, node, 4, cksum);
+        test_crafted_commit(&lfs3, NULL, LFS3_TAG_MTREE, 0,
+                btree, btree_size);
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // a mroot we can't follow is no filesystem
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    if (!MTREE) {
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+
+    // but a read-only mount gets by without an mdir
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        lfs3_stat(&lfs3, "f", &(struct lfs3_info){0}) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+# mtree leaves that don't map 1 << mbits mids to an mdir
+#
+# BAD=0 => a leaf with the wrong weight
+# BAD=1 => a leaf that isn't an mdir
+[cases.test_crafted_mtree]
+defines.BAD = [0, 1]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    lfs3_size_t weight = (BAD == 0)
+            ? (1 << lfs3.mbits) + 1
+            : (1 << lfs3.mbits);
+    uint8_t mptr[LFS3_MPTR_DSIZE];
+    lfs3_size_t mptr_size = test_crafted_enc(mptr, "ll",
+            lfs3.mroot.r.blocks[0], lfs3.mroot.r.blocks[1]);
+    uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+            (const test_crafted_tag_t[]){
+                {(BAD == 1) ? LFS3_TAG_DATA : LFS3_TAG_MDIR,
+                    weight, mptr_size, mptr}},
+            1);
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            weight, node, 4, cksum);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_MTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    struct lfs3_fsinfo fsinfo;
+    lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+    assert(fsinfo.flags & LFS3_I_DEGRADED);
+    lfs3_stat(&lfs3, "f", &(struct lfs3_info){0}) => LFS3_ERR_CORRUPT;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# an mdir with more rids than mids can name
+[cases.test_crafted_mdir_weight]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // a name as wide as an mdir
+    uint8_t name[8];
+    lfs3_size_t name_size = test_crafted_enc(name, "l", 0);
+    name[name_size++] = 'g';
+    test_crafted_commit(&lfs3, "g", LFS3_TAG_REG, 1 << lfs3.mbits,
+            name, name_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+'''
+
+
+## Config and gstate ##
+
+# a geometry too small for the mroot anchor
+[cases.test_crafted_geometry]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // geometry is stored minus 1
+    uint8_t geometry[LFS3_GEOMETRY_DSIZE];
+    lfs3_size_t geometry_size = test_crafted_enc(geometry, "ll",
+            BLOCK_SIZE-1, 0);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GEOMETRY, 0,
+            geometry, geometry_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_CORRUPT;
+'''
+
+# a file larger than the file limit
+[cases.test_crafted_file_limit]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    uint8_t limit[LFS3_LEB128_DSIZE];
+    lfs3_size_t limit_size = test_crafted_enc(limit, "l", 100);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_FILELIMIT, 0,
+            limit, limit_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "f", &info) => 0;
+        assert(info.size == 2*BLOCK_SIZE);
+        test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+# a name longer than any littlefs creates
+[cases.test_crafted_name]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    char name[LFS3_NAME_MAX+2];
+    memset(name, 'g', LFS3_NAME_MAX+1);
+    name[LFS3_NAME_MAX+1] = '\0';
+    lfs3_mdir_t mdir;
+    const char *path = name;
+    lfs3_mtree_pathlookup(&lfs3, &path, &mdir, NULL) => LFS3_ERR_NOENT;
+    lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+            LFS3_RATTR(3, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+            LFS3_RATTR_ARG(0),
+            LFS3_RATTR_ARG(name),
+            LFS3_RATTR_NULL)) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        lfs3_dir_t dir;
+        lfs3_dir_open(&lfs3, &dir, "/") => 0;
+        struct lfs3_info info;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, "f") == 0);
+        lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_CORRUPT;
+        lfs3_dir_close(&lfs3, &dir) => 0;
+        lfs3_stat(&lfs3, name, &info) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+# grms naming mids that don't exist
+#
+# BAD=0 => a mid past the end of the mtree
+# BAD=1 => a mid past the end of its mdir
+[cases.test_crafted_grm]
+defines.BAD = [0, 1]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // everything is in the mroot, so its grmdelta is the grm
+    assert(lfs3.mtree.r.weight == 0);
+    uint8_t grm[LFS3_GRM_DSIZE];
+    lfs3_size_t grm_size = test_crafted_enc(grm, "l",
+            (BAD == 0) ? (1 << lfs3.mbits) : (1 << lfs3.mbits) - 1);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GRMDELTA, 0,
+            grm, grm_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // a grm we can't decode is only a problem for writes
+    if (BAD == 0) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        test_crafted_read(&lfs3, "f") => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+    // a grm we can't carry out fails the writes that try
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        test_crafted_read(&lfs3, "f") => 0;
+        lfs3_fs_mkconsistent(&lfs3) => LFS3_ERR_CORRUPT;
+        lfs3_mkdir(&lfs3, "d") => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+# a gbmap out of range
+#
+# BAD=0 => window past the end of the filesystem
+# BAD=1 => more known blocks than the filesystem has
+# BAD=2 => a gbmap that says the mroot anchor is free
+# BAD=3 => an erased range whose ecksum is larger than a block
+[cases.test_crafted_gbmap]
+defines.GBMAP = true
+defines.BAD = [0, 1, 2, 3]
+ifdef = 'LFS3_GBMAP'
+if = 'BAD != 3 || LFS3_IFDEF_PREERASE(true, false)'
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG, LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1));
+
+    // everything is in the mroot, so its gbmapdelta is the gbmap
+    assert(lfs3.mtree.r.weight == 0);
+    lfs3_block_t node = lfs3.gbmap.b.r.blocks[0];
+    lfs3_size_t trunk = lfs3_rbyd_trunk(&lfs3.gbmap.b.r);
+    uint32_t cksum = lfs3.gbmap.b.r.cksum;
+    // a gbmap of one range
+    if (BAD >= 2) {
+        uint8_t ecksum[LFS3_ECKSUM_DSIZE];
+        lfs3_size_t ecksum_size = test_crafted_enc(ecksum, "lw",
+                BLOCK_SIZE+1, 0);
+        cksum = test_crafted_mkrbyd(CFG, node,
+                (const test_crafted_tag_t[]){
+                    (BAD == 2)
+                        ? (test_crafted_tag_t){
+                            LFS3_TAG_BMFREE, BLOCK_COUNT, 0, NULL}
+                        : (test_crafted_tag_t){
+                            LFS3_TAG_BMERASED, BLOCK_COUNT,
+                            ecksum_size, ecksum}},
+                1);
+        trunk = 4;
+    }
+    uint8_t gbmap[LFS3_GBMAP_DSIZE];
+    lfs3_size_t gbmap_size = test_crafted_enc(gbmap, "llllw",
+            (BAD == 0) ? BLOCK_COUNT : (BAD == 2) ? 0 : 2,
+            (BAD == 1) ? BLOCK_COUNT+1 : BLOCK_COUNT,
+            node, trunk, cksum);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GBMAPDELTA, 0,
+            gbmap, gbmap_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // a gbmap we can't decode is only a problem for writes
+    if (BAD <= 1) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+        lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+        struct lfs3_fsinfo fsinfo;
+        lfs3_fs_stat(&lfs3, &fsinfo) => 0;
+        assert(fsinfo.flags & LFS3_I_DEGRADED);
+        test_crafted_read(&lfs3, "f") => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+    // a gbmap that can't be right is dropped and rebuilt at the first
+    // allocation that reads it
+    } else {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        uint8_t wbuf[2*BLOCK_SIZE];
+        memset(wbuf, 'g', sizeof(wbuf));
+        lfs3_set(&lfs3, "g", wbuf, sizeof(wbuf)) => 0;
+        lfs3_unmount(&lfs3) => 0;
+
+        lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        test_crafted_read(&lfs3, "f") => 0;
+        test_crafted_read(&lfs3, "g") => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CK) => 0;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+
+## Alts ##
+
+# alts that would send a lookup around in circles, or out of the block
+#
+# BAD=0 => a followed alt leads back to itself
+# BAD=1 => an unreachable alt, jump=0, is followed
+# BAD=2 => an alt jumps before the start of the block
+[cases.test_crafted_alt]
+defines.BAD = [0, 1, 2]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // a trunk of an alt never followed, at 4, an alt followed for the
+    // upper half of the rids, at 4+4, and data for the lower half
+    uint8_t data[500];
+    memset(data, 'x', sizeof(data));
+    lfs3_size_t jump = (BAD == 0) ? 4 : (BAD == 1) ? 0 : 9;
+    uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+            (const test_crafted_tag_t[]){
+                {LFS3_TAG_ALT | LFS3_TAG_B | LFS3_TAG_LE | 0x404,
+                    0, 4, NULL},
+                {LFS3_TAG_ALT | LFS3_TAG_B | LFS3_TAG_GT | 0x404,
+                    500, jump, NULL},
+                {LFS3_TAG_DATA, 500, 500, data}},
+            3);
+
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            1000, node, 4, cksum);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // lookups find the damage instead of looping
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+        test_crafted_trv(&lfs3, 0) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+
+    // and so do writes
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY) => 0;
+    lfs3_file_write(&lfs3, &file, "x", 1) => 1;
+    lfs3_file_sync(&lfs3, &file) => LFS3_ERR_CORRUPT;
+    int err = lfs3_file_close(&lfs3, &file);
+    assert(!err || err == LFS3_ERR_CORRUPT);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# a btree node holding more than littlefs puts in one, too much to split
+#
+# SIZE=2100 => more than half a block
+# SIZE=3900 => nearly a full block
+[cases.test_crafted_btree_full]
+defines.SIZE = [2100, 3900]
+defines.POS = [0, 1000]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // a btree node of one data fragment
+    uint8_t data[SIZE];
+    memset(data, 'x', sizeof(data));
+    uint32_t cksum = test_crafted_mkrbyd(CFG, node,
+            (const test_crafted_tag_t[]){
+                {LFS3_TAG_DATA, SIZE, SIZE, data}},
+            1);
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            SIZE, node, 4, cksum);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // reads are fine
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    test_crafted_read(&lfs3, "f") => 0;
+
+    // writes that split the node find the damage
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_WRONLY) => 0;
+    lfs3_file_seek(&lfs3, &file, POS, LFS3_SEEK_SET) => POS;
+    lfs3_file_write(&lfs3, &file, "y", 1) => 1;
+    lfs3_file_sync(&lfs3, &file) => LFS3_ERR_CORRUPT;
+    int err = lfs3_file_close(&lfs3, &file);
+    assert(!err || err == LFS3_ERR_CORRUPT);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# btree branches that loop back on themselves
+#
+# CYCLE=1 => a node whose branch is itself
+# CYCLE=2 => two nodes whose branches are each other
+[cases.test_crafted_btree_cycle]
+defines.CYCLE = [1, 2]
+code = '''
+    lfs3_t lfs3;
+    lfs3_block_t node = test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+    // file f has two data blocks, the second is next to the first or
+    // we find it by looking up the file's second block pointer
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "f", LFS3_O_RDONLY) => 0;
+    lfs3_bptr_t bptr;
+    lfs3_file_lookupnext(&lfs3, &file, BLOCK_SIZE,
+            NULL, NULL, &bptr) => 0;
+    lfs3_block_t nodes[2] = {node, lfs3_bptr_block(&bptr)};
+    lfs3_file_close(&lfs3, &file) => 0;
+    assert(nodes[0] != nodes[1]);
+
+    // inner nodes of one branch each, to the next node, no checksums
+    // check out, only checks look at those
+    for (int i = 0; i < CYCLE; i++) {
+        uint8_t branch[LFS3_BRANCH_DSIZE];
+        lfs3_size_t branch_size = test_crafted_enc(branch, "llw",
+                nodes[(i+1) % CYCLE], 4, 0);
+        test_crafted_mkrbyd(CFG, nodes[i],
+                (const test_crafted_tag_t[]){
+                    {LFS3_TAG_BRANCH, 100, branch_size, branch}},
+                1);
+    }
+
+    uint8_t btree[LFS3_BTREE_DSIZE];
+    lfs3_size_t btree_size = test_crafted_enc(btree, "lllw",
+            100, nodes[0], 4, 0);
+    test_crafted_commit(&lfs3, "f", LFS3_tag_MASK8 | LFS3_TAG_BTREE, 0,
+            btree, btree_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    // lookups find the damage instead of looping
+    for (int rdonly = 0; rdonly < 2; rdonly++) {
+        lfs3_mount(&lfs3, (rdonly) ? LFS3_M_RDONLY : LFS3_M_RDWR, CFG) => 0;
+        test_crafted_read(&lfs3, "f") => LFS3_ERR_CORRUPT;
+        test_crafted_trv(&lfs3, 0) => LFS3_ERR_CORRUPT;
+        lfs3_unmount(&lfs3) => 0;
+    }
+'''
+
+
+## Salvage ##
+
+# an entry out of order, a lookup by its did doesn't lead to it, and no
+# name reaches it, a salvage removes it where it is
+[cases.test_crafted_salvage_order]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // an entry of a did no directory names, between the root's bookmark
+    // and the root's other entries, a lookup of its did ends up past
+    // them, everything is in the mroot
+    lfs3_set(&lfs3, "a", "a", 1) => 0;
+    lfs3_set(&lfs3, "b", "b", 1) => 0;
+    lfs3_set(&lfs3, "c", "c", 1) => 0;
+    assert(lfs3.mtree.r.weight == 0);
+    lfs3_mdir_t mdir;
+    lfs3_mtree_lookup(&lfs3, 1, &mdir) => 0;
+    lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+            LFS3_RATTR(3, LFS3_TAG_REG, +1, LFS3_FROM_NAME),
+            LFS3_RATTR_ARG(0x10),
+            LFS3_RATTR_ARG("x"),
+            LFS3_RATTR_NULL)) => 0;
+
+    // and damage that needs a salvage, a grm past the end of the mtree
+    uint8_t grm[LFS3_GRM_DSIZE];
+    lfs3_size_t grm_size = test_crafted_enc(grm, "l", 1 << lfs3.mbits);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GRMDELTA, 0,
+            grm, grm_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // the entry is gone, the root's entries are still here
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "/") => 0;
+    struct lfs3_info info;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    const char *names[] = {"a", "b", "c", "f"};
+    for (int i = 0; i < 4; i++) {
+        lfs3_dir_read(&lfs3, &dir, &info) => 0;
+        assert(strcmp(info.name, names[i]) == 0);
+    }
+    lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+    lfs3_dir_close(&lfs3, &dir) => 0;
+    test_crafted_read(&lfs3, "f") => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CK) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# an mroot with no entries, not even the root's bookmark, a salvage steps
+# past it and recreates the bookmark
+[cases.test_crafted_salvage_empty]
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfile(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+
+    // remove f and the root's bookmark, everything is in the mroot
+    lfs3_remove(&lfs3, "f") => 0;
+    assert(lfs3.mtree.r.weight == 0);
+    lfs3_mdir_t mdir;
+    lfs3_mtree_lookup(&lfs3, 0, &mdir) => 0;
+    lfs3_mdir_commit(&lfs3, &mdir, LFS3_RATTRS(
+            LFS3_RATTR(1, LFS3_tag_RM, -1),
+            LFS3_RATTR_NULL)) => 0;
+    assert(lfs3.mroot.r.weight == 0);
+
+    // and damage that needs a salvage, a grm past the end of the mtree
+    uint8_t grm[LFS3_GRM_DSIZE];
+    lfs3_size_t grm_size = test_crafted_enc(grm, "l", 1 << lfs3.mbits);
+    test_crafted_commit(&lfs3, NULL, LFS3_TAG_GRMDELTA, 0,
+            grm, grm_size);
+    lfs3_unmount(&lfs3) => 0;
+
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_CORRUPT;
+    lfs3_mount(&lfs3, LFS3_M_RDWR | LFS3_M_SALVAGE, CFG) => 0;
+    lfs3_unmount(&lfs3) => 0;
+
+    // an empty root we can write to
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_dir_t dir;
+    lfs3_dir_open(&lfs3, &dir, "/") => 0;
+    struct lfs3_info info;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    lfs3_dir_read(&lfs3, &dir, &info) => 0;
+    lfs3_dir_read(&lfs3, &dir, &info) => LFS3_ERR_NOENT;
+    lfs3_dir_close(&lfs3, &dir) => 0;
+    lfs3_mkdir(&lfs3, "d") => 0;
+    lfs3_set(&lfs3, "d/g", "g", 1) => 0;
+    test_crafted_read(&lfs3, "d/g") => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CK) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+## Mutation ##
+
+# change a byte in some metadata blocks at random, sign them again, keep
+# the gcksum checking, and do everything we can with the image, nothing
+# may assert or hang, and every error must be one the image accounts for
+#
+# MODE=0 => plain mounts
+# MODE=1 => mounts that salvage, gc and check
+# MODE=2 => mounts that check fetches, parity and data checksums
+[cases.test_crafted_mutate]
+defines.BLOCK_SIZE = 512
+defines.MODE = [0, 1, 2]
+defines.MUTATIONS = [1, 3]
+defines.TRIALS = 32
+defines.SEED = 'range(32)'
+fuzz = 'SEED'
+if = 'MODE != 2 || LFS3_IFDEF_CKFETCHES(true, false)'
+code = '''
+    lfs3_t lfs3;
+    test_crafted_mkfs(&lfs3, CFG,
+            (GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0);
+    test_crafted_blocks_t blocks;
+    test_crafted_findblocks(&lfs3, &blocks);
+    uint32_t gcksum = lfs3.gcksum;
+    lfs3_unmount(&lfs3) => 0;
+    assert(blocks.count > 4);
+    uint8_t *disk = test_crafted_save(CFG);
+
+    uint32_t ckflags = (MODE == 1)
+            ? LFS3_M_CK
+            : (MODE == 2)
+                ? LFS3_IFDEF_CKFETCHES(LFS3_M_CKFETCHES, 0)
+                    | LFS3_IFDEF_CKMETAPARITY(LFS3_M_CKMETAPARITY, 0)
+                    | LFS3_IFDEF_CKDATACKSUMS(LFS3_M_CKDATACKSUMS, 0)
+                : 0;
+    uint32_t rflags = ckflags;
+    uint32_t wflags = ckflags
+            | ((MODE == 1)
+                ? LFS3_M_SALVAGE
+                    | LFS3_M_MKCONSISTENT
+                    | LFS3_M_LOOKAHEAD
+                    | LFS3_M_COMPACT
+                : 0);
+
+    uint32_t prng = SEED;
+    for (lfs3_size_t trial = 0; trial < TRIALS; trial++) {
+        test_crafted_restore(CFG, disk);
+        uint32_t gcksum_ = gcksum;
+
+        for (lfs3_size_t m = 0; m < MUTATIONS; m++) {
+            lfs3_size_t i = TEST_PRNG(&prng) % blocks.count;
+            lfs3_block_t block = blocks.blocks[i];
+            uint8_t buf[BLOCK_SIZE];
+            CFG->read(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+
+            uint32_t cksum;
+            lfs3_ssize_t gdelta;
+            lfs3_size_t eoff = test_crafted_sign(buf, BLOCK_SIZE, block,
+                    BLOCK_SIZE, false,
+                    &cksum, &gdelta);
+            if (eoff <= sizeof(uint32_t)) {
+                continue;
+            }
+            uint32_t delta = (gdelta >= 0) ? lfs3_fromle32(&buf[gdelta]) : 0;
+
+            // change a byte in the log
+            lfs3_size_t off = sizeof(uint32_t)
+                    + TEST_PRNG(&prng) % (eoff-sizeof(uint32_t));
+            uint8_t before = buf[off];
+            switch (TEST_PRNG(&prng) % 6) {
+                case 0: buf[off] ^= 1 << (TEST_PRNG(&prng) % 8); break;
+                case 1: buf[off] = TEST_PRNG(&prng); break;
+                case 2: buf[off] = 0x00; break;
+                case 3: buf[off] = 0xff; break;
+                case 4: buf[off] += 1; break;
+                case 5: buf[off] -= 1; break;
+            }
+            printf("trial %d: block 0x%x%s off 0x%x: %02x -> %02x\n",
+                    (int)trial, (unsigned)block,
+                    (blocks.mdir[i]) ? " (mdir)" : "",
+                    (unsigned)off, before, buf[off]);
+
+            test_crafted_resign(buf, BLOCK_SIZE, block, eoff,
+                    blocks.mdir[i], cksum, delta, &gcksum_);
+            CFG->erase(CFG, block) => 0;
+            CFG->prog(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+        }
+
+        test_crafted_exercise(&lfs3, CFG, LFS3_M_RDONLY | rflags);
+        test_crafted_exercise(&lfs3, CFG, LFS3_M_RDWR | wflags);
+        test_crafted_exercise(&lfs3, CFG, LFS3_M_RDONLY | rflags);
+    }
+
+    free(disk);
+'''
