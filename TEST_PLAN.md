@@ -2872,8 +2872,8 @@ modelled device, and the assumptions say which real devices that covers.
   up no test. A test that a new question holds up should be written against
   the current behaviour and marked, rather than left out.
 - **Test-side defects.** Seven defects in test code (F-4 to F-10) were found
-  in a few days of running the suite under new conditions, and ten more
-  (F-11 to F-20) while resolving the fork's issues, two of them in emubd's
+  in a few days of running the suite under new conditions, and eleven more
+  (F-11 to F-21) while resolving the fork's issues, two of them in emubd's
   own fault models. New conditions (ASan, FORTIFY, B-BIG) are likely to
   find more; they are defects to fix like any other (8.7).
 - **Extensions change the device model.** E-1, E-4 and E-5 change emubd.
