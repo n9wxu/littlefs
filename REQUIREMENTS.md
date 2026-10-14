@@ -4772,12 +4772,15 @@ the gbmap, and read-only in any build.
 - **Pass:** a cross-build case: an image with a gbmap mounts RDWR in B-YGB
   and in a `LFS3_GBMAP` build, gives `LFS3_ERR_NOTSUP` for RDWR and 0 for
   `LFS3_M_RDONLY` in B-DEF; an image without a gbmap mounts RDWR in B-DEF
-  and in a `LFS3_GBMAP` build.
+  and in a `LFS3_GBMAP` build, gives `LFS3_ERR_NOTSUP` for RDWR and 0 for
+  `LFS3_M_RDONLY` in B-YGB; every read-only mount reads every file back and
+  passes `lfs3_fs_ck`.
 - **Fail:** any other result.
 - **Verified by:** `compat::gbmap_exchange` through `make test-compat-gbmap`
   (NEW-79).
 - **Status:** Tested on v3-integration (c9410b20, 55878ff9), in the CI job
-  `test-compat-gbmap` (1c768762).
+  `test-compat-gbmap` (1c768762). Failed from 9cfedb6e to d9d40c15 (D-42):
+  B-YGB mounted an image without a gbmap degraded.
 - **When:** every CI run.
 
 #### LFS3-ALLOC-16
@@ -9250,6 +9253,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-39 | A salvage that dropped an mdir before it could build its gbmap appended a gbmap delta without a root: `lfs3_rbyd_appendgdelta` asserted that the windows matched, and `lfs3_data_frombranch` that block 0xffffffff was a block | `lfs3_salvage_drop`, `lfs3_rbyd_appendgdelta`, `lfs3_fs_commitgdelta` | run (`crafted::mutate` in B-BIG, 28 permutations) | DEG-16 | b2ac4ca0; `crafted::mutate` in B-YGB and B-BIG |
 | D-40 | With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed after appending to its leaf left the cached leaf claiming the appended bytes erased, and the next commit programmed them again | `lfs3_btree_commit`, `lfs3_bshrub_commit` | run (`crafted::mutate` in B-BIG, emubd's erase check) | CFG-15 | 79b5fcb1; `crafted::mutate` in B-BIG |
 | D-41 | Without `LFS3_M_CKPROGS`, a compaction into a block whose progs silently did nothing read back the block's old bytes, 0x00 on a block never written, as null tags, and built its tree over them until the block ran out; the `LFS3_ERR_RANGE` made an mdir split return `LFS3_ERR_NOSPC` ("an entry can't be split") on a disk about a quarter full, and tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in a B-tree relocation: `badblocks::silent_nockprogs` with `ERASE_VALUE` -1 or 0x00, 2 of 2,400 permutations with `-DSEED='range(200)'` (SEED 7), 6 of 12,000 with `range(1000)` (also SEEDs 576 and 831) | `lfs3_rbyd_appendcompaction` | run (the B-tree assert: `badblocks::silent_btree` before 19e20a74) | FAIL-07 | 19e20a74; `badblocks::silent_split`, `badblocks::silent_btree` (8d2e05a1), `badblocks::silent_nockprogs` with `-DSEED='range(1000)'` |
+| D-42 | Since 9cfedb6e the branch decoder refused block 0 and trunk 0, and an `LFS3_YES_GBMAP` build still decodes the gbmap gstate of an image without a gbmap, which is zeros, when it mounts one read-only: the mount found a "corrupt gbmap" and mounted degraded, and `lfs3_fs_ck` then returned `LFS3_ERR_CORRUPT` | `lfs3_data_readgbmap` | run (CI run 38562425540: job `test-compat-gbmap`, the ygb build on the def-0-0 image) | ALLOC-15 | d9d40c15; `compat::gbmap_exchange` through `make test-compat-gbmap` |
 
 ### A.3 From the analyses
 
