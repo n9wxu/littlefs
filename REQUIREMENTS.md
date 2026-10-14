@@ -979,8 +979,10 @@ handle opened with `LFS3_O_SYNC` durable when the call returns.
 - **Fail:** a returned write, truncate or fruncate is missing after
   remount.
 - **Verified by:** `powerloss_p1::osync_pl` (NEW-57).
-- **Status:** Partly tested: writes, on v3-integration (cba1a7d5);
-  `osync_pl` doesn't truncate yet.
+- **Status:** Tested on v3-q-file (08b5e4d6): `powerloss_p1::osync_pl`,
+  with truncates and fruncates, passes 800 of 800 under `-Plinear` in
+  B-DEF (83,394 power losses), and fails every permutation at
+  `00bba274`. Writes alone on v3-integration (cba1a7d5).
 - **When:** every CI run.
 
 #### LFS3-PL-18
@@ -1753,9 +1755,13 @@ fails shall leave the handle as it was.
 - **Fail:** 0 for a pair damaged since the handle last saw it, a handle
   changed by a check that failed, or fewer reads than `ck_passes`.
 - **Verified by:** NEW-163, NEW-164.
-- **Status:** Not implemented at `00bba274`, where a failed check of a
+- **Status:** Tested on v3-q-file (159c1f23, 0487ffd3):
+  `ck::file_ckmeta_mdir` passes 68 of 68 in B-DEF, B-YGB and B-BIG,
+  `ck::file_ck_heals` 8 of 8 in each, and `repair::passes_file` 6 of 6 in
+  B-YGB and B-BIG. Not implemented at `00bba274`, where a failed check of a
   B-tree's root also left the handle with an empty file, which a sync
-  through it committed (D-36).
+  through it committed (D-36): there `ck::file_ckmeta_mdir` fails 36 of 68,
+  and `ck::file_ck_heals` 8 of 8.
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -3513,8 +3519,10 @@ opened with `LFS3_O_FLUSH`, or on any handle when mounted with
   the file as last synced, in B-DEF.
 - **Fail:** data stays in the cache.
 - **Verified by:** as listed; NEW-162.
-- **Status:** Partly tested: writes; truncate and fruncate are NEW-162,
-  not written.
+- **Status:** Tested on v3-q-file (08b5e4d6): `fsync::sync_o_tsrr` passes 72
+  of 72 in B-DEF, B-YGB and B-BIG. A truncate or fruncate after a flushed
+  write leaves nothing to flush at `00bba274` too, so only the flags'
+  documentation and the call after a truncate are new.
 - **When:** every CI run.
 
 #### LFS3-SYNC-12
@@ -3541,8 +3549,9 @@ opened with `LFS3_O_SYNC`, or on any handle when mounted with
 - **Fail:** a write, truncate or fruncate is not visible to other handles
   after it returns.
 - **Verified by:** as listed; NEW-162.
-- **Status:** Partly tested: writes; truncate and fruncate are NEW-162,
-  not written.
+- **Status:** Tested on v3-q-file (08b5e4d6): `fsync::sync_o_tsrr` passes
+  72 of 72 and `fsync::rwtfrwtf_sparse_fuzz` 9,600 of 9,600 in B-DEF; at
+  `00bba274` every permutation of either with `SYNC` 2 or 3 fails.
 - **When:** every CI run.
 
 #### LFS3-SYNC-13
@@ -3750,7 +3759,12 @@ the directory is not empty until the file is removed.
   after the close, in B-DEF.
 - **Fail:** any other result.
 - **Verified by:** as listed; NEW-161.
-- **Status:** Partly tested: the stickynote case, NEW-161, is not written.
+- **Status:** Tested on v3-q-file (022bdf17): `stickynotes::uncreat_rmdir`
+  passes 16 of 16 in B-DEF, B-YGB and B-BIG, and at `00bba274` too, as the
+  decision keeps what littlefs did. A file removed while a handle still has
+  it open (a zombie) keeps its directory non-empty the same way until the
+  handle closes, though nothing lists it and its syncs do nothing; `lfs3.h`
+  says so, and Q7 doesn't decide it.
 - **When:** every CI run.
 
 #### LFS3-DIR-04
@@ -8414,11 +8428,11 @@ of the directory returns `LFS3_ERR_NOTEMPTY` (1-meta F16). Options: (a) yes,
 as now, and document it; (b) no: remove the directory and make the handle a
 zombie, as removing an open file does.
 
-**Decided** on 2026-10-13 (issue #11): (a). `lfs3_remove` of a directory
-holding an open, never-synced file returns `LFS3_ERR_NOTEMPTY`, and
-`lfs3.h` says so. The file is a sticky note in the directory
-(`LFS3_TYPE_STICKYNOTE`, section 8.2), and removing the directory would
-discard the application's unsynced data without asking.
+**Decided** on 2026-10-13 (issue #11; 17d658e0, 022bdf17): (a).
+`lfs3_remove` of a directory holding an open, never-synced file returns
+`LFS3_ERR_NOTEMPTY`, and `lfs3.h` says so. The file is a sticky note in the
+directory (`LFS3_TYPE_STICKYNOTE`, section 8.2), and removing the directory
+would discard the application's unsynced data without asking.
 
 **Q8. `LFS3_O_SYNC` and `LFS3_O_FLUSH` with truncate and fruncate.** They do
 not sync or flush after `lfs3_file_truncate` and `lfs3_file_fruncate`
@@ -8426,10 +8440,11 @@ not sync or flush after `lfs3_file_truncate` and `lfs3_file_fruncate`
 Options: (a) keep, and document that the flags apply to writes only;
 (b) apply them to every call that changes the file.
 
-**Decided** on 2026-10-13 (issue #11): (b). `LFS3_O_SYNC` syncs and
-`LFS3_O_FLUSH` flushes after `lfs3_file_truncate` and `lfs3_file_fruncate`,
-as after a write. An application that opens a file `LFS3_O_SYNC` expects
-every change it makes to be on disk when the call returns (principle 3).
+**Decided** on 2026-10-13 (issue #11; 132553ce, 08b5e4d6): (b).
+`LFS3_O_SYNC` syncs and `LFS3_O_FLUSH` flushes after `lfs3_file_truncate`
+and `lfs3_file_fruncate`, as after a write. An application that opens a file
+`LFS3_O_SYNC` expects every change it makes to be on disk when the call
+returns (principle 3).
 
 **Q9. Reserved attribute types.** #1111 reserves 0x80-0xbf for standard
 attributes and suggests 0xc0-0xff for system attributes; `lfs3.h` says
@@ -8475,11 +8490,12 @@ blocks but not the file's own mdir entry or inline data (4-api R29).
 Options: (a) document the scope; (b) also re-fetch and check the file's
 mdir.
 
-**Decided** on 2026-10-13 (issue #11): (b). With `LFS3_CK_CKMETA`,
-`lfs3_file_ck` also re-fetches the mdir that holds the file's entry and
-checks it, which covers inline data and the shrub. A check of one file
-that passes while the block holding its name, size and inline bytes doesn't
-read would report health that isn't there (principle 2).
+**Decided** on 2026-10-13 (issue #11; 3d6b948b, 0487ffd3, 159c1f23): (b).
+With `LFS3_CK_CKMETA`, `lfs3_file_ck` also re-fetches the mdir that holds
+the file's entry and checks it, which covers inline data and the shrub. A
+check of one file that passes while the block holding its name, size and
+inline bytes doesn't read would report health that isn't there
+(principle 2).
 
 **Q14. How configuration errors are reported, and the minimum geometry.**
 Configuration is checked with asserts. At `b10efaa` some invalid values were
@@ -8894,7 +8910,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-33 | An mroot compaction that didn't fit tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` | `lfs3_mdir_compact___` | run (a 3896-byte root attr, then a create) | META-03, ERR-06 | 42e26e7e; `mtree::commit_too_big`, `attrs::setattr_huge` |
 | D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
-| D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | open |
+| D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | 0487ffd3; `ck::file_ck_heals` |
 
 ### A.3 From the analyses
 

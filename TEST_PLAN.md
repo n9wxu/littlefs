@@ -234,7 +234,7 @@ a test.
 | `lfs3_get` | GEN-02, PL-12, FILE-12, SYNC-01, KV-01, KV-05, KV-08, CFG-07 | `kv::set_*`, `files::trunc`, `powerloss::spam_f_pl_fuzz`, `fsync::wrrr`, `fsync::wwww`, `fsync::wwrr` and 9 more; since `b10efaa`: NEW-91, NEW-55 | KV-05 (P) → NEW-104; KV-08 (U) → NEW-104; CFG-07 (U) → NEW-86 |
 | `lfs3_size` | PL-12, KV-02, KV-05, KV-07, KV-08 | `kv::set_*`, `kv::*`, `kv::set_noent`, `kv::set_zero`, `kv::set_null`; since `b10efaa`: NEW-55 | KV-05 (P) → NEW-104; KV-08 (U) → NEW-104 |
 | `lfs3_set` | GEN-06, PL-12, DIR-02, KV-03, KV-04, KV-06, KV-07, KV-09 | `kv::set_*`, `paths::namejustlongenough`, `kv::set`, `kv::set_trunc`, `kv::set_update`, `kv::many_big` and 4 more; since `b10efaa`: NEW-55, NEW-41, NEW-36 | GEN-06 (Q) → NEW-49; KV-09 (U) → NEW-105 |
-| `lfs3_remove` | GEN-06, PL-09, DIR-03, ALLOC-05 | `dirs::rm_*`, `dread::recursive_rm`, `dirs::rm_root`, `paths::root`; since `b10efaa`: NEW-30 | GEN-06 (Q) → NEW-49; DIR-03 (P) → NEW-161 |
+| `lfs3_remove` | GEN-06, PL-09, DIR-03, ALLOC-05 | `dirs::rm_*`, `dread::recursive_rm`, `dirs::rm_root`, `paths::root`; since `b10efaa`: NEW-30, NEW-161 | GEN-06 (Q) → NEW-49 |
 | `lfs3_rename` | GEN-06, PL-10, META-03, DIR-04, DIR-05, DIR-06, DIR-07 | `dirs::mv_*`, `dread::recursive_mv`, `paths::*`, `dirs::mv_noop`; since `b10efaa`: NEW-41, NEW-32 | GEN-06 (Q) → NEW-49 |
 | `lfs3_stat` | GEN-02, PL-07, PL-08, PL-09, PL-10, META-09, FILE-19, SYNC-10, SYNC-13, SYNC-14, DIR-05, DIR-08, DIR-14, PERF-04, DOC-08 | `stickynotes::uncreat_pl`, `stickynotes::uncreat_many_pl`, `stickynotes::undesync_pl`, `stickynotes::undesync_many_pl`, `dirs::mkdir_*`, `dirs::rm_*` and 10 more; since `b10efaa`: NEW-91, NEW-32 | FILE-19 (P) → NEW-98; SYNC-10 (P) → NEW-99; PERF-04 (U) → NEW-119 |
 | `lfs3_getattr` | PL-11, ATTR-01, ATTR-02 | `attrs::fattr_pl_fuzz_fuzz`, `attrs::setattr*`, `attrs::getattr*`, `attrs::setattr_trunc`, `attrs::fuzz`, `attrs::*noattr*`; since `b10efaa`: NEW-59 | – |
@@ -242,7 +242,7 @@ a test.
 | `lfs3_setattr` | GEN-06, PL-11, META-03, ATTR-01, ATTR-05, ATTR-06, ATTR-08 | `attrs::fattr_pl_fuzz_fuzz`, `attrs::setattr*`, `attrs::getattr*`, `attrs::setattr_trunc`, `attrs::fuzz`, `attrs::*` and 1 more; since `b10efaa`: NEW-59, NEW-41, NEW-78 | GEN-06 (Q) → NEW-49 |
 | `lfs3_removeattr` | GEN-06, PL-11, ATTR-03, ATTR-08 | `attrs::fattr_pl_fuzz_fuzz`, `attrs::removeattr`, `attrs::fattr_*`; since `b10efaa`: NEW-59 | GEN-06 (Q) → NEW-49 |
 | `lfs3_file_open` | FILE-16, CFG-07, RES-08, BUILD-10, FILE-14, FILE-15 | `files::*`, `fwrite::*`, `files::create`, `files::excl`, `stickynotes::uncreat_excl`, `stickynotes::orphan_excl` and 7 more; since `b10efaa`: NEW-72, NEW-87 | CFG-07 (U) → NEW-86; BUILD-10 (U) → NEW-53 |
-| `lfs3_file_opencfg` | GEN-06, INT-13, INT-27, META-03, FILE-15, DIR-14 | `ck::file_ckmeta_easy`, `ck::file_ckmeta_hard`, `ck::file_ckdata_easy`, `ck::file_ckdata_hard`, `files::noent`, `files::dir_not_file` and 5 more; since `b10efaa`: NEW-67, NEW-41 | GEN-06 (Q) → NEW-49; INT-27 (N) → NEW-163 |
+| `lfs3_file_opencfg` | GEN-06, INT-13, INT-27, META-03, FILE-15, DIR-14 | `ck::file_ckmeta_easy`, `ck::file_ckmeta_hard`, `ck::file_ckdata_easy`, `ck::file_ckdata_hard`, `files::noent`, `files::dir_not_file` and 5 more; since `b10efaa`: NEW-67, NEW-41, NEW-163 | GEN-06 (Q) → NEW-49 |
 | `lfs3_file_close` | PL-04, PL-06, FILE-21, FILE-27, SYNC-19 | `powerloss::spam_f_pl_fuzz`, `powerloss::spam_fd_pl_fuzz`, `files::pl_fuzz`, `relocations::spam_f_pl_fuzz`, `grow::incr_spam_f_pl_fuzz`, `alloc::nospc_files` and 1 more; since `b10efaa`: NEW-58, NEW-74 | – |
 | `lfs3_file_sync` | PL-04, PL-06, SYNC-05, SYNC-06, SYNC-08, SYNC-09, SYNC-17, SYNC-20, FILE-27, MOUNT-17, PERF-06, PERF-07, PERF-10 | `powerloss::spam_f_pl_fuzz`, `powerloss::spam_fd_pl_fuzz`, `files::pl_fuzz`, `relocations::spam_f_pl_fuzz`, `grow::incr_spam_f_pl_fuzz`, `fsync::desync_*` and 6 more; since `b10efaa`: NEW-58, NEW-38, NEW-77, NEW-37, NEW-121 | PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120 |
 | `lfs3_file_flush` | PL-06, FILE-27, SYNC-05, SYNC-10 | `powerloss::spam_f_pl_fuzz`, `fsync::sync_*`; since `b10efaa`: NEW-58, NEW-38 | SYNC-10 (P) → NEW-99 |
@@ -251,12 +251,12 @@ a test.
 | `lfs3_file_read` | INT-20, FILE-01, FILE-04 | `ck::ckdatacksums_data`, `ck::spam_*_fuzz`, `fwrite::simple`, `fwrite::incr`, `fwrite::reversed`, `fwrite::overwrite` and 3 more; since `b10efaa`: NEW-35 | – |
 | `lfs3_file_write` | PL-06, PL-17, FILE-02, FILE-03, FILE-07, FILE-26, FILE-27, SYNC-05, PERF-10 | `powerloss::spam_f_pl_fuzz`, `fwrite::holes`, `fwrite::w_seek`, `fwrite::fbig`, `fwrite::truncate_fbig`, `fwrite::fruncate_fbig`; since `b10efaa`: NEW-58, NEW-57, NEW-34, NEW-76, NEW-38, NEW-121 | FILE-02 (U) → NEW-96 |
 | `lfs3_file_seek` | FILE-06, FILE-07, FILE-20, FILE-26, KV-04 | `fwrite::r_seek`, `fwrite::w_seek`, `fwrite::rw_seek`, `fwrite::seek_negative`, `fwrite::holes`, `fwrite::fbig` and 2 more; since `b10efaa`: NEW-76, NEW-36 | – |
-| `lfs3_file_truncate` | PL-13, PL-17, FILE-08, FILE-18, FILE-26, SYNC-05, SYNC-11, SYNC-12 | `fwrite::truncate`, `fwrite::truncate_truncate`, `fwrite::truncate_pos`, `fwrite::truncate_litmus_zero`, `fwrite::truncate_litmus_fragment`, `fwrite::fbig` and 2 more; since `b10efaa`: NEW-02, NEW-76, NEW-38 | FILE-18 (U) → NEW-97; SYNC-11 (P), SYNC-12 (P) → NEW-162; PL-17 (P) → NEW-57 |
-| `lfs3_file_fruncate` | PL-13, PL-17, FILE-09, FILE-10, FILE-26, SYNC-05, SYNC-11, SYNC-12, DOC-18 | `fwrite::fruncate*`, `fwrite::freversed*`, `fwrite::rwtf_fuzz`, `fwrite::fbig`, `fwrite::truncate_fbig`, `fwrite::fruncate_fbig`; since `b10efaa`: NEW-02, NEW-21, NEW-76, NEW-38 | DOC-18 (N) → review; SYNC-11 (P), SYNC-12 (P) → NEW-162; PL-17 (P) → NEW-57 |
+| `lfs3_file_truncate` | PL-13, PL-17, FILE-08, FILE-18, FILE-26, SYNC-05, SYNC-11, SYNC-12 | `fwrite::truncate`, `fwrite::truncate_truncate`, `fwrite::truncate_pos`, `fwrite::truncate_litmus_zero`, `fwrite::truncate_litmus_fragment`, `fwrite::fbig` and 2 more; since `b10efaa`: NEW-02, NEW-76, NEW-38, NEW-162, NEW-57 | FILE-18 (U) → NEW-97 |
+| `lfs3_file_fruncate` | PL-13, PL-17, FILE-09, FILE-10, FILE-26, SYNC-05, SYNC-11, SYNC-12, DOC-18 | `fwrite::fruncate*`, `fwrite::freversed*`, `fwrite::rwtf_fuzz`, `fwrite::fbig`, `fwrite::truncate_fbig`, `fwrite::fruncate_fbig`; since `b10efaa`: NEW-02, NEW-21, NEW-76, NEW-38, NEW-162, NEW-57 | DOC-18 (N) → review |
 | `lfs3_file_tell` | FILE-02, FILE-06, FILE-08, FILE-09, FILE-20 | `fwrite::r_seek`, `fwrite::w_seek`, `fwrite::rw_seek`, `fwrite::seek_negative`, `fwrite::truncate`, `fwrite::truncate_truncate` and 6 more | FILE-02 (U) → NEW-96 |
 | `lfs3_file_rewind` | FILE-20, BUILD-11 | `fwrite::r_seek`, `fwrite::w_seek`, `fwrite::rw_seek` | BUILD-11 (U) → NEW-53 |
 | `lfs3_file_size` | FILE-02, FILE-19, FILE-22, SYNC-09 | `fsync::*`, `files::zero_bnull`, `files::zero_bshrub`, `files::zero_btree`; since `b10efaa`: NEW-77 | FILE-02 (U) → NEW-96; FILE-19 (P) → NEW-98 |
-| `lfs3_file_ck` | INT-13, INT-27 | `ck::file_ckmeta_easy`, `ck::file_ckmeta_hard`, `ck::file_ckdata_easy`, `ck::file_ckdata_hard`; since `b10efaa`: NEW-67 | INT-27 (N) → NEW-163, NEW-164 |
+| `lfs3_file_ck` | INT-13, INT-27 | `ck::file_ckmeta_easy`, `ck::file_ckmeta_hard`, `ck::file_ckdata_easy`, `ck::file_ckdata_hard`; since `b10efaa`: NEW-67, NEW-163, NEW-164 | – |
 | `lfs3_mkdir` | GEN-06, PL-08, META-03, DIR-01, DIR-02, DIR-14 | `dirs::mkdir_*`, `paths::*`, `paths::namejustlongenough`; since `b10efaa`: NEW-41 | GEN-06 (Q) → NEW-49 |
 | `lfs3_dir_open` | DIR-19 | `dirs::*`, `paths::*` | – |
 | `lfs3_dir_close` | DIR-20 | `dirs::*`, `dread::*` | – |
@@ -327,8 +327,8 @@ a test.
 | `lfs3_file_cfg.fcache_size` | CFG-08 | `kv::*`, `fwrite::fuzz_unaligned` | CFG-08 (P) → NEW-116 |
 | `lfs3_file_cfg.attrs`, `attr_count` | ATTR-08, ATTR-09, ATTR-10, ATTR-12, PL-11 | `attrs::fattr_*`, `attrs::fattr_lazy`, `attrs::fattr_pl_fuzz_fuzz`; since `b10efaa`: NEW-39, NEW-59 | ATTR-10 (P) → NEW-103 |
 | `lfs3_attr.flags` (`LFS3_A_*`) | ATTR-09, ATTR-12 | `attrs::fattr_*`, `attrs::fattr_lazy`; since `b10efaa`: NEW-39 | – |
-| `ck_retries` | GC-18, INT-26, INT-27, DEG-10, DEG-14, BAD-17 | the `repair` suite (NEW-157), `mount::readerror`, `mount::readerror_mounted` (NEW-140, NEW-141), `powerloss::settle_newer` (NEW-137) | INT-27 (N) → NEW-163 |
-| `ck_passes` | GC-17, INT-27 | `repair::passes` (NEW-157) | INT-27 (N) → NEW-163 |
+| `ck_retries` | GC-18, INT-26, INT-27, DEG-10, DEG-14, BAD-17 | the `repair` suite (NEW-157), `mount::readerror`, `mount::readerror_mounted` (NEW-140, NEW-141), `powerloss::settle_newer` (NEW-137), `ck::file_ckmeta_mdir` (NEW-163) | – |
+| `ck_passes` | GC-17, INT-27 | `repair::passes` (NEW-157), `repair::passes_file` (NEW-163) | – |
 
 ### 3.3 Compile-time options
 
@@ -403,13 +403,13 @@ a test.
 | crystallization and erased-state reuse | FILE-11, FILE-24, PL-15, PERF-11 | none; since `b10efaa`: NEW-20, NEW-75, NEW-04 | PERF-11 (P) → NEW-120 |
 | random writes, holes and sparse files | FILE-01, FILE-05, FILE-07, FILE-18, PL-14 | `fwrite::simple`, `fwrite::incr`, `fwrite::reversed`, `fwrite::overwrite`, `fwrite::fuzz_aligned`, `fwrite::fuzz_unaligned` and 4 more; since `b10efaa`: NEW-03 | FILE-18 (U) → NEW-97 |
 | truncate and fruncate | FILE-08, FILE-09, FILE-10, PL-13 | `fwrite::truncate`, `fwrite::truncate_truncate`, `fwrite::truncate_pos`, `fwrite::truncate_litmus_zero`, `fwrite::truncate_litmus_fragment`, `fwrite::fruncate*` and 2 more; since `b10efaa`: NEW-21, NEW-02 | – |
-| sync model | SYNC-01, SYNC-02, SYNC-03, SYNC-04, SYNC-05, SYNC-06, SYNC-07, SYNC-08, SYNC-09, SYNC-10, SYNC-11, SYNC-12, SYNC-19, PL-16, PL-17 | `fsync::wrrr`, `fsync::wwww`, `fsync::wwrr`, `fsync::rwrw`, `fsync::*_fuzz`, `fsync::sync_*` and 16 more; since `b10efaa`: NEW-38, NEW-77, NEW-56, NEW-57 | SYNC-10 (P) → NEW-99; SYNC-11 (P), SYNC-12 (P) → NEW-162 |
+| sync model | SYNC-01, SYNC-02, SYNC-03, SYNC-04, SYNC-05, SYNC-06, SYNC-07, SYNC-08, SYNC-09, SYNC-10, SYNC-11, SYNC-12, SYNC-19, PL-16, PL-17 | `fsync::wrrr`, `fsync::wwww`, `fsync::wwrr`, `fsync::rwrw`, `fsync::*_fuzz`, `fsync::sync_*` and 16 more; since `b10efaa`: NEW-38, NEW-77, NEW-56, NEW-57, NEW-162 | SYNC-10 (P) → NEW-99 |
 | stickynotes, orphans and zombies | SYNC-13, SYNC-14, SYNC-15, SYNC-16, SYNC-17, SYNC-18, PL-07 | `stickynotes::uncreat_*`, `stickynotes::orphan_*`, `stickynotes::cleanup_*`, `mount::t_mkconsistent`, `trvs::mkconsistent_*`, `stickynotes::*_many` and 9 more | SYNC-16 (P) → NEW-100 |
-| directories and paths | DIR-01, DIR-02, DIR-03, DIR-04, DIR-05, DIR-06, DIR-07, DIR-08, DIR-09, DIR-10, DIR-11, DIR-12, DIR-13, DIR-14, DIR-15, DIR-16, DIR-17, DIR-18, DIR-19, DIR-20 | `dirs::mkdir_*`, `paths::*`, `paths::namejustlongenough`, `dirs::rm_*`, `dirs::rm_root`, `paths::root` and 22 more; since `b10efaa`: NEW-41, NEW-32, NEW-33 | DIR-03 (P) → NEW-161; DIR-18 (U) → NEW-101 |
+| directories and paths | DIR-01, DIR-02, DIR-03, DIR-04, DIR-05, DIR-06, DIR-07, DIR-08, DIR-09, DIR-10, DIR-11, DIR-12, DIR-13, DIR-14, DIR-15, DIR-16, DIR-17, DIR-18, DIR-19, DIR-20 | `dirs::mkdir_*`, `paths::*`, `paths::namejustlongenough`, `dirs::rm_*`, `dirs::rm_root`, `paths::root` and 22 more; since `b10efaa`: NEW-41, NEW-32, NEW-33, NEW-161 | DIR-18 (U) → NEW-101 |
 | custom attributes | ATTR-01, ATTR-02, ATTR-03, ATTR-04, ATTR-05, ATTR-06, ATTR-07, ATTR-08, ATTR-09, ATTR-10, ATTR-11, ATTR-12, ATTR-13, PL-11 | `attrs::setattr*`, `attrs::getattr*`, `attrs::setattr_trunc`, `attrs::fuzz`, `attrs::*noattr*`, `attrs::removeattr` and 10 more; since `b10efaa`: NEW-41, NEW-78, NEW-39, NEW-59 | ATTR-07 (U) → NEW-102; ATTR-10 (P) → NEW-103 |
 | key-value API | KV-01, KV-02, KV-03, KV-04, KV-05, KV-06, KV-07, KV-08, KV-09, PL-12 | `kv::set`, `kv::set_update`, `kv::many`, `kv::fuzz`, `kv::*`, `kv::set_trunc` and 7 more; since `b10efaa`: NEW-36, NEW-55 | KV-05 (P) → NEW-104; KV-08 (U) → NEW-104; KV-09 (U) → NEW-105 |
 | compat flags and versioning | MOUNT-04, MOUNT-05, MOUNT-06, MOUNT-07, MOUNT-08, MOUNT-09, MOUNT-10, MOUNT-11, MOUNT-12, MOUNT-13, MOUNT-24, MOUNT-25, MOUNT-26 | `mount::incompat_no_magic`, `mount::incompat_bad_magic`, `mount::incompat_major`, `mount::incompat_minor`, `mount::incompat_rcompat`, `mount::incompat_wronly` and 16 more; since `b10efaa`: NEW-45, NEW-110, NEW-85 | MOUNT-12 (P) → NEW-111; MOUNT-13 (U) → NEW-110; MOUNT-24 (N) → NEW-113; MOUNT-26 (U) → J-COMPAT |
-| checksums and the check APIs | INT-10, INT-11, INT-12, INT-13, INT-14, INT-15, INT-16, INT-17, INT-18, INT-19, INT-20, INT-22, INT-23, INT-27 | `ck::ckmeta_easy`, `ck::ckmeta_hard`, `ck::ckdata_easy`, `ck::ckdata_hard`, `mount::t_ckmeta`, `mount::t_ckdata` and 27 more; since `b10efaa`: NEW-67, NEW-62, NEW-64, NEW-40 | INT-27 (N) → NEW-163, NEW-164 |
+| checksums and the check APIs | INT-10, INT-11, INT-12, INT-13, INT-14, INT-15, INT-16, INT-17, INT-18, INT-19, INT-20, INT-22, INT-23, INT-27 | `ck::ckmeta_easy`, `ck::ckmeta_hard`, `ck::ckdata_easy`, `ck::ckdata_hard`, `mount::t_ckmeta`, `mount::t_ckdata` and 27 more; since `b10efaa`: NEW-67, NEW-62, NEW-64, NEW-40, NEW-163, NEW-164 | – |
 | traversal API | GC-07, GC-08, GC-09, GC-10, GC-11, GC-15, GC-16 | `trvs::simple`, `trvs::idempotent`, `trvs::spam_*`, `trvs::mutation_*`, `trvs::clobber_files_opened`, `trvs::compact_*` and 6 more | GC-11 (P) → NEW-108 |
 | incremental gc | GC-01, GC-02, GC-03, GC-04, GC-05, GC-06, GC-12, GC-13, GC-14 | `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*` and 23 more; since `b10efaa`: NEW-82, NEW-83 | GC-01 (P) → NEW-107; GC-14 (P) → NEW-109 |
 | runtime error recovery | SYNC-05, SYNC-09, META-10, FAIL-18, FAIL-19, FILE-21 | `badblocks::mrootanchor_wear`, `alloc::nospc_files`; since `b10efaa`: NEW-38, NEW-77, NEW-18, NEW-19, NEW-74 | – |
@@ -2383,7 +2383,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-54 | P0 | sanitizer job (J-SAN) | `make test-sanitize`, jobs `test-sanitize`, `test-sanitize-biggest`, `test-valgrind` | 41165ec9, 6fad1a62 | done; the nightly half has not run |
 | NEW-55 | P1 | `powerloss_p1::kv_pl_fuzz` | as planned | f05ccd38 | done |
 | NEW-56 | P1 | `powerloss_p1::fsync_pl_fuzz` | as planned | 5e8c3080 | done |
-| NEW-57 | P1 | `powerloss_p1::osync_pl` | as planned | cba1a7d5 | done |
+| NEW-57 | P1 | `powerloss_p1::osync_pl` | as planned | cba1a7d5, 08b5e4d6 | done |
 | NEW-58 | P1 | `powerloss_p1::flush_pl` | as planned | 9cb7377f | done |
 | NEW-59 | P1 | `attrs::setattr_pl_fuzz` | as planned | b686c1da | done |
 | NEW-60 | P1 | `powerloss_p1::tear_tail`, `powerloss::append_pl`, `powerloss::preerase_pl_fuzz` | as planned | c9511dfe, 57493587 | done |
@@ -2487,6 +2487,10 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-158 | P1 | `errs::ioerror` | as planned | 3c7a175e, cb80d770 | done |
 | NEW-159 | P1 | `badblocks::graft_torn` | as planned | 96883f8e, d4211ea5 | done |
 | NEW-160 | P1 | `mount::no_geometry` | as planned | e9aeb8b2 | done |
+| NEW-161 | P1 | `stickynotes::uncreat_rmdir` | as planned | 022bdf17 | done |
+| NEW-162 | P1 | `fsync::sync_o_tsrr` | as planned | 08b5e4d6 | done |
+| NEW-163 | P1 | `ck::file_ckmeta_mdir`, `repair::passes_file` | as planned | 159c1f23 | done |
+| NEW-164 | P1 | `ck::file_ck_heals` | as planned | 0487ffd3 | done |
 
 ### 6.8 Tests of error handling, degradation and thread safety
 
