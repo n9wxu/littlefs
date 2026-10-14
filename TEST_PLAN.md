@@ -286,7 +286,7 @@ a test.
 | `lfs3_crc32c` | INT-05 | `ck::crc32c`, `ck::crc32c_incr`, `ck::crc32c_mul`, `ck::crc32c_mul_dist` | INT-05 (P) → NEW-53, J-BUILD |
 | `lfs3_crc32c_mul` | INT-05 | `ck::crc32c`, `ck::crc32c_incr`, `ck::crc32c_mul`, `ck::crc32c_mul_dist` | INT-05 (P) → NEW-53, J-BUILD |
 | `lfs3_toleb128` | GEN-02, DOC-02 | none; since `b10efaa`: NEW-91 | DOC-02 (P) → NEW-127 |
-| `lfs3_fromleb128` | GEN-03, GEN-07, DOC-02 | `mtree::truncated_*`; since `b10efaa`: NEW-54 | GEN-07 (U) → NEW-68; DOC-02 (P) → NEW-127 |
+| `lfs3_fromleb128` | GEN-03, GEN-07, DOC-02 | `mtree::truncated_*`; since `b10efaa`: NEW-54, NEW-68 | DOC-02 (P) → NEW-127 |
 
 ### 3.2 Configuration fields
 
@@ -428,7 +428,7 @@ a test.
 | resource bounds | RES-01, RES-02, RES-03, RES-04, RES-05, RES-06, RES-07, RES-08 | none; since `b10efaa`: NEW-87, NEW-50, NEW-88 | RES-02 (P) → NEW-118; RES-03 (P) → NEW-118; RES-04 (P) → NEW-118; RES-05 (P) → NEW-118 |
 | performance | PERF-01, PERF-02, PERF-03, PERF-04, PERF-05, PERF-06, PERF-07, PERF-08, PERF-09, PERF-10, PERF-11, PERF-12, PERF-13, PERF-14 | none; since `b10efaa`: NEW-121 | PERF-01 (U) → NEW-119; PERF-02 (U) → NEW-119; PERF-03 (U) → NEW-119; PERF-04 (U) → NEW-119; PERF-05 (U) → NEW-119; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-11 (P) → NEW-120; PERF-12 (U) → NEW-122; PERF-13 (U) → NEW-123 |
 | thread safety | THR-01, THR-02, THR-03, THR-04 | none; since `b10efaa`: NEW-89, NEW-118 | THR-03 (U) → NEW-124 |
-| portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*`; since `b10efaa`: NEW-91, NEW-54, NEW-93, NEW-47 | GEN-04 (U) → NEW-92; GEN-06 (Q) → NEW-49; GEN-07 (U) → NEW-68 |
+| portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*`; since `b10efaa`: NEW-91, NEW-54, NEW-93, NEW-47, NEW-68 | GEN-04 (U) → NEW-92; GEN-06 (Q) → NEW-49 |
 | build configurations | BUILD-01, BUILD-02, BUILD-03, BUILD-04, BUILD-05, BUILD-06, BUILD-07, BUILD-08, BUILD-09, BUILD-10, BUILD-11, BUILD-12, BUILD-13, BUILD-14, BUILD-15, BUILD-16, BUILD-17, BUILD-18, BUILD-19, BUILD-20 | `ck::crc32c*`, `paths::*`, `fwrite::*fbig`, `files::*`, `dirs::*`, `attrs::*`; since `b10efaa`: NEW-53, NEW-46 | BUILD-02 (P) → NEW-53; BUILD-03 (P) → NEW-53; BUILD-04 (P) → NEW-53; BUILD-05 (P) → NEW-53; BUILD-06 (P) → NEW-53; BUILD-07 (U) → NEW-53; BUILD-08 (U) → NEW-53; BUILD-09 (U) → NEW-53; BUILD-10 (U) → NEW-53; BUILD-11 (U) → NEW-53; BUILD-12 (U) → NEW-125; BUILD-15 (U) → J-YES; BUILD-17 (P) → J-NBNS; BUILD-18 (U) → NEW-126; BUILD-20 (U) → NEW-53 |
 
 At `b10efaa`, 250 of 357 requirements had a gap. On `v3-integration`, 93
@@ -1185,8 +1185,7 @@ have not yet run on GitHub, and `nightly.yml` has not run there at all
   behaviours whose intent is still an open question in REQUIREMENTS.md
   section 8. There were 37; with NEW-157 to NEW-160 there are 41. They are
   also required for "done" (section 7), except where a test waits on an
-  open question. 39 are done; NEW-68 waits on Q21, and NEW-86 is not
-  written.
+  open question. 40 are done, and NEW-86 is not written.
 - **P2** tests are lower-value checks, benches and reports. There are 38.
   They are tracked but not required for "done". 4 are done and 5 partly.
 
@@ -2390,7 +2389,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-65 | P1 | `ck::rollback` | as planned | 6d53943f | done |
 | NEW-66 | P1 | `rbyd::erased_values`, `mtree::ecksum_disturb` | as planned | f6e23134, 1a17402f | done |
 | NEW-67 | P1 | `ck::file_ckdata_blocks` | as planned | 23b617c1 | done |
-| NEW-68 | P1 | `crafted::*` | as planned | – | specified, Q21 decided |
+| NEW-68 | P1 | `crafted::*` | as planned | 9cfedb6e, ba67125f, 8e61fd48, 9113bd1c | done |
 | NEW-69 | P1 | `make test-balance`, nightly job `test-balance` | as planned | 35d965ef | done, nightly; not yet run on GitHub |
 | NEW-70 | P1 | `mtree::rev_wrap` | as planned | ef18a87f | done |
 | NEW-71 | P1 | `stickynotes::cleanup_drop` | as planned | 4a129857, 68039c4d | done |
@@ -2549,8 +2548,8 @@ following hold on that commit:
 
 1. **Tests exist.** Every P0 test of section 6 (81) and every P1 test (41)
    is in the tree, except P1 tests that wait on an open question in
-   REQUIREMENTS.md section 8 while that question is open: NEW-68 (Q21).
-   NEW-86 waited on Q15, which is decided. NEW-90 (bad-block tracking) is
+   REQUIREMENTS.md section 8 while that question is open, of which there
+   are none: NEW-68 waited on Q21 and NEW-86 on Q15, which are decided. NEW-90 (bad-block tracking) is
    merged and required.
 
    P2 tests are not required, but every P2 test that exists must pass.
@@ -2606,7 +2605,7 @@ B-BIG and 668,220 in B-TS:
 | Entry 2, a green baseline | yes | – |
 | Entry 3, the P0 extensions | yes | E-1 to E-12 are all done (6.4) |
 | Entry 4, a PR-tier workflow | in part | `test.yml` has a job for every PR-tier job but J-BUILD's matrix (5.5); only run 36985477685, on an earlier commit, has run on GitHub, and the jobs added since have passed only in the `lfs3-ci` image |
-| Exit 1, tests exist | no | P0: NEW-49's B-NA half waits on Q2, and NEW-53's build matrix is partly done. P1: NEW-86 is not written; NEW-68 waits on Q21, which the criterion allows |
+| Exit 1, tests exist | no | P0: NEW-49's B-NA half waits on Q2, and NEW-53's build matrix is partly done. P1: NEW-86 is not written |
 | Exit 2, PR and nightly tiers pass | no | the nightly tier has never run on GitHub (J-PL, J-GEO, J-YES, J-BENCH and the B-BIG sanitizer run); B-NS and the J-DEFINES matrices have no job (5.5) |
 | Exit 3, release tier passes once | no | no tag yet; J-ARCH-BIG has no job, and J-PL-DEEP runs `permute(2)` on `test_dirs` only |
 | Exit 4, flash-failure matrix closed | no | 230 of 247 cells are T; 3 R cells and 11 of the 14 P cells wait on J-PL, and 3 P cells on the B-tree bad-block cases that `LFS3_YES_GBMAP` excludes (F23) |
@@ -2840,9 +2839,9 @@ modelled device, and the assumptions say which real devices that covers.
 
 ### 9.4 Other risks
 
-- **Open questions block tests.** NEW-68 (Q21), the B-NA half of NEW-49
-  (Q2) and NEW-102 (Q9) wait on decisions in REQUIREMENTS.md section 8;
-  Q3 and Q15, which held up NEW-41's error codes and NEW-86, are decided.
+- **Open questions block tests.** The B-NA half of NEW-49 (Q2) and
+  NEW-102 (Q9) wait on decisions in REQUIREMENTS.md section 8; Q3, Q15 and
+  Q21, which held up NEW-41's error codes, NEW-86 and NEW-68, are decided.
   If the decisions take long, those tests should be written against the
   current behaviour and marked, rather than left out.
 - **Test-side defects.** Seven defects in test code (F-4 to F-10) were found
