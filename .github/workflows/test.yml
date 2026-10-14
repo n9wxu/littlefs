@@ -593,14 +593,14 @@ jobs:
 
   # run with LFS3_NO_BUILTINS to make sure that works
   #
-  # split into 2 shards, see test
+  # split into 3 shards, see test
   test-no-builtins:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v5
@@ -613,7 +613,7 @@ jobs:
           python3 --version
       - name: test-no-builtins
         run: |
-          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/2" \
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
             CFLAGS="$CFLAGS -DLFS3_NO_BUILTINS" make test
 
   # check that LFS3_RDONLY builds read what read-write builds write
