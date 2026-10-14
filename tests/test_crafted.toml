@@ -128,6 +128,19 @@ static lfs3_size_t test_crafted_enc(uint8_t *buf, const char *fmt, ...) {
     return d;
 }
 
+// erase a block and prog an image of it, the image's bytes from eoff on
+// are what an erase left, so with ck_progonce littlefs may program them
+// before the block's next erase
+static void test_crafted_put(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, const uint8_t *buf, lfs3_size_t eoff) {
+    cfg->erase(cfg, block) => 0;
+    cfg->prog(cfg, block, 0, buf, cfg->block_size) => 0;
+    if (eoff < cfg->block_size) {
+        lfs3_emubd_mkunprogged(cfg, block,
+                eoff, cfg->block_size-eoff) => 0;
+    }
+}
+
 // a tag for test_crafted_mkrbyd, alts take their jump in size
 typedef struct test_crafted_tag {
     lfs3_tag_t tag;
@@ -171,8 +184,7 @@ static uint32_t test_crafted_mkrbyd(const struct lfs3_cfg *cfg,
     test_crafted_sign(buf, cfg->block_size, block, off, true,
             &cksum, &gdelta) => off;
 
-    cfg->erase(cfg, block) => 0;
-    cfg->prog(cfg, block, 0, buf, cfg->block_size) => 0;
+    test_crafted_put(cfg, block, buf, off);
     return cksum;
 }
 
@@ -584,9 +596,16 @@ static void test_crafted_restore(const struct lfs3_cfg *cfg,
     for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
         cfg->read(cfg, b, 0, buf, cfg->block_size) => 0;
         if (memcmp(buf, &disk[b*cfg->block_size], cfg->block_size) != 0) {
-            cfg->erase(cfg, b) => 0;
-            cfg->prog(cfg, b, 0,
-                    &disk[b*cfg->block_size], cfg->block_size) => 0;
+            // a metadata block's bytes after its last commit that checks
+            // are erased
+            memcpy(buf, &disk[b*cfg->block_size], cfg->block_size);
+            uint32_t cksum;
+            lfs3_ssize_t gdelta;
+            lfs3_size_t eoff = test_crafted_sign(buf, cfg->block_size, b,
+                    cfg->block_size, false,
+                    &cksum, &gdelta);
+            test_crafted_put(cfg, b, &disk[b*cfg->block_size],
+                    (eoff > sizeof(uint32_t)) ? eoff : cfg->block_size);
         }
     }
 }
@@ -1424,8 +1443,9 @@ code = '''
 
             test_crafted_resign(buf, BLOCK_SIZE, block, eoff,
                     blocks.mdir[i], cksum, delta, &gcksum_);
-            CFG->erase(CFG, block) => 0;
-            CFG->prog(CFG, block, 0, buf, BLOCK_SIZE) => 0;
+            // what we changed may not walk, but the bytes after the
+            // log are still erased
+            test_crafted_put(CFG, block, buf, eoff);
         }
 
         test_crafted_exercise(&lfs3, CFG, LFS3_M_RDONLY | rflags);
