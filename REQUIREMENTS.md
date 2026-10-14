@@ -5152,12 +5152,12 @@ the final mroot has no `VERSION` tag.
 - **Measure:** mount result.
 - **Pass:** `mount::incompat_major` and `mount::incompat_minor`, which
   write v1.0 and v0.2 once the driver is v0.1 (LFS3-MOUNT-28), pass in
-  B-DEF and B-YGB; NEW-161 (`mount::no_version`) removes the `VERSION`
+  B-DEF and B-YGB; NEW-163 (`mount::no_version`) removes the `VERSION`
   tag and gets `LFS3_ERR_CORRUPT` from a read-write, a read-only and a
   salvage mount, in B-DEF and B-YGB; `mount::fail_nowrite` with the tag
   removed writes nothing (LFS3-MOUNT-16).
 - **Fail:** a mount succeeds, or returns another error.
-- **Verified by:** as listed; NEW-161.
+- **Verified by:** as listed; NEW-163.
 - **Status:** Tested on v3-integration (c65e1894, 38d17a1c). Not
   implemented at `b10efaa`, where a missing tag read as v0.0.
 - **When:** every CI run.
@@ -5179,7 +5179,7 @@ whether the image sets a flag the driver doesn't set or lacks one it does;
 - **Measure:** mount result; `lfs3.h` and SPEC.md.
 - **Pass:** `mount::incompat_rcompat`, `mount::incompat_wronly`,
   `mount::incompat_rcompat_overflow` and `mount::incompat_rcompat_padding`
-  pass in B-DEF, and NEW-162 (`mount::incompat_rcompat_mismatch`), which
+  pass in B-DEF, and NEW-164 (`mount::incompat_rcompat_mismatch`), which
   flips each of the 32 bits of the driver's rcompat flags in turn, so
   clears each flag the driver sets and sets each it doesn't, and removes
   the `RCOMPAT` tag, gets `LFS3_ERR_NOTSUP` from a read-write and a
@@ -5188,7 +5188,7 @@ whether the image sets a flag the driver doesn't set or lacks one it does;
   the flags must match.
 - **Fail:** a mount succeeds, or `lfs3.h` or SPEC.md says the flags need
   only be understood.
-- **Verified by:** as listed; NEW-162; review of `lfs3.h` and SPEC.md.
+- **Verified by:** as listed; NEW-164; review of `lfs3.h` and SPEC.md.
 - **Status:** Tested on v3-integration (221b4656, c65e1894), and `lfs3.h`
   and SPEC.md say "match" (38d17a1c). At `b10efaa` an image lacking one of
   the driver's flags was refused, untested, and `lfs3.h` said "understand"
@@ -5575,7 +5575,7 @@ shall never change it.
   the next call that makes the filesystem consistent.
 - **Measure:** the `VERSION` tag of the mroot; mount results; emubd prog
   and erase counters.
-- **Pass:** NEW-163 (`mount::version_upgrade`) in B-DEF, B-YGB and B-BIG:
+- **Pass:** NEW-165 (`mount::version_upgrade`) in B-DEF, B-YGB and B-BIG:
   format writes v0.1; a v0.0 image mounts read-only, reads, writes nothing,
   and still says v0.0; a read-write mount of it reads and writes nothing,
   and says v0.0, until one of `lfs3_mkdir`, `lfs3_remove`, `lfs3_rename`,
@@ -5590,7 +5590,7 @@ shall never change it.
 - **Fail:** format writes another version; a v0.0 or v0.1 image is
   refused; a read-only mount changes the tag; a read-write mount changes
   it before such a call, or leaves it v0.0 after one returns 0.
-- **Verified by:** NEW-163; `mount::incompat_minor`,
+- **Verified by:** NEW-165; `mount::incompat_minor`,
   `mount::incompat_major`; `make test-dbg` (NEW-154).
 - **Status:** Tested on v3-integration (38d17a1c). Not implemented at
   `b10efaa`, where every image claimed v0.0 (4-api R24).
