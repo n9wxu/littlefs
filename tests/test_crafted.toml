@@ -23,11 +23,17 @@ code = '''
 // sign, stop at the first commit that doesn't check
 //
 // returns the end of the last commit that checks, its canonical checksum
-// in cksum_, and where the data of its gcksumdelta starts in gdelta_, -1
-// if it has none
+// in cksum_, where the data of its gcksumdelta starts in gdelta_, -1 if
+// it has none, and where its checksum ends in pend_
+//
+// note pend_ is not the commit's end: a cksum tag's size also counts
+// padding lfs3_rbyd_appendcksum_ never programs, the room it kept for a
+// 4-byte ecksum cksize that a shorter leb128 left, 3 bytes for a cksize
+// under 128, then up to the next prog unit, or to the end of the block
+// if no ecksum fits
 static lfs3_size_t test_crafted_sign(uint8_t *buf, lfs3_size_t block_size,
         lfs3_block_t block, lfs3_size_t limit, bool sign,
-        uint32_t *cksum_, lfs3_ssize_t *gdelta_) {
+        uint32_t *cksum_, lfs3_ssize_t *gdelta_, lfs3_size_t *pend_) {
     uint32_t cksum = lfs3_crc32c(0, buf, sizeof(uint32_t));
     uint32_t ccksum = cksum;
     bool perturb = false;
@@ -35,6 +41,7 @@ static lfs3_size_t test_crafted_sign(uint8_t *buf, lfs3_size_t block_size,
     lfs3_size_t eoff = 0;
     *cksum_ = 0;
     *gdelta_ = -1;
+    *pend_ = 0;
 
     lfs3_size_t off = sizeof(uint32_t);
     while (off < limit && off <= block_size-4) {
@@ -91,6 +98,7 @@ static lfs3_size_t test_crafted_sign(uint8_t *buf, lfs3_size_t block_size,
                 eoff = off+d + size;
                 *cksum_ = ccksum;
                 *gdelta_ = gdelta;
+                *pend_ = off+d + sizeof(uint32_t);
                 gdelta = -1;
                 perturb = lfs3_tag_perturb(tag);
                 cksum = ccksum ^ ((perturb) ? LFS3_CRC32C_ODDZERO : 0);
@@ -128,16 +136,18 @@ static lfs3_size_t test_crafted_enc(uint8_t *buf, const char *fmt, ...) {
     return d;
 }
 
-// erase a block and prog an image of it, the image's bytes from eoff on
-// are what an erase left, so with ck_progonce littlefs may program them
+// erase a block and prog an image of it, programmed up to pend, rounded
+// up to a prog unit as lfs3_bd_flush progs, and from there on what an
+// erase left, so with ck_progonce littlefs may program those bytes
 // before the block's next erase
 static void test_crafted_put(const struct lfs3_cfg *cfg,
-        lfs3_block_t block, const uint8_t *buf, lfs3_size_t eoff) {
+        lfs3_block_t block, const uint8_t *buf, lfs3_size_t pend) {
     cfg->erase(cfg, block) => 0;
     cfg->prog(cfg, block, 0, buf, cfg->block_size) => 0;
-    if (eoff < cfg->block_size) {
+    pend = lfs3_min(lfs3_alignup(pend, cfg->prog_size), cfg->block_size);
+    if (pend < cfg->block_size) {
         lfs3_emubd_mkunprogged(cfg, block,
-                eoff, cfg->block_size-eoff) => 0;
+                pend, cfg->block_size-pend) => 0;
     }
 }
 
@@ -181,10 +191,11 @@ static uint32_t test_crafted_mkrbyd(const struct lfs3_cfg *cfg,
 
     uint32_t cksum;
     lfs3_ssize_t gdelta;
+    lfs3_size_t pend;
     test_crafted_sign(buf, cfg->block_size, block, off, true,
-            &cksum, &gdelta) => off;
+            &cksum, &gdelta, &pend) => off;
 
-    test_crafted_put(cfg, block, buf, off);
+    test_crafted_put(cfg, block, buf, pend);
     return cksum;
 }
 
@@ -279,8 +290,9 @@ static void test_crafted_resign(uint8_t *buf, lfs3_size_t block_size,
         bool mdir, uint32_t cksum, uint32_t delta, uint32_t *gcksum) {
     uint32_t cksum_;
     lfs3_ssize_t gdelta_;
+    lfs3_size_t pend_;
     test_crafted_sign(buf, block_size, block, limit, true,
-            &cksum_, &gdelta_);
+            &cksum_, &gdelta_, &pend_);
     if (!mdir || gdelta_ < 0) {
         return;
     }
@@ -297,7 +309,7 @@ static void test_crafted_resign(uint8_t *buf, lfs3_size_t block_size,
         uint32_t cksum__;
         lfs3_ssize_t gdelta__;
         test_crafted_sign(buf, block_size, block, limit, true,
-                &cksum__, &gdelta__);
+                &cksum__, &gdelta__, &pend_);
         if (cksum__ == cksum_ && gdelta__ == gdelta_) {
             *gcksum = gcksum_;
             return;
@@ -590,22 +602,44 @@ static uint8_t *test_crafted_save(const struct lfs3_cfg *cfg) {
     return disk;
 }
 
+// where an image of a saved block stops being programmed, for
+// test_crafted_put: the end of the saved block's last commit's checksum,
+// all of the block if no commit checks, or past the last byte the image
+// changes from the saved block, as we programmed those
+static lfs3_size_t test_crafted_pend(const struct lfs3_cfg *cfg,
+        lfs3_block_t block, const uint8_t *saved, const uint8_t *buf) {
+    uint8_t buf_[cfg->block_size];
+    memcpy(buf_, saved, cfg->block_size);
+    uint32_t cksum;
+    lfs3_ssize_t gdelta;
+    lfs3_size_t pend;
+    lfs3_size_t eoff = test_crafted_sign(buf_, cfg->block_size, block,
+            cfg->block_size, false,
+            &cksum, &gdelta, &pend);
+    if (eoff <= sizeof(uint32_t)) {
+        return cfg->block_size;
+    }
+
+    for (lfs3_size_t i = pend; i < cfg->block_size; i++) {
+        if (buf[i] != saved[i]) {
+            pend = i+1;
+        }
+    }
+    return pend;
+}
+
 static void test_crafted_restore(const struct lfs3_cfg *cfg,
         const uint8_t *disk) {
     uint8_t buf[cfg->block_size];
     for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
         cfg->read(cfg, b, 0, buf, cfg->block_size) => 0;
         if (memcmp(buf, &disk[b*cfg->block_size], cfg->block_size) != 0) {
-            // a metadata block's bytes after its last commit that checks
+            // a metadata block's bytes after its last commit's checksum
             // are erased
-            memcpy(buf, &disk[b*cfg->block_size], cfg->block_size);
-            uint32_t cksum;
-            lfs3_ssize_t gdelta;
-            lfs3_size_t eoff = test_crafted_sign(buf, cfg->block_size, b,
-                    cfg->block_size, false,
-                    &cksum, &gdelta);
             test_crafted_put(cfg, b, &disk[b*cfg->block_size],
-                    (eoff > sizeof(uint32_t)) ? eoff : cfg->block_size);
+                    test_crafted_pend(cfg, b,
+                        &disk[b*cfg->block_size],
+                        &disk[b*cfg->block_size]));
         }
     }
 }
@@ -1416,9 +1450,10 @@ code = '''
 
             uint32_t cksum;
             lfs3_ssize_t gdelta;
+            lfs3_size_t pend;
             lfs3_size_t eoff = test_crafted_sign(buf, BLOCK_SIZE, block,
                     BLOCK_SIZE, false,
-                    &cksum, &gdelta);
+                    &cksum, &gdelta, &pend);
             if (eoff <= sizeof(uint32_t)) {
                 continue;
             }
@@ -1443,9 +1478,17 @@ code = '''
 
             test_crafted_resign(buf, BLOCK_SIZE, block, eoff,
                     blocks.mdir[i], cksum, delta, &gcksum_);
-            // what we changed may not walk, but the bytes after the
-            // log are still erased
-            test_crafted_put(CFG, block, buf, eoff);
+            // what we changed may not walk, but what littlefs left
+            // unprogrammed in the saved block, past its last commit's
+            // checksum, is still erased, unless we changed it
+            //
+            // note this is not the log's end, eoff: what we changed can
+            // end a commit in the padding of the last one's cksum tag,
+            // which littlefs never programmed, and littlefs may append
+            // there if its ecksum checks
+            test_crafted_put(CFG, block, buf,
+                    test_crafted_pend(CFG, block,
+                        &disk[block*BLOCK_SIZE], buf));
         }
 
         test_crafted_exercise(&lfs3, CFG, LFS3_M_RDONLY | rflags);
