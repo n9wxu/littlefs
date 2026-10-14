@@ -4201,11 +4201,15 @@ littlefs shall store the attributes of all 256 type values independently.
   tag range).
 - **Measure:** values after setting each type.
 - **Pass:** a NEW case sets a distinct value for every type 0x00 to 0xff on
-  one file and reads each back, in B-DEF.
+  one file and reads each back, in B-DEF. A file's attributes share its
+  mdir: on 4 KiB blocks 199 attributes of 2 bytes fit and the 200th returns
+  `LFS3_ERR_NOSPC`, so the case uses 16 KiB blocks.
 - **Fail:** any type reads another type's value.
 - **Verified by:** `attrs::all_types` (NEW-102). Q9 is decided: every
   type is accepted, the reserved ranges included (LFS3-DOC-14).
-- **Status:** Untested.
+- **Status:** Tested on v3-integration (1087d526): `attrs::all_types` sets
+  all 256 types at once on a file, a stickynote, a directory and the root,
+  and reads each back before and after a remount, in B-DEF and B-BIG.
 - **When:** every CI run.
 
 #### LFS3-ATTR-08
@@ -8994,7 +8998,6 @@ test in a new environment (9.2).
 | LFS3-SYNC-10 | Partly | every CI run | `lfs3_stat` after flush |
 | LFS3-SYNC-16 | Partly | every CI run | close three or more uncreated handles; flag and cleanup |
 | LFS3-DIR-18 | Untested | every CI run | 32 empty directories in at most 4 blocks |
-| LFS3-ATTR-07 | Untested | every CI run | all 256 attribute types on one file |
 | LFS3-ATTR-10 | Partly | every CI run | `buffer_size = LFS3_ERR_NOATTR` removes at sync |
 | LFS3-KV-05 | Partly | every CI run | `lfs3_get`/`lfs3_size` on a directory |
 | LFS3-KV-08 | Untested | every CI run | `lfs3_get` on an uncreated file |
