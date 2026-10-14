@@ -13,11 +13,101 @@ env:
 
 jobs:
   # run tests
+  #
+  # split into 4 shards to fit in GitHub's time limits, each runs every
+  # 4th permutation of every suite, see test.py --shard
   test:
     runs-on: ubuntu-24.04
     # qemu is 10-20x slower than native, thumb the slowest
     timeout-minutes: >-
-      ${{matrix.arch == 'x86_64' && 60 || matrix.arch == 'thumb' && 360 || 240}}
+      ${{matrix.arch == 'x86_64' && 60 || matrix.arch == 'thumb' && 180 || 120}}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, thumb, mips, powerpc]
+        shard: [1, 2, 3, 4]
+
+    steps:
+      - uses: actions/checkout@v5
+      - name: install
+        run: |
+          # need a few things
+          sudo apt-get update -qq
+          sudo apt-get install -qq gcc python3
+          gcc --version
+          python3 --version
+
+      # cross-compile with ARM Thumb (32-bit, little-endian)
+      - name: install-thumb
+        if: ${{matrix.arch == 'thumb'}}
+        run: |
+          sudo apt-get install -qq \
+            gcc-arm-linux-gnueabi \
+            libc6-dev-armel-cross \
+            qemu-user
+          echo "CC=arm-linux-gnueabi-gcc -mthumb --static" >> $GITHUB_ENV
+          echo "EXEC=qemu-arm" >> $GITHUB_ENV
+          echo "OBJDUMP=arm-linux-gnueabi-objdump" >> $GITHUB_ENV
+          arm-linux-gnueabi-gcc --version
+          qemu-arm -version
+      # cross-compile with MIPS (32-bit, big-endian)
+      - name: install-mips
+        if: ${{matrix.arch == 'mips'}}
+        run: |
+          sudo apt-get install -qq \
+            gcc-mips-linux-gnu \
+            libc6-dev-mips-cross \
+            qemu-user
+          echo "CC=mips-linux-gnu-gcc --static" >> $GITHUB_ENV
+          echo "EXEC=qemu-mips" >> $GITHUB_ENV
+          echo "OBJDUMP=mips-linux-gnu-objdump" >> $GITHUB_ENV
+          mips-linux-gnu-gcc --version
+          qemu-mips -version
+      # cross-compile with PowerPC (32-bit, big-endian)
+      - name: install-powerpc
+        if: ${{matrix.arch == 'powerpc'}}
+        run: |
+          sudo apt-get install -qq \
+            gcc-powerpc-linux-gnu \
+            libc6-dev-powerpc-cross \
+            qemu-user
+          echo "CC=powerpc-linux-gnu-gcc --static" >> $GITHUB_ENV
+          echo "EXEC=qemu-ppc" >> $GITHUB_ENV
+          echo "OBJDUMP=powerpc-linux-gnu-objdump" >> $GITHUB_ENV
+          powerpc-linux-gnu-gcc --version
+          qemu-ppc -version
+
+      # run the tests!
+      #
+      # under qemu the full suite takes hours, so the cross archs only run
+      # the non-fuzz tests without powerloss here, the nightly runs the
+      # rest on the big-endian archs
+      #
+      # TEST_ERRS records the error codes each public function returns,
+      # test-errs checks them against lfs3.h
+      - name: test
+        run: |
+          make clean
+          if [[ ${{matrix.arch}} != x86_64 ]]
+          then
+            TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
+          fi
+          mkdir -p errs
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/4" \
+          TEST_ERRS=$PWD/errs/${{matrix.arch}}-${{matrix.shard}}.txt \
+            make test
+      - name: upload-errs
+        if: ${{!cancelled()}}
+        uses: actions/upload-artifact@v6
+        with:
+          name: errs-${{matrix.arch}}-${{matrix.shard}}
+          path: errs
+          retention-days: 1
+
+  # check that littlefs compiles, and find compile-time measurements
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -92,31 +182,6 @@ jobs:
             -include stdio.h" \
             make all
           rm test.c
-
-      # run the tests!
-      #
-      # under qemu the full suite takes hours, so the cross archs only run
-      # the non-fuzz tests without powerloss here, the nightly runs the
-      # rest on the big-endian archs
-      #
-      # TEST_ERRS records the error codes each public function returns,
-      # test-errs checks them against lfs3.h
-      - name: test
-        run: |
-          make clean
-          if [[ ${{matrix.arch}} != x86_64 ]]
-          then
-            TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
-          fi
-          mkdir -p errs
-          TEST_ERRS=$PWD/errs/${{matrix.arch}}.txt make test
-      - name: upload-errs
-        if: ${{!cancelled()}}
-        uses: actions/upload-artifact@v6
-        with:
-          name: errs-${{matrix.arch}}
-          path: errs
-          retention-days: 1
 
       # find compile-time measurements
       - name: sizes
@@ -290,13 +355,16 @@ jobs:
 
   # run with all opt-in features, the default build compiles out a good
   # number of tests
+  #
+  # split into 6 shards, mips takes over 6 hours in one, see test
   test-biggest:
     runs-on: ubuntu-24.04
-    timeout-minutes: ${{matrix.arch == 'x86_64' && 120 || 360}}
+    timeout-minutes: ${{matrix.arch == 'x86_64' && 60 || 180}}
     strategy:
       fail-fast: false
       matrix:
         arch: [x86_64, mips]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - uses: actions/checkout@v5
@@ -330,20 +398,28 @@ jobs:
             TESTFLAGS="$TESTFLAGS -Pnone --no-fuzz"
           fi
           mkdir -p errs
-          TEST_ERRS=$PWD/errs/biggest-${{matrix.arch}}.txt \
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/6" \
+          TEST_ERRS=$PWD/errs/biggest-${{matrix.arch}}-${{matrix.shard}}.txt \
             CFLAGS="$CFLAGS -DLFS3_BIGGEST" make test
       - name: upload-errs
         if: ${{!cancelled()}}
         uses: actions/upload-artifact@v6
         with:
-          name: errs-biggest-${{matrix.arch}}
+          name: errs-biggest-${{matrix.arch}}-${{matrix.shard}}
           path: errs
           retention-days: 1
 
   # run with LFS3_YES_GBMAP, some tests only run with the gbmap enabled
+  #
+  # split into 3 shards, see test
   test-yes-gbmap:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -356,21 +432,29 @@ jobs:
       - name: test-yes-gbmap
         run: |
           mkdir -p errs
-          TEST_ERRS=$PWD/errs/yes-gbmap.txt \
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
+          TEST_ERRS=$PWD/errs/yes-gbmap-${{matrix.shard}}.txt \
             CFLAGS="$CFLAGS -DLFS3_YES_GBMAP" make test
       - name: upload-errs
         if: ${{!cancelled()}}
         uses: actions/upload-artifact@v6
         with:
-          name: errs-yes-gbmap
+          name: errs-yes-gbmap-${{matrix.shard}}
           path: errs
           retention-days: 1
 
   # run with LFS3_THREADSAFE, where the runner's lock and unlock check
   # that each public call takes the lock once, see make test-threadsafe
+  #
+  # split into 3 shards, see test
   test-threadsafe:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -383,12 +467,14 @@ jobs:
       - name: test-threadsafe
         run: |
           mkdir -p errs
-          TEST_ERRS=$PWD/errs/threadsafe.txt make test-threadsafe
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
+          TEST_ERRS=$PWD/errs/threadsafe-${{matrix.shard}}.txt \
+            make test-threadsafe
       - name: upload-errs
         if: ${{!cancelled()}}
         uses: actions/upload-artifact@v6
         with:
-          name: errs-threadsafe
+          name: errs-threadsafe-${{matrix.shard}}
           path: errs
           retention-days: 1
 
@@ -455,9 +541,16 @@ jobs:
 
   # run the tests with emubd checking that nothing is progged twice
   # without an erase
+  #
+  # split into 3 shards, see test
   test-progonce:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -469,13 +562,21 @@ jobs:
           python3 --version
       - name: test-progonce
         run: |
-          make test-progonce
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
+            make test-progonce
 
   # run with LFS3_NO_ASSERT, the release build, where littlefs's asserts
   # compile out
+  #
+  # split into 3 shards, see test
   test-release:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -487,12 +588,20 @@ jobs:
           python3 --version
       - name: test-release
         run: |
-          make test-release
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
+            make test-release
 
   # run with LFS3_NO_BUILTINS to make sure that works
+  #
+  # split into 2 shards, see test
   test-no-builtins:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -504,7 +613,8 @@ jobs:
           python3 --version
       - name: test-no-builtins
         run: |
-          CFLAGS="$CFLAGS -DLFS3_NO_BUILTINS" make test
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/2" \
+            CFLAGS="$CFLAGS -DLFS3_NO_BUILTINS" make test
 
   # check that LFS3_RDONLY builds read what read-write builds write
   #
@@ -586,9 +696,16 @@ jobs:
             CROSS_EXEC="${{matrix.exec}}"
 
   # run under Valgrind to check for memory errors
+  #
+  # split into 2 shards, see test
   test-valgrind:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -608,6 +725,7 @@ jobs:
       - name: test-valgrind
         run: |
           TESTFLAGS="$TESTFLAGS --valgrind --context=1024 -Pnone --no-fuzz \
+              --shard=${{matrix.shard}}/2 \
               test_dirs test_files test_paths test_alloc test_attrs test_kv \
               test_compat test_grow test_relocations" \
             make test
@@ -616,28 +734,15 @@ jobs:
   # make test-sanitize, -Pnone also checks for leaks, the nightly runs
   # LFS3_BIGGEST
   #
-  # split by schedule and suite to fit in an hour, est. 20-35 minutes
-  # each on 4 vCPUs from local runs, an except entry runs every suite it
-  # doesn't name, so new suites are never left out
+  # split by schedule, and each into 4 shards, see test
   test-sanitize:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - pls: none
-            tests: test_fwrite
-          - pls: none
-            tests: test_badblocks test_exhaustion test_trvs test_rbyd
-          - pls: none
-            except: >-
-              test_fwrite test_badblocks test_exhaustion test_trvs
-              test_rbyd
-          - pls: linear
-            tests: test_powerloss
-          - pls: linear
-            except: test_powerloss
+        pls: [none, linear]
+        shard: [1, 2, 3, 4]
 
     steps:
       - uses: actions/checkout@v5
@@ -650,19 +755,20 @@ jobs:
           python3 --version
       - name: test-sanitize
         run: |
-          tests="${{matrix.tests}}"
-          if [[ -n "${{matrix.except}}" ]]
-          then
-            tests=$(ls tests/*.toml | xargs -n1 basename | sed 's/\.toml$//' \
-              | grep -vxF -f <(tr ' ' '\n' <<< "${{matrix.except}}"))
-          fi
-          TESTFLAGS="$TESTFLAGS $(echo $tests)" \
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/4" \
             make test-sanitize SANITIZE_PLS=${{matrix.pls}}
 
   # compile/run with Clang, mostly to check for Clang-specific warnings
+  #
+  # split into 2 shards, see test
   test-clang:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -674,16 +780,20 @@ jobs:
           python3 --version
       - name: test-clang
         run: |
-          CC=clang make test
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/2" \
+            CC=clang make test
 
   # collect coverage info
   #
   # Note the goal is to maximize coverage in the small, easy-to-run
   # tests, so we intentionally exclude more aggressive powerloss testing
   # from coverage results
+  #
+  # this isn't split into shards, cov.csv's per-function line counts
+  # can't be merged, so it gets a longer limit
   cov:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -753,7 +863,7 @@ jobs:
   # status related tasks that run after tests
   status:
     runs-on: ubuntu-24.04
-    needs: [test, cov]
+    needs: [build, test, cov]
     steps:
       - uses: actions/checkout@v5
         if: ${{github.event_name == 'pull_request'}}

@@ -21,7 +21,8 @@ jobs:
   # run the rest of the tests on the big-endian archs, test.yml only
   # runs -Pnone --no-fuzz under qemu
   #
-  # split by powerloss scenario to fit in GitHub's time limits
+  # split by powerloss scenario, and each into 6 shards, to fit in
+  # GitHub's time limits, see test.py --shard
   test-arch:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -30,6 +31,7 @@ jobs:
       matrix:
         arch: [mips, powerpc]
         pls: [none, linear]
+        shard: [1, 2, 3, 4, 5, 6]
 
     steps:
       - uses: actions/checkout@v5
@@ -68,13 +70,17 @@ jobs:
 
       - name: test-arch
         run: |
-          TESTFLAGS="$TESTFLAGS -P${{matrix.pls}}" make test
+          TESTFLAGS="$TESTFLAGS -P${{matrix.pls}} \
+              --shard=${{matrix.shard}}/6" \
+            make test
 
   # test other geometries
   #
   # v3 has no -G, so geometries are just define overrides. Note we
   # override READ/PROG/ERASE_SIZE and not BLOCK_SIZE, since some suites
   # need specific block sizes and -D overrides those too.
+  #
+  # each split into 2 shards, see test-arch
   test-geometry:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -83,6 +89,7 @@ jobs:
       matrix:
         geometry: [eeprom, prog16, emmc, nand, bignand]
         build: [default, biggest]
+        shard: [1, 2]
         include:
           - geometry: eeprom
             defines: -DREAD_SIZE=1 -DPROG_SIZE=1 -DERASE_SIZE=512
@@ -111,10 +118,13 @@ jobs:
       - name: test-geometry
         run: |
           CFLAGS="$CFLAGS ${{matrix.cflags}}" \
-          TESTFLAGS="$TESTFLAGS ${{matrix.defines}}" \
+          TESTFLAGS="$TESTFLAGS ${{matrix.defines}} \
+              --shard=${{matrix.shard}}/2" \
             make test
 
   # test other erase values, -1 simulates erase as a noop
+  #
+  # each split into 2 shards, see test-arch
   test-erase-value:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -122,6 +132,7 @@ jobs:
       fail-fast: false
       matrix:
         value: ['0x00', '-1']
+        shard: [1, 2]
 
     steps:
       - uses: actions/checkout@v5
@@ -134,16 +145,18 @@ jobs:
           python3 --version
       - name: test-erase-value
         run: |
-          TESTFLAGS="$TESTFLAGS -DERASE_VALUE=${{matrix.value}}" make test
+          TESTFLAGS="$TESTFLAGS -DERASE_VALUE=${{matrix.value}} \
+              --shard=${{matrix.shard}}/2" \
+            make test
 
   # run as many exhaustive tests as fits in GitHub's time limits
   #
   # this grows exponentially, so it doesn't turn out to be that many
   #
   # permute(1) only runs reentrant tests, split by suite since even one
-  # powerloss at every write takes 10-100x as long as -Plinear. Locally
-  # test_relocations and test_powerloss took hours on 4 cores, so may not
-  # fit in GitHub's 6 hour limit
+  # powerloss at every write takes 10-100x as long as -Plinear, and each
+  # into 4 shards. Locally test_relocations and test_powerloss took hours
+  # on 4 cores, so may not fit in GitHub's 6 hour limit
   test-pls:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -157,6 +170,7 @@ jobs:
           - test_grow
           - test_relocations
           - test_powerloss
+        shard: [1, 2, 3, 4]
         include:
           - tests: test_relocations
             slow: true
@@ -174,17 +188,24 @@ jobs:
           python3 --version
       - name: test-pls
         run: |
-          TESTFLAGS="$TESTFLAGS -P'permute(1)' ${{matrix.tests}}" make test
+          TESTFLAGS="$TESTFLAGS -P'permute(1)' \
+              --shard=${{matrix.shard}}/4 ${{matrix.tests}}" \
+            make test
 
   # >=2pls takes multiple days to run fully, so we can only
   # run a subset of tests, these are the most important
   #
   # even test_dirs didn't finish in 16 minutes on 4 cores locally, so
-  # this may not fit in GitHub's 6 hour limit either
+  # this may not fit in GitHub's 6 hour limit either, even in 4 shards
   test-limited-pls:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
     continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+
     steps:
       - uses: actions/checkout@v5
       - name: install
@@ -196,7 +217,9 @@ jobs:
           python3 --version
       - name: test-limited-pls
         run: |
-          TESTFLAGS="$TESTFLAGS -P'permute(2)' test_dirs" make test
+          TESTFLAGS="$TESTFLAGS -P'permute(2)' \
+              --shard=${{matrix.shard}}/4 test_dirs" \
+            make test
 
   # run the reentrant tests with the other powerloss behaviors, by
   # default only test_powerloss tests these
@@ -204,14 +227,17 @@ jobs:
   # note the existing reentrant tests expect exact success after every
   # powerloss, which METASTABLE (4) doesn't promise, so 4 is expected to
   # fail until tests accept LFS3_ERR_CORRUPT there
+  #
+  # each split into 2 shards, see test-arch
   test-powerloss-behavior:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 90
     continue-on-error: ${{matrix.behavior == 4}}
     strategy:
       fail-fast: false
       matrix:
         behavior: [0, 1, 2, 3, 4]
+        shard: [1, 2]
 
     steps:
       - uses: actions/checkout@v5
@@ -227,7 +253,8 @@ jobs:
       - name: test-powerloss-behavior
         run: |
           TESTFLAGS="$TESTFLAGS -Plinear \
-              -DPOWERLOSS_BEHAVIOR=${{matrix.behavior}}" \
+              -DPOWERLOSS_BEHAVIOR=${{matrix.behavior}} \
+              --shard=${{matrix.shard}}/2" \
             make test
 
   # run the expensive variants some cases leave to -DNIGHTLY=1
@@ -272,6 +299,7 @@ jobs:
   # build
   #
   # split by schedule, est. 1-1.5 hours each on 4 vCPUs from local runs
+  # before settling doubled the power losses, and each into 2 shards
   test-sanitize-biggest:
     runs-on: ubuntu-24.04
     timeout-minutes: 360
@@ -279,6 +307,7 @@ jobs:
       fail-fast: false
       matrix:
         pls: [none, linear]
+        shard: [1, 2]
 
     steps:
       - uses: actions/checkout@v5
@@ -292,12 +321,15 @@ jobs:
       - name: test-sanitize-biggest
         run: |
           CFLAGS="$CFLAGS -DLFS3_BIGGEST" \
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/2" \
             make test-sanitize SANITIZE_PLS=${{matrix.pls}}
 
   # run with each LFS3_YES_* option, which force the relevant feature on
   #
   # LFS3_YES_GBMAP runs on every push, and LFS3_YES_RDONLY can't run the
   # tests
+  #
+  # each split into 3 shards, see test-arch
   test-yes:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -316,6 +348,7 @@ jobs:
           - GC
           - BLEAFCACHE
           - TRACE
+        shard: [1, 2, 3]
 
     steps:
       - uses: actions/checkout@v5
@@ -328,7 +361,8 @@ jobs:
           python3 --version
       - name: test-yes
         run: |
-          CFLAGS="$CFLAGS -DLFS3_YES_${{matrix.yes}}" make test
+          TESTFLAGS="$TESTFLAGS --shard=${{matrix.shard}}/3" \
+            CFLAGS="$CFLAGS -DLFS3_YES_${{matrix.yes}}" make test
 
   # run benchmarks
   #
