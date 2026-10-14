@@ -896,6 +896,15 @@ code = '''
             lfs3_emubd_mktransient(CFG, pair[j], 0xffffffff) => 0;
         } else if (DAMAGE == 1) {
             CFG->erase(CFG, pair[j]) => 0;
+            // with ERASE_VALUE=-1 an erase is a noop and would leave the
+            // mdir's commits, so prog what an erase might leave, 0xff,
+            // and mark it not programmed, as erased bytes are, for the
+            // prog-once check
+            if (ERASE_VALUE == -1) {
+                memset(old[j], 0xff, BLOCK_SIZE);
+                CFG->prog(CFG, pair[j], 0, old[j], BLOCK_SIZE) => 0;
+                lfs3_emubd_mkunprogged(CFG, pair[j], 0, BLOCK_SIZE) => 0;
+            }
         } else {
             CFG->erase(CFG, pair[j]) => 0;
             CFG->prog(CFG, pair[j], 0, old[j], BLOCK_SIZE) => 0;
