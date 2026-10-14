@@ -7125,7 +7125,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE) {
         LFS3_ASSERT(err != LFS3_ERR_EXIST);
-        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
+        goto failed;
     }
 
     // needs a new root?
@@ -7133,7 +7133,7 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
         err = lfs3_btree_commitroot_(lfs3, &btree_, btree,
                 &bcommit);
         if (err) {
-            return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
+            goto failed;
         }
     }
 
@@ -7153,6 +7153,14 @@ static int lfs3_btree_commit(lfs3_t *lfs3, lfs3_btree_t *btree,
             btree->r.cksum);
     #endif
     return 0;
+
+failed:;
+    #ifdef LFS3_BLEAFCACHE
+    // we may have appended to the leaf we cached before failing, its
+    // erased state is gone
+    lfs3_btree_discardleaf(btree);
+    #endif
+    return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
 }
 #endif
 
@@ -7884,7 +7892,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             &bcommit);
     if (err && err != LFS3_ERR_RANGE
             && err != LFS3_ERR_EXIST) {
-        return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
+        goto failed;
     }
 
     // when btree is shrubbed or split, lfs3_btree_commit_ stops at the
@@ -7903,7 +7911,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
         err = lfs3_bshrub_commitroot_(lfs3, bshrub,
                 &bcommit);
         if (err && err != LFS3_ERR_RANGE) {
-            return err;
+            goto failed;
         }
 
         // if we don't fit, convert to btree
@@ -7911,7 +7919,7 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
             err = lfs3_btree_commitroot_(lfs3, &bshrub->b_, &bshrub->b,
                     &bcommit);
             if (err) {
-                return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
+                goto failed;
             }
         }
     }
@@ -7940,6 +7948,14 @@ static int lfs3_bshrub_commit(lfs3_t *lfs3, lfs3_bshrub_t *bshrub,
     }
     #endif
     return 0;
+
+failed:;
+    #ifdef LFS3_BLEAFCACHE
+    // we may have appended to the leaf we cached before failing, its
+    // erased state is gone
+    lfs3_bshrub_discardleaf(bshrub);
+    #endif
+    return (err == LFS3_ERR_SRCCORRUPT) ? LFS3_ERR_CORRUPT : err;
 }
 #endif
 
