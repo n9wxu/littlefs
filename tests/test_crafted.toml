@@ -117,12 +117,17 @@ static lfs3_size_t test_crafted_sign(uint8_t *buf, lfs3_size_t block_size,
 
 
 // encode leb128s (l) and le32s (w) for crafted tags, returns the size
-static lfs3_size_t test_crafted_enc(uint8_t *buf, const char *fmt, ...) {
-    va_list va;
-    va_start(va, fmt);
+//
+// the words go through an array, not varargs, so each converts to a
+// uint32_t: test defines are intmax_t, and reading one as a uint32_t
+// vararg reads its high half on 32-bit big-endian targets
+#define test_crafted_enc(buf, fmt, ...) \
+    test_crafted_enc_(buf, fmt, (const uint32_t[]){__VA_ARGS__})
+static lfs3_size_t test_crafted_enc_(uint8_t *buf, const char *fmt,
+        const uint32_t *words) {
     lfs3_size_t d = 0;
     for (const char *f = fmt; *f; f++) {
-        uint32_t word = va_arg(va, uint32_t);
+        uint32_t word = *words++;
         if (*f == 'l') {
             lfs3_ssize_t d_ = lfs3_toleb128(word, &buf[d], 5);
             assert(d_ > 0);
@@ -132,7 +137,6 @@ static lfs3_size_t test_crafted_enc(uint8_t *buf, const char *fmt, ...) {
             d += 4;
         }
     }
-    va_end(va);
     return d;
 }
 
