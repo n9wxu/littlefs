@@ -1193,7 +1193,8 @@ low two bits of the block address.
 #### LFS3-INT-03
 
 littlefs shall ensure that the erased bytes after a commit never parse as a
-valid tag, whatever the erased value.
+valid tag, whatever the erased value, including when they fail to read
+while the commit is written.
 
 - **Source:** Stated: #1111 "Pre-erased block tracking" ("We also make no
   assumptions about erase value"); the perturb bit, `lfs3.c:4430-4434`.
@@ -1203,11 +1204,17 @@ valid tag, whatever the erased value.
   `rbyd::erased_values`, which fills the erased region after each commit
   with every byte value 0x00 to 0xff and with random data, and with a noop
   erase fills the whole block before the commits, finds no extra commit, in
-  B-DEF.
+  B-DEF; `rbyd::erased_unreadable`, which with a noop erase commits A and
+  B, erases, and commits A again failing each read in turn with
+  `LFS3_ERR_CORRUPT`, finds A without B.
 - **Fail:** fetch accepts bytes that were never written as part of a
   commit.
-- **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`.
-- **Status:** Tested on v3-integration (f6e23134).
+- **Verified by:** `rbyd::*` (indirect); `rbyd::erased_values`;
+  `rbyd::erased_unreadable`.
+- **Status:** Tested on v3-integration (f6e23134, 4cb4d237). Known defect
+  before 4cb4d237 (D-37): a commit whose next byte failed to read with
+  `LFS3_ERR_CORRUPT` guessed its perturb bit, and with an erase that leaves
+  old bytes an older commit after it could parse as a later one.
 - **When:** every CI run.
 
 #### LFS3-INT-04
@@ -8739,6 +8746,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-33 | An mroot compaction that didn't fit tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` | `lfs3_mdir_compact___` | run (a 3896-byte root attr, then a create) | META-03, ERR-06 | 42e26e7e; `mtree::commit_too_big`, `attrs::setattr_huge` |
 | D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
+| D-37 | A commit whose first following byte failed to read with `LFS3_ERR_CORRUPT` set its perturb bit from a 0 in place of the byte; with an erase that leaves old bytes (`ERASE_VALUE=-1`), a wrong guess let fetch take an older commit left there, and those after it, for later commits, so a remount found commits never made since format: 1 permutation of `files::close_error` with `ERASE_VALUE=-1` | `lfs3_rbyd_appendcksum_` | run | INT-03 | 4cb4d237; `rbyd::erased_unreadable`, `files::close_error` with `ERASE_VALUE=-1` |
 
 ### A.3 From the analyses
 
