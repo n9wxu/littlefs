@@ -1935,8 +1935,11 @@ after format, before anything else is written.
 refusing blocks in use with `LFS3_ERR_BUSY`; `lfs3_fs_mkgood` clears a mark,
 say after a bench test; and `lfs3_fs_nextbad` lists bad blocks, including
 those still queued. `LFS3_I_BADBLOCKS` says some are queued but not yet on
-disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap` drops
-every mark, and `lfs3_fs_mkgbmap` starts without any.
+disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap`
+refuses with `LFS3_ERR_BUSY` while any block is marked, queued or on disk,
+since without the gbmap nothing would keep the blocks out of use; the
+application clears the marks with `lfs3_fs_mkgood` first if it means to.
+`lfs3_fs_mkgbmap` starts without any marks.
 
 **No compat flag** guards the bad state. Drivers that understand the gbmap
 already treat a bad range as in use when allocating from it, and an older

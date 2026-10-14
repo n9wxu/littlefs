@@ -2438,9 +2438,13 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 
 // Disable the global on-disk block-map
 //
-// Note this forgets any bad blocks, see lfs3_fs_mkbad.
+// Bad blocks are marked in the gbmap, and without it nothing keeps them
+// out of use, so this refuses while any are marked, including those not
+// yet on disk (LFS3_I_BADBLOCKS), see lfs3_fs_mkbad. Clear the marks with
+// lfs3_fs_mkgood first, if they are no longer wanted.
 //
 // Returns 0 on success, or LFS3_ERR_NOENT if no gbmap is found,
+// LFS3_ERR_BUSY, changing nothing, if lfs3_fs_nextbad lists a bad block,
 // LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
 // a read or write fails. With LFS3_THREADSAFE, also an error from lock or
 // unlock.

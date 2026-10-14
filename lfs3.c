@@ -21641,6 +21641,23 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
         return LFS3_ERR_NOENT;
     }
 
+    // bad blocks live in the gbmap, and without it nothing keeps them
+    // out of use, so refuse while any are marked or waiting to be
+    // marked, lfs3_fs_mkgood clears them
+    //
+    // a gbmap that doesn't read marks nothing we can keep, its marks are
+    // found again as they fail, see lfs3_alloc_dropgbmap
+    if (lfs3->gbmap.badq.count > 0) {
+        return LFS3_ERR_BUSY;
+    }
+    lfs3_sblock_t bad = lfs3_fs_nextbad(lfs3, 0);
+    if (bad >= 0) {
+        return LFS3_ERR_BUSY;
+    }
+    if (bad != LFS3_ERR_NOENT && bad != LFS3_ERR_CORRUPT) {
+        return bad;
+    }
+
     // prepare our filesystem for writing
     int err = lfs3_fs_mkconsistent(lfs3);
     if (err) {
@@ -21663,8 +21680,9 @@ int lfs3_fs_rmgbmap(lfs3_t *lfs3) {
         return err;
     }
 
-    // on success mark gbmap as not-in-use internally, this forgets
-    // any bad blocks
+    // on success mark gbmap as not-in-use internally, any block that
+    // failed while we removed it has nowhere to be marked, as any that
+    // fails without a gbmap
     lfs3->flags &= ~(LFS3_F_GBMAP | LFS3_I_BADBLOCKS | LFS3_I_MKGBMAP);
     lfs3->gbmap.badq.count = 0;
     return lfs3_fs_syncerr(lfs3, 0);
