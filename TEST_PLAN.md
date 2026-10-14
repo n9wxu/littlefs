@@ -273,13 +273,13 @@ a test.
 | `lfs3_fs_cksum` | GEN-02, INT-07, INT-08, INT-09, META-10, DOC-13 | `ck::cksum`, `ck::ckmeta_hard`, `badblocks::mrootanchor_wear`; since `b10efaa`: NEW-91, NEW-65, NEW-18 | INT-08 (U) → NEW-94; DOC-13 (P) → review |
 | `lfs3_fs_mkconsistent` | GEN-06, META-09, META-14, SYNC-15, SYNC-16, GC-12 | `dirs::*`, `mount::t_mkconsistent`, `stickynotes::cleanup_*`, `trvs::mkconsistent_*`, `stickynotes::*_many`, `gc::mkconsistent_*` and 1 more; since `b10efaa`: NEW-71 | GEN-06 (Q) → NEW-49; SYNC-16 (P) → NEW-100 |
 | `lfs3_fs_ck` | GEN-04, PL-19, PL-20, INT-10, INT-11, INT-21, INT-22, FAIL-18, BAD-03, META-03, SYNC-09, DIR-05, PRE-05, PRE-06, GC-05, GC-06, MOUNT-17, CFG-05 | `gbmap::mkgbmap`, `gbmap::rmgbmap`, `gbmap::rmmkgbmap`, `gbmap::mkrmgbmap`, `ck::ckmeta_easy`, `ck::ckmeta_hard` and 8 more; since `b10efaa`: NEW-06, NEW-05, NEW-65, NEW-64, NEW-18, NEW-90, NEW-41, NEW-77, NEW-32, NEW-11, NEW-22, NEW-83, NEW-37, NEW-49 | GEN-04 (U) → NEW-92 |
-| `lfs3_fs_gc` | PL-20, INT-15, BAD-10, PRE-05, PRE-06, GC-01, GC-02, CFG-06, DOC-17 | `ck::ckmeta_*`, `ck::ckdata_*`, `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`; since `b10efaa`: NEW-05, NEW-22, NEW-11, NEW-82 | GC-01 (P) → NEW-107; CFG-06 (U) → NEW-115 |
+| `lfs3_fs_gc` | PL-20, INT-15, BAD-10, PRE-05, PRE-06, GC-01, GC-02, GC-19, CFG-06, DOC-17 | `ck::ckmeta_*`, `ck::ckdata_*`, `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`; since `b10efaa`: NEW-05, NEW-22, NEW-11, NEW-82 | GC-01 (P) → NEW-107; GC-19 (N) → NEW-161; CFG-06 (U) → NEW-115 |
 | `lfs3_fs_unck` | INT-16, DOC-06 | `ck::*_hard`, `gc::ckmeta_unck`, `gc::ckdata_unck`, `gc::iflags_unck` | – |
 | `lfs3_fs_grow` | GEN-06, GEN-08, PL-18, BAD-06, MOUNT-20, MOUNT-21, MOUNT-22, MOUNT-23, DOC-16 | `grow::incr_spam_f_pl_fuzz`, `grow::incr_spam_fd_pl_fuzz`, `grow::grow`, `grow::noop`, `grow::incr_spam_*`; since `b10efaa`: NEW-47, NEW-90, NEW-27 | GEN-06 (Q) → NEW-49; DOC-16 (N) → review |
 | `lfs3_fs_mkgbmap` | PL-19, ALLOC-13, DOC-07 | `gbmap::mkgbmap`, `gbmap::rmgbmap`, `gbmap::rmmkgbmap`, `gbmap::mkrmgbmap`, `gbmap::mkgbmap_exist`; since `b10efaa`: NEW-06 | – |
-| `lfs3_fs_rmgbmap` | PL-19, ALLOC-05, ALLOC-14, DOC-07 | `gbmap::mkgbmap`, `gbmap::rmgbmap`, `gbmap::rmmkgbmap`, `gbmap::mkrmgbmap`, `gbmap::rmgbmap_noent`; since `b10efaa`: NEW-06, NEW-30 | – |
+| `lfs3_fs_rmgbmap` | PL-19, ALLOC-05, ALLOC-14, BAD-18, DOC-07 | `gbmap::mkgbmap`, `gbmap::rmgbmap`, `gbmap::rmmkgbmap`, `gbmap::mkrmgbmap`, `gbmap::rmgbmap_noent`; since `b10efaa`: NEW-06, NEW-30 | BAD-18 (N) → NEW-90, NEW-28 |
 | `lfs3_fs_mkbad` | BAD-11, BAD-14 | `badblocks_gbmap::api`, `badblocks_gbmap::factory` (NEW-90) | – |
-| `lfs3_fs_mkgood` | BAD-12 | `badblocks_gbmap::api` (NEW-90) | – |
+| `lfs3_fs_mkgood` | BAD-12, BAD-18 | `badblocks_gbmap::api` (NEW-90) | BAD-18 (N) → NEW-90, NEW-28 |
 | `lfs3_fs_nextbad` | BAD-13, BAD-14, DEG-06 | `badblocks_gbmap::api`, `api_ibadblocks`, `reading` (NEW-90) | – |
 | `lfs3_fs_nextsuspect` | BAD-16 | `badblocks_gbmap::suspect` (NEW-90), the `repair` suite (NEW-157) | – |
 | `lfs3_fs_health` | DEG-09, ALLOC-17 | `alloc::health`, `repair::health` (NEW-146) | – |
@@ -308,7 +308,7 @@ a test.
 | `pcache_size` | PRE-09, CFG-01, CFG-02, PERF-14 | `files::*`, `fwrite::*`, `kv::*`; since `b10efaa`: NEW-60, NEW-48 | CFG-02 (U) → NEW-115 |
 | `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08, FILE-27 | `files::*`, `fwrite::*`, `kv::*`, `fwrite::fuzz_unaligned`; since `b10efaa`: NEW-48, NEW-87 | CFG-07 (U) → NEW-86; CFG-08 (P) → NEW-116 |
 | `lookahead_size` | ALLOC-06, CFG-01 | `alloc::*`, `files::*`, `dirs::*`, `fwrite::*`, `kv::*`; since `b10efaa`: NEW-48 | ALLOC-06 (P) → J-DEFINES |
-| `gc_flags` | INT-15, GC-03, CFG-06 | `ck::ckmeta_*`, `ck::ckdata_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*`, `gc::compact_*` and 3 more | CFG-06 (U) → NEW-115 |
+| `gc_flags` | INT-15, GC-03, GC-19, CFG-06 | `ck::ckmeta_*`, `ck::ckdata_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*`, `gc::compact_*` and 3 more | GC-19 (N) → NEW-161; CFG-06 (U) → NEW-115 |
 | `gc_steps` | GC-01, GC-02 | `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`; since `b10efaa`: NEW-82 | GC-01 (P) → NEW-107 |
 | `gc_lookahead_thresh` | CFG-16 | `gc::lookahead_progress`, `gc::lookahead_relaxed`, `gc::lookahead_mutation` | – |
 | `gc_lookgbmap_thresh` | CFG-17, DOC-09 | `gc::lookgbmap_*` | – |
@@ -411,14 +411,14 @@ a test.
 | compat flags and versioning | MOUNT-04, MOUNT-05, MOUNT-06, MOUNT-07, MOUNT-08, MOUNT-09, MOUNT-10, MOUNT-11, MOUNT-12, MOUNT-13, MOUNT-24, MOUNT-25, MOUNT-26 | `mount::incompat_no_magic`, `mount::incompat_bad_magic`, `mount::incompat_major`, `mount::incompat_minor`, `mount::incompat_rcompat`, `mount::incompat_wronly` and 16 more; since `b10efaa`: NEW-45, NEW-110, NEW-85 | MOUNT-12 (P) → NEW-111; MOUNT-13 (U) → NEW-110; MOUNT-24 (N) → NEW-113; MOUNT-26 (U) → J-COMPAT |
 | checksums and the check APIs | INT-10, INT-11, INT-12, INT-13, INT-14, INT-15, INT-16, INT-17, INT-18, INT-19, INT-20, INT-22, INT-23 | `ck::ckmeta_easy`, `ck::ckmeta_hard`, `ck::ckdata_easy`, `ck::ckdata_hard`, `mount::t_ckmeta`, `mount::t_ckdata` and 27 more; since `b10efaa`: NEW-67, NEW-62, NEW-64, NEW-40 | – |
 | traversal API | GC-07, GC-08, GC-09, GC-10, GC-11, GC-15, GC-16 | `trvs::simple`, `trvs::idempotent`, `trvs::spam_*`, `trvs::mutation_*`, `trvs::clobber_files_opened`, `trvs::compact_*` and 6 more | GC-11 (P) → NEW-108 |
-| incremental gc | GC-01, GC-02, GC-03, GC-04, GC-05, GC-06, GC-12, GC-13, GC-14 | `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*` and 23 more; since `b10efaa`: NEW-82, NEW-83 | GC-01 (P) → NEW-107; GC-14 (P) → NEW-109 |
+| incremental gc | GC-01, GC-02, GC-03, GC-04, GC-05, GC-06, GC-12, GC-13, GC-14, GC-19 | `gc::*_progress`, `gc::*_relaxed`, `gc::spam_*`, `gc::iflags`, `gc::iflags_unck`, `gc::lookahead_*` and 23 more; since `b10efaa`: NEW-82, NEW-83 | GC-01 (P) → NEW-107; GC-14 (P) → NEW-109; GC-19 (N) → NEW-161 |
 | runtime error recovery | SYNC-05, SYNC-09, META-10, FAIL-18, FAIL-19, FILE-21 | `badblocks::mrootanchor_wear`, `alloc::nospc_files`; since `b10efaa`: NEW-38, NEW-77, NEW-18, NEW-19, NEW-74 | – |
 | block allocation (lookahead) | ALLOC-01, ALLOC-02, ALLOC-03, ALLOC-04, ALLOC-06, ALLOC-07, ALLOC-08, ALLOC-17 | `alloc::clobber_dirs`, `alloc::clobber_files`, `alloc::clobber_open_files`, `trvs::clobber_*`, `trvs::rewind_clobber_*`, `alloc::alloc` and 8 more; since `b10efaa`: NEW-29, NEW-31, NEW-106 | ALLOC-06 (P) → J-DEFINES |
 | global block map (gbmap) | ALLOC-05, ALLOC-09, ALLOC-10, ALLOC-11, ALLOC-12, ALLOC-13, ALLOC-14, ALLOC-15, ALLOC-16, PL-19, INT-22 | `gbmap::files`, `gbmap::gc_files`, `alloc::*`, `gbmap::set_*`, `gbmap::set_ecksum_*`, `powerloss::*` and 8 more; since `b10efaa`: NEW-30, NEW-51, NEW-79, NEW-80, NEW-06, NEW-64 | ALLOC-12 (P) → NEW-06 |
 | pre-erase | PRE-01, PRE-02, PRE-03, PRE-04, PRE-05, PRE-06, PRE-07, PRE-08, PRE-09 | `gc::preerase_progress`, `gc::preerase_relaxed`, `gc::preerase_decreasing`, `gbmap::gc_files`, `gc::preerase_*`, `mount::t_preerase` and 1 more; since `b10efaa`: NEW-81, NEW-23, NEW-24, NEW-11, NEW-22, NEW-25, NEW-60 | – |
 | power-loss resilience | PL-01, PL-02, PL-03, PL-04, PL-05, PL-06, PL-07, PL-08, PL-09, PL-10, PL-11, PL-12, PL-13, PL-14, PL-15, PL-16, PL-17, PL-18, PL-19, PL-20, PL-21, PL-22, PL-23, PL-24, PL-25, PL-26, PL-27 | `powerloss::*`, `dirs::*`, `files::pl_fuzz`, `relocations::spam_*_pl_fuzz`, `grow::incr_spam_*_pl_fuzz`, `stickynotes::*_pl` and 31 more; since `b10efaa`: NEW-08, NEW-58, NEW-59, NEW-55, NEW-02, NEW-03, NEW-04, NEW-56, NEW-57, NEW-06, NEW-05, NEW-01, NEW-09, NEW-10, NEW-52 | PL-02 (P) → J-PL; PL-21 (P) → J-PL; PL-23 (U) → J-PL; PL-24 (U) → J-PL |
 | bad-block handling | FAIL-01, FAIL-02, FAIL-03, FAIL-04, FAIL-05, FAIL-06, FAIL-07, FAIL-08, FAIL-09, FAIL-10, FAIL-11, FAIL-12, FAIL-13, FAIL-14, FAIL-15, FAIL-16, FAIL-17, FAIL-18, FAIL-19, FAIL-20 | `badblocks::every_*`, `badblocks::region_*`, `badblocks::alternating_*`, `badblocks::*`, `exhaustion::*`, `badblocks::region_spam_file_fuzz` and 18 more; since `b10efaa`: NEW-13, NEW-14, NEW-62, NEW-15, NEW-61, NEW-16, NEW-17, NEW-18, NEW-19 | FAIL-20 (P) → J-YGB |
-| bad-block tracking | BAD-01, BAD-02, BAD-03, BAD-04, BAD-05, BAD-06, BAD-07, BAD-08, BAD-09, BAD-10, BAD-11, BAD-12, BAD-13, BAD-14, BAD-15 | `badblocks_gbmap::*`, `exhaustion::*`; since `b10efaa`: NEW-90, NEW-79, NEW-22 | – |
+| bad-block tracking | BAD-01, BAD-02, BAD-03, BAD-04, BAD-05, BAD-06, BAD-07, BAD-08, BAD-09, BAD-10, BAD-11, BAD-12, BAD-13, BAD-14, BAD-15, BAD-18 | `badblocks_gbmap::*`, `exhaustion::*`; since `b10efaa`: NEW-90, NEW-79, NEW-22 | BAD-18 (N) → NEW-90, NEW-28 |
 | power-loss settling (dirty marks, `LFS3_M_SETTLE`) | DEG-01, DEG-11, DEG-12, DEG-13, DEG-14, PL-03 | NEW-08, NEW-130, NEW-131, NEW-137, NEW-138, and the behaviour-4 permutations of NEW-01, NEW-05, NEW-06, NEW-11 | – |
 | damage: the degraded mount, `LFS3_M_SALVAGE`, repairs and health | INT-26, DEG-02, DEG-03, DEG-04, DEG-08, DEG-09, DEG-10, DEG-15, DEG-16, BAD-16, BAD-17, GC-17, GC-18 | NEW-139 to NEW-151, NEW-157 | – |
 | error codes and the state after an error | GEN-05, ERR-01, ERR-02, ERR-03, ERR-04, ERR-05, ERR-06, ERR-07 | `make test-errs` (NEW-93), `errs::ioerror` (NEW-158), `badblocks::graft_torn` (NEW-159), `mount::no_geometry` (NEW-160); ERRORS.md (review) | – |
@@ -970,7 +970,7 @@ window.
 #### F23. Bad blocks with the gbmap
 
 Injection: behaviours 0 to 4 in B-YGB (every push), including gbmap nodes;
-the gbmap records the failed blocks (LFS3-BAD-01 to BAD-17).
+the gbmap records the failed blocks (LFS3-BAD-01 to BAD-18).
 
 | Operations | Coverage | Tests | Recovered means |
 |---|---|---|---|
@@ -978,7 +978,7 @@ the gbmap records the failed blocks (LFS3-BAD-01 to BAD-17).
 | O2 mount, O6 truncate, O11 pre-erase, O14 check | – |  | N/A: outside this combination |
 | O3 namespace, O4 write, O5 sync, O7 mdir, O8 btree, O9 relocation | P | `badblocks::*` in B-YGB, and `badblocks_gbmap::*` (NEW-90); `badblocks::*_btree_many` are still excluded with `LFS3_YES_GBMAP` | C |
 | O10 gc | T | `badblocks::live_readerror` (NEW-13, READERROR during gbmap repopulation), `badblocks::alloc_with_damage` (NEW-144) | D |
-| O12 gbmap | T | `badblocks::gbmap_mkrm` (NEW-28), `badblocks::gbmap_root` (NEW-147) | C |
+| O12 gbmap | T | `badblocks::gbmap_mkrm` (NEW-28), `badblocks::gbmap_root` (NEW-147), `badblocks_gbmap::rmgbmap` (NEW-90) | C, and `lfs3_fs_rmgbmap` keeps the marks until they are cleared (LFS3-BAD-18) |
 | O13 grow | T | `badblocks::grow` (NEW-27), `badblocks_gbmap::grow` | C |
 
 #### F24. Sync failure
@@ -2117,11 +2117,14 @@ defines; procedure; pass and fail; extension needed.
 
 - **File and case:** `tests/test_badblocks.toml`, `test_badblocks_gbmap_mkrm`.
   B-BIG with `LFS3_GBMAP` and not `LFS3_YES_GBMAP`.
-- **Covers:** matrix F6 to F11 × O12, F23 × O12.
+- **Covers:** matrix F6 to F11 × O12, F23 × O12; BAD-18.
 - **Defines:** `BADBLOCK_BEHAVIOR` 0 to 5 (2 to 5 with `CKPROGS`).
 - **Procedure:** Alternate `lfs3_fs_mkgbmap` and `lfs3_fs_rmgbmap` with a
-  file workload on a device with bad blocks.
-- **Pass:** C (D for READERROR on a live gbmap node).
+  file workload on a device with bad blocks. Before each removal, while
+  `lfs3_fs_nextbad` lists a block, `lfs3_fs_rmgbmap` returns
+  `LFS3_ERR_BUSY`; clear the marks with `lfs3_fs_mkgood`, then remove.
+- **Pass:** C (D for READERROR on a live gbmap node); BUSY while a mark
+  remains, 0 once none does.
 - **Fail:** as C or D.
 - **Extension:** none.
 
@@ -2263,12 +2266,13 @@ last column gives its commits on `v3-integration`.
 | NEW-87 | `alloc::static_buffers` | RES-01, RES-08 | static `rcache_buffer`, `pcache_buffer`, `lookahead_buffer`, per-file `fcache_buffer`; an allocator that fails the test when called; then the same suites in B-NM | no allocation; one allocation of `fcache_size` per `lfs3_file_open` when buffers are not given | E-7 |
 | NEW-88 | `mount::max_blocks` | RES-07 | `block_count` 2^31 - 1, 512-byte blocks, sparse device; 1,000 files across the address range | format, mount, write, remount, read all succeed | E-9 |
 | NEW-89 | `threadsafe::locks`, `threadsafe::lock_fails`, `threadsafe::unlock_fails` | THR-01, THR-02 | B-TS, through `make test-threadsafe`, with the runner's counting `lock` and `unlock` (E-12) and block device callbacks that fail the case outside the lock; every public function in turn, on paths that succeed and paths that fail, including those that use other public functions (`lfs3_get`, `lfs3_size`, `lfs3_set`, `lfs3_file_open`, a read of unflushed data, writes with `LFS3_O_FLUSH` and `LFS3_O_SYNC`, a sync of a desynchronized read-only file, opens and mounts with check flags, a format with check flags, `lfs3_fs_health`, the writing calls); then each call again with `lock` failing, before it runs, and with `unlock` failing | each call takes the lock once and releases it once, and every block device operation is under it; with `lock` failing, every call returns the lock's code, does no block device operation and leaves the `lfs3_t`, the handles and the buffers unchanged byte for byte; with `unlock` failing, a call that succeeds returns the unlock's code and takes effect, one that fails returns its own code; `scripts/ckerrs.py` accepts both codes from every function | E-12 |
-| NEW-90 | `badblocks_gbmap` suite, `make test-nomalloc` | BAD-01 to BAD-04, BAD-06 to BAD-16 | the cases on `v3-integration`, plus `badblocks_gbmap::suspect` (BAD-16), block 2 in `badblocks_gbmap::factory` (BAD-14), and the suite rebuilt with `LFS3_NO_MALLOC` and static buffers (BAD-07) | as the requirements | E-1 |
+| NEW-90 | `badblocks_gbmap` suite, `make test-nomalloc` | BAD-01 to BAD-04, BAD-06 to BAD-16, BAD-18 | the cases on `v3-integration`, plus `badblocks_gbmap::suspect` (BAD-16), block 2 in `badblocks_gbmap::factory` (BAD-14), `badblocks_gbmap::rmgbmap` with a mark queued, marks on disk and marks after a remount, then cleared with `lfs3_fs_mkgood` (BAD-18), and the suite rebuilt with `LFS3_NO_MALLOC` and static buffers (BAD-07) | as the requirements | E-1 |
 | NEW-157 | `repair` suite | BAD-17, GC-17, GC-18, DEG-09, DEG-10 | B-YGB and B-BIG; a data block, a file B-tree node and a gbmap node made READFLIP (reads fail half the time), or MANUAL-flipped (every read fails); `lfs3_fs_ck` and a mount with the check flags, with `ck_retries` 0 and 16 and `ck_passes` 1 to 3, on writable and read-only mounts; then erase or prog failures on the old block, and a second failure of a repaired block | READFLIP blocks are moved and the call returns 0; MANUAL blocks return `LFS3_ERR_CORRUPT` and stay suspect; read-only mounts write nothing; a clean old block is reused, a failing or twice-repaired one is marked bad; `lfs3_fs_nextbad`, `lfs3_fs_nextsuspect` and `lfs3_fs_usage` report health exactly | – |
 | NEW-91 | `compat::endian_exchange` through `make test-compat-endian`, job `test-compat-endian` | GEN-02 | images written by a fixed workload on A-64LE and on A-32BE (mips and powerpc under qemu-user, `-d` disk files), each read on the other; the images must also be byte-identical | identical `lfs3_stat`, `lfs3_dir_read`, `lfs3_get` and `lfs3_fs_cksum` results | – |
 | NEW-158 | `errs::ioerror` | ERR-04, ERR-05 | every class of call (format, mount, reads, metadata operations, file writes, janitorial calls, gbmap calls), each read, prog, erase and sync of the call failing in turn with `LFS3_ERR_IO` (`lfs3_emubd_mkioerror`); bd wrappers count device operations after the failure; then the state in the same mount, after a remount, and on a second call | the call returns IO (remove and rename may return 0 once committed); no device operation after a failed read, prog or erase; nothing bad or suspect; the state of ERRORS.md for the class | – |
 | NEW-159 | `badblocks::graft_torn` | ERR-03, ERR-07 | the existing case, plus every file call on each torn handle | sync, read, write, flush, truncate, fruncate, seek, size and ck return `LFS3_ERR_BADFD` and write nothing; tell, rewind, desync work; resync recovers; close writes nothing | – |
 | NEW-160 | `mount::no_geometry` | ERR-03 | internal; an mroot committed without its geometry tag | mount returns `LFS3_ERR_CORRUPT`, read-write and read-only | – |
+| NEW-161 | `gc::noflags` | GC-19 | internal, `LFS3_GC`; `GC_FLAGS` 0, `GC_STEPS` 1 and -1, `GBMAP` false and true; files written after a fresh mount, so every work flag is set, and with the gbmap a bad block marked in RAM but not on disk and another queued; count emubd reads, progs and erases, and syncs through a far-off injected sync error, around repeated `lfs3_fs_gc` calls; then `lfs3_fs_ck` with every work flag | gc returns 0 with every count unchanged, and the `LFS3_I_*` flags, the queue and the gbmap's state as before; the check then clears the flags, marks the queue and commits the gbmap, in B-BIG | – |
 
 ### 6.6 P2: lower-value checks, benches and reports
 
@@ -2297,7 +2301,7 @@ last column gives its commits on `v3-integration`.
 | NEW-112 | `mount::unmount_noio` | MOUNT-18 | counters around `lfs3_unmount` | no bd operation | – |
 | NEW-113 | `mount::reject_v00` | MOUNT-24 | at format freeze: a v0.0 image | `LFS3_ERR_NOTSUP` | – |
 | NEW-114 | `mount::format_flags_persist` | MOUNT-27 | format with every flag, mount plainly | only `LFS3_I_GBMAP` persists | – |
-| NEW-115 | configuration death tests | CFG-02, CFG-03, CFG-04, CFG-06 | invalid sizes, a too-small block size, `block_recycles` -2 and 1,048,575, unknown `gc_flags` | refused before any bd operation | E-6 |
+| NEW-115 | configuration death tests; `mount::block_size_min` | CFG-02, CFG-03, CFG-04, CFG-06 | invalid sizes; `block_size` 256 and 511 (CFG-03), each at `lfs3_format` and at `lfs3_mount` of a formatted image, after `lfs3_emubd_simreset`; `block_recycles` -2 and 1,048,575; unknown `gc_flags` | refused by the assert in `lfs3_init` before any read, prog or erase, in B-DEF, B-YGB and B-BIG | E-6 |
 | NEW-116 | `fwrite::file_cache` | CFG-08 | per-file caches of 1, 16, 4096 bytes on `fwrite::fuzz_unaligned` | passes; no allocation with a supplied buffer | – |
 | NEW-117 | build check `LFS3_NAME_MAX=1023` | CFG-09 | compile | fails with a diagnostic | – |
 | NEW-118 | size report job (J-SIZE) | RES-02 to RES-05, THR-04 | `make lfs3.code.csv lfs3.data.csv lfs3.stack.csv lfs3.ctx.csv lfs3.structs.csv` on thumb for B-DEF, B-RO, B-YGB, B-BIG, B-TS | the difference is posted; every function has a finite stack | – |
@@ -2424,7 +2428,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-99 | P2 | `fsync::flush_stat` | as planned | – | not written |
 | NEW-100 | P2 | `stickynotes::grm_overflow` | as planned | – | not written |
 | NEW-101 | P2 | `dirs::packing` | as planned | – | not written |
-| NEW-102 | P2 | `attrs::all_types` | as planned | – | not written; Q9 is open |
+| NEW-102 | P2 | `attrs::all_types` | as planned | – | not written |
 | NEW-103 | P2 | `attrs::fattr_remove` | as planned | – | not written |
 | NEW-104 | P2 | `kv::get_dir`, `kv::get_uncreat` | as planned | – | not written |
 | NEW-105 | P2 | `kv::set_one_commit` | as planned | – | not written |
@@ -2483,6 +2487,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-158 | P1 | `errs::ioerror` | as planned | 3c7a175e, cb80d770 | done |
 | NEW-159 | P1 | `badblocks::graft_torn` | as planned | 96883f8e, d4211ea5 | done |
 | NEW-160 | P1 | `mount::no_geometry` | as planned | e9aeb8b2 | done |
+| NEW-161 | P1 | `gc::noflags` | as planned | – | not written |
 
 ### 6.8 Tests of error handling, degradation and thread safety
 
