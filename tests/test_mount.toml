@@ -1796,6 +1796,48 @@ code = '''
     lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_NOTSUP;
 '''
 
+# test that we fail to mount rcompat flags that differ from ours in any
+# way, read-only too, rcompat flags must match ours exactly, so an image
+# missing one of our flags is refused as well as one with a flag we
+# don't set
+[cases.test_mount_incompat_rcompat_mismatch]
+# FLAG=-1 => no rcompat tag at all
+# FLAG=n  => flip bit n of our rcompat flags
+defines.FLAG = 'range(-1, 32)'
+in = 'lfs3.c'
+code = '''
+    // create a superblock
+    lfs3_t lfs3;
+    lfs3_format(&lfs3,
+            LFS3_F_RDWR
+                | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+            CFG) => 0;
+
+    // clear one of our rcompat flags, set one we don't, or remove the
+    // rcompat tag
+    //
+    // note we're messing around with internals to do this! this
+    // is not a user API
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    if (FLAG == -1) {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(1, LFS3_tag_RM | LFS3_TAG_RCOMPAT, 0),
+                LFS3_RATTR_NULL)) => 0;
+    } else {
+        lfs3_mdir_commit(&lfs3, &lfs3.mroot, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_RCOMPAT, 0, LFS3_FROM_LE32),
+                LFS3_RATTR_ARG(
+                    lfs3_rcompat(&lfs3)
+                        ^ ((lfs3_rcompat_t)1 << FLAG)),
+                LFS3_RATTR_NULL)) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+
+    // mount should now fail
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => LFS3_ERR_NOTSUP;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => LFS3_ERR_NOTSUP;
+'''
+
 # test that we fail to mount incompatible wcompat flags
 [cases.test_mount_incompat_wcompat]
 in = 'lfs3.c'
