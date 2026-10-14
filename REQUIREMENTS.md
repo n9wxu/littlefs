@@ -3648,16 +3648,33 @@ it accepts.
 
 littlefs shall return `LFS3_ERR_NOENT` from `lfs3_remove` for a missing or
 hidden entry, `LFS3_ERR_BUSY` for the root, and `LFS3_ERR_NOTEMPTY` for a
-directory that has entries.
+directory that has entries. A file created by a handle that is still open
+and has never synced is an entry of its directory, a stickynote, whether
+it is listed (the handle is in sync) or not (the handle is
+desynchronized): `lfs3_remove` of the directory, and `lfs3_rename` of a
+directory onto it, return `LFS3_ERR_NOTEMPTY` and change nothing. Once
+the handle is closed without a sync, the stickynote is gone and the
+directory can be removed; once synced, the file is a regular file, and
+the directory is not empty until the file is removed.
 
 - **Source:** Stated: `lfs3.h:1450-1455` ("the directory must be empty");
-  `lfs3.c:11733-11736`.
-- **Measure:** return values.
-- **Pass:** `dirs::rm_*`, `dirs::rm_root` and `paths::root` pass in B-DEF.
+  `lfs3.c:11733-11736`. The stickynote: Q7, decided on 2026-10-13 (issue
+  #11; 1-meta F16), as littlefs behaved: removing the directory would
+  discard the application's unsynced data without asking.
+- **Measure:** return values; the directory and the file after the
+  handle closes, with and without a sync.
+- **Pass:** `dirs::rm_*`, `dirs::rm_root` and `paths::root` pass in
+  B-DEF, and `stickynotes::uncreat_rmdir` (NEW-161), with an in-sync and
+  with a desynchronized stickynote in the directory, gets
+  `LFS3_ERR_NOTEMPTY` from the remove and the rename, finds the directory
+  and its listing unchanged and the handle still reading its data, then,
+  after a close without a sync, `LFS3_ERR_NOENT` for the file and 0 from
+  the remove, and after a sync and a close `LFS3_ERR_NOTEMPTY` until the
+  file is removed, with and without a remount and `lfs3_fs_mkconsistent`
+  after the close, in B-DEF.
 - **Fail:** any other result.
-- **Verified by:** as listed. Whether an open uncreated file makes its
-  directory non-empty is open question Q7.
-- **Status:** Tested.
+- **Verified by:** as listed; NEW-161.
+- **Status:** Partly tested: the stickynote case, NEW-161, is not written.
 - **When:** every CI run.
 
 #### LFS3-DIR-04
