@@ -145,6 +145,39 @@ static uint8_t test_errs_data(lfs3_size_t i, bool new) {
     return ((new) ? 'A' : 'a') + (i % 26);
 }
 
+// with ERASE_VALUE=-1 an erase is a noop, so each pass of a case's loop
+// finds what earlier passes wrote, the same commits at the same offsets,
+// and a commit that fails part way can find the rest of itself already
+// there, which reads as a commit that finished, nothing can tell them
+// apart; so before each pass we leave fresh random bytes in every block
+// written so far, as an erase that leaves anything might, still erased
+// for the prog-once check
+static void test_errs_scrub(const struct lfs3_cfg *cfg, uint32_t seed) {
+    if (ERASE_VALUE != -1) {
+        return;
+    }
+
+    uint8_t *buf = malloc(cfg->block_size);
+    assert(buf);
+    uint32_t prng = seed;
+    for (lfs3_block_t b = 0; b < cfg->block_count; b++) {
+        if (lfs3_emubd_blockprogs(cfg, b) == 0) {
+            continue;
+        }
+
+        for (lfs3_size_t i = 0; i < cfg->block_size; i++) {
+            buf[i] = TEST_PRNG(&prng);
+        }
+        int err = cfg->erase(cfg, b);
+        assert(!err);
+        err = cfg->prog(cfg, b, 0, buf, cfg->block_size);
+        assert(!err);
+        err = lfs3_emubd_mkunprogged(cfg, b, 0, cfg->block_size);
+        assert(!err);
+    }
+    free(buf);
+}
+
 // the block we mark bad or good
 #if !defined(LFS3_RDONLY) && defined(LFS3_GBMAP)
 static lfs3_block_t test_errs_badblock;
@@ -403,6 +436,7 @@ code = '''
     lfs3_size_t fired = 0;
     for (uint32_t n = 1;; n++) {
         lfs3_t lfs3;
+        test_errs_scrub(CFG, n);
         if (CALL != TEST_ERRS_FORMAT) {
             test_errs_setup(&lfs3, &cfg, CALL, GBMAP);
         }
