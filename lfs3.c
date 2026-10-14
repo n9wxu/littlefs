@@ -12725,6 +12725,18 @@ static int lfs3_data_readgbmap(lfs3_t *lfs3, lfs3_data_t *data,
 
     err = lfs3_data_readbranch(lfs3, data, lfs3->block_count,
             &gbmap->b.r);
+    // an image without a gbmap, which an LFS3_YES_GBMAP build can mount
+    // read-only, has zeros for gbmap gstate, these decode to a gbmap
+    // without a trunk, which encodes back to zeros
+    if (err == LFS3_ERR_CORRUPT
+            && !(lfs3->flags & LFS3_I_GBMAP)
+            && gbmap->window == 0
+            && gbmap->known == 0
+            && gbmap->b.r.blocks[0] == 0
+            && gbmap->b.r.trunk == 0
+            && gbmap->b.r.cksum == 0) {
+        err = 0;
+    }
     if (err) {
         return err;
     }
