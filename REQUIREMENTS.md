@@ -6920,10 +6920,16 @@ error-code check of LFS3-ERR-01.
   commands pass in the `lfs3-ci` Docker image (Ubuntu 24.04, GCC 13).
 - **Fail:** a target without a job, or a failing job.
 - **Verified by:** `.github/workflows/test.yml`.
-- **Status:** Tested in the `lfs3-ci` image on v3-integration (345c40f7,
-  1c768762, ecf44d33): every target has a job and passes; the jobs have not
-  run on GitHub yet. Untested at fd3157e3, where only `make test-rdonly` had
-  a job.
+- **Status:** Partly tested. Every target has a job, and each job's
+  commands passed in the `lfs3-ci` image on v3-integration (345c40f7,
+  1c768762, ecf44d33). On GitHub, run 38513008452 on 3fbdca6b passed
+  test-rdonly, test-compat-gbmap, test-nomalloc, test-threadsafe and the
+  error-code job test-errs, and failed test-progonce in all three shards.
+  test-progonce failed from a2403505 on, 18 permutations and 19 from
+  3aa6ae9f, all in cases that put block images back through prog
+  (LFS3-CFG-15); cc0e7927 fixes those cases, and `make test-progonce`
+  passes locally, but the job has not passed on GitHub yet. Untested at
+  fd3157e3, where only `make test-rdonly` had a job.
 - **When:** every CI run.
 
 #### LFS3-CI-13
