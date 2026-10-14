@@ -966,8 +966,12 @@ def find_perms(runner, test_ids=[], **args):
     expected_perms = 0
     total_perms = 0
 
-    # query cases from the runner
-    cmd = runner_ + ['--list-cases'] + test_ids
+    # query cases from the runner, only counting our shard's permutations
+    cmd = runner_ + ['--list-cases']
+    if args.get('shard'):
+        i, n = args['shard']
+        cmd.append('--step=%s,,%s' % (i-1, n))
+    cmd.extend(test_ids)
     if args.get('verbose'):
         print(' '.join(shlex.quote(c) for c in cmd))
     proc = sp.Popen(cmd,
@@ -1260,6 +1264,12 @@ def run_stage(offset, name, runner, test_ids,
     locals = th.local()
     children = set()
 
+    # only run our shard's permutations? shard i of n runs every nth
+    # permutation from the ith, and total_perms counts only those
+    shard_start, shard_step = 0, 1
+    if args.get('shard'):
+        shard_start, shard_step = args['shard'][0]-1, args['shard'][1]
+
     def run_runner(runner_):
         nonlocal passed_suite_perms
         nonlocal passed_case_perms
@@ -1369,9 +1379,9 @@ def run_stage(offset, name, runner, test_ids,
         nonlocal killed
         nonlocal locals
 
-        locals.start = start or 0
-        locals.step = step or 1
-        while locals.start < total_perms:
+        locals.start = shard_start + shard_step*(start or 0)
+        locals.step = shard_step*(step or 1)
+        while locals.start < shard_start + shard_step*total_perms:
             runner_ = find_runner(runner, main=main, **args)
             if args.get('isolate') or args.get('valgrind'):
                 runner_.append('--step=%s,%s,%s' % (
@@ -1910,6 +1920,17 @@ if __name__ == "__main__":
             const=0,
             help="Number of parallel runners to run. 0 runs one runner per "
                 "core.")
+    def shard(x):
+        i, n = (int(v, 0) for v in x.split('/', 1))
+        if not 1 <= i <= n:
+            raise ValueError(x)
+        return (i, n)
+    test_parser.add_argument(
+            '--shard',
+            type=shard,
+            help="Run only shard i of n, written i/n with i from 1. Shards "
+                "interleave each suite's permutations, so n shards together "
+                "run every permutation once.")
     test_parser.add_argument(
             '-k', '--keep-going',
             action='store_true',
