@@ -1062,8 +1062,10 @@ REQUIREMENTS.md B.3 and `.local/*/test.log`:
 In B-BIG the slowest suites are `test_gc` (1,178 CPU-s), `test_rbyd` (837),
 `test_ck` (526) and `test_powerloss` (479). Under the sanitizers
 `test_gc` (7,623) and `test_rbyd` (6,554) dominate. Sharding a job by suite
-across CI machines therefore needs `test_gc` and `test_rbyd` on their own
-shards.
+across CI machines would therefore need `test_gc` and `test_rbyd` on their
+own shards. The CI jobs instead shard with `test.py --shard=i/n`, which runs
+every nth permutation of every suite, so each shard gets a share of the slow
+suites and new suites need no rebalancing.
 
 Times marked "est." below are estimates from these figures, not
 measurements; the first run of each job replaces them (section 8.5).
@@ -1080,7 +1082,7 @@ before every release.
 | Job | Build | Arch | Geometry | Schedule and behaviours | Checker | Tier | Time on 14 cores |
 |---|---|---|---|---|---|---|---|
 | J-DEF | B-DEF | A-64LE, GCC and clang | G-NOR | `-Pnone -Plinear`, behaviour 0 | – | PR | 263 s (GCC Docker: 509 s) |
-| J-BIG | B-BIG | A-64LE, GCC and clang | G-NOR | `-Pnone -Plinear`, 0 | – | PR | 1,181 s (shard by suite) |
+| J-BIG | B-BIG | A-64LE, GCC and clang | G-NOR | `-Pnone -Plinear`, 0 | – | PR | 1,181 s (sharded) |
 | J-YGB | B-YGB | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | PR | est. 300-400 s |
 | J-NA | B-NA | A-64LE | G-NOR | `-Pnone -Plinear`, 0 | – | PR | est. 250 s |
 | J-BUILD | every build of 5.1, plus the combinations of LFS3-BUILD-04, BUILD-05, BUILD-06, BUILD-20 (NEW-53) | A-64LE, thumb | – | compile only, `-Werror` | – | PR | est. 5 min |
