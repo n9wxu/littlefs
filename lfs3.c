@@ -18099,6 +18099,10 @@ static int lfs3_init(lfs3_t *lfs3, uint32_t flags,
     LFS3_ASSERT(lfs3->cfg->block_size % lfs3->cfg->prog_size == 0);
     #endif
 
+    // block_size must be at least 512 bytes, smaller blocks leave little
+    // or no room for names once a B-tree splits
+    LFS3_ASSERT(lfs3->cfg->block_size >= 512);
+
     // block_size is currently limited to 28-bits
     LFS3_ASSERT(lfs3->cfg->block_size <= 0x0fffffff);
 

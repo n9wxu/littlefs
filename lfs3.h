@@ -635,7 +635,9 @@ struct lfs3_cfg {
 
     // Size of an erasable block in bytes. This does not impact ram consumption
     // and may be larger than the physical erase size. Must be a multiple of
-    // the read and program sizes.
+    // the read and program sizes, and at least 512 bytes, smaller blocks
+    // leave little or no room for names. Flash with a smaller erase size
+    // can use a multiple of it.
     lfs3_size_t block_size;
 
     // Number of erasable blocks on the device. Formatting needs at least
