@@ -17948,11 +17948,14 @@ int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags) {
         // this may end up revalidating some btree nodes when ckfetches
         // is enabled, but we need to revalidate cached btree nodes or
         // we risk missing errors in ckmeta scans
+        //
+        // note the root is our file's own rbyd, and a fetch that fails
+        // leaves its rbyd half-fetched, so check a copy
         if ((lfs3_t_isckmeta(flags)
                     || lfs3_t_isckdata(flags))
                 && tag == LFS3_TAG_BRANCH) {
-            lfs3_rbyd_t *rbyd = (lfs3_rbyd_t*)data.u.buffer;
-            int err = lfs3_rbyd_ckretry(lfs3, rbyd);
+            lfs3_rbyd_t rbyd = *(const lfs3_rbyd_t*)data.u.buffer;
+            int err = lfs3_rbyd_ckretry(lfs3, &rbyd);
             if (err) {
                 return err;
             }

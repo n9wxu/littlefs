@@ -5872,6 +5872,98 @@ code = '''
     free(rbuf);
 '''
 
+# a check that fails leaves the handle as it was
+#
+# The root of a file's B-tree is the handle's own rbyd. A check of it that
+# fails must not leave it half-fetched: once the block reads again, the
+# check passes, the file reads back whole, and a write and sync through
+# the handle keep the rest of the file (D-36)
+#
+# DAMAGE=0 => the root's block fails its next reads
+# DAMAGE=1 => the root's block is clobbered, then put back
+[cases.test_ck_file_ck_heals]
+defines.CK = ['LFS3_CK_CKMETA', 'LFS3_CK_CKDATA']
+defines.DAMAGE = [0, 1]
+defines.CK_RETRIES = [0, 3]
+defines.SIZE = '8*BLOCK_SIZE'
+# no shrub, so the file has a B-tree root of its own
+defines.SHRUB_SIZE = 0
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // write our file
+    uint8_t *wbuf = malloc(SIZE);
+    uint8_t *rbuf = malloc(SIZE+1);
+    uint8_t *saved = malloc(BLOCK_SIZE);
+    assert(wbuf && rbuf && saved);
+    uint32_t prng = 42;
+    for (lfs3_size_t j = 0; j < SIZE; j++) {
+        wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // break the root of the file's B-tree, and check
+    lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDWR) => 0;
+    assert(lfs3_bshrub_isbtree(&file.b));
+    lfs3_block_t root = file.b.b.r.blocks[0];
+    printf("root 0x%x\n", root);
+    if (DAMAGE == 0) {
+        lfs3_emubd_mktransient(CFG, root, CK_RETRIES+1) => 0;
+    } else {
+        int err = CFG->read(CFG, root, 0, saved, BLOCK_SIZE);
+        assert(!err);
+        memset(rbuf, 0xcc, BLOCK_SIZE);
+        CFG->erase(CFG, root) => 0;
+        CFG->prog(CFG, root, 0, rbuf, BLOCK_SIZE) => 0;
+    }
+    lfs3_bd_droprcache(&lfs3);
+    lfs3_file_ck(&lfs3, &file, CK) => LFS3_ERR_CORRUPT;
+
+    // once it reads again, so does the file
+    if (DAMAGE == 0) {
+        lfs3_emubd_mktransient(CFG, root, 0) => 0;
+    } else {
+        CFG->erase(CFG, root) => 0;
+        CFG->prog(CFG, root, 0, saved, BLOCK_SIZE) => 0;
+    }
+    lfs3_bd_droprcache(&lfs3);
+    lfs3_file_ck(&lfs3, &file, CK) => 0;
+    lfs3_file_size(&lfs3, &file) => SIZE;
+    lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+    assert(memcmp(rbuf, wbuf, SIZE) == 0);
+
+    // and a write through the handle keeps the rest of the file
+    memset(wbuf, 'z', 16);
+    lfs3_file_rewind(&lfs3, &file) => 0;
+    lfs3_file_write(&lfs3, &file, wbuf, 16) => 16;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    for (int remount = 0; remount < 2; remount++) {
+        if (remount) {
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+
+        lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY | CK) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE+1) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+        lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+    free(wbuf);
+    free(rbuf);
+    free(saved);
+'''
+
 # flips in gbmap nodes are found by metadata checks
 #
 # Every flip lands in bytes a checksum covers, the tags of a node up to
