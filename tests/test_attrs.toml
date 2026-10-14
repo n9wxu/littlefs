@@ -1025,6 +1025,76 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test every attr type at once, each must keep its own value
+[cases.test_attrs_all_types]
+# type of file to attach attrs to
+# FILETYPE=0 => regular file
+# FILETYPE=1 => stickynote
+# FILETYPE=2 => directory
+# FILETYPE=3 => root
+defines.FILETYPE = [0, 1, 2, 3]
+# a file's attrs share its mdir, 4 KiB blocks only fit 199 of these
+defines.BLOCK_SIZE = 16384
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    const char *path;
+    lfs3_file_t file;
+    // create a file?
+    if (FILETYPE == 0) {
+        path = "cat";
+        lfs3_file_open(&lfs3, &file, path, LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+        lfs3_file_write(&lfs3, &file, "meow", strlen("meow")) => strlen("meow");
+        lfs3_file_close(&lfs3, &file) => 0;
+
+    // create a stickynote?
+    } else if (FILETYPE == 1) {
+        path = "snail";
+        lfs3_file_open(&lfs3, &file, path, LFS3_O_WRONLY | LFS3_O_CREAT) => 0;
+        lfs3_file_write(&lfs3, &file, "snailnoise", strlen("snailnoise"))
+                => strlen("snailnoise");
+
+    // create a dir?
+    } else if (FILETYPE == 2) {
+        path = "armadillo";
+        lfs3_mkdir(&lfs3, path) => 0;
+
+    // do nothing for root
+    } else {
+        path = "/";
+    }
+
+    // set every attr, each to a value no other type has, the reserved
+    // ranges included
+    for (uint16_t a = 0; a < 0x100; a++) {
+        uint8_t wbuf[2] = {a, 0xff ^ a};
+        lfs3_setattr(&lfs3, path, a, wbuf, 2) => 0;
+    }
+
+    for (int remount = 0; remount < 2; remount++) {
+        // read every attr back
+        for (uint16_t a = 0; a < 0x100; a++) {
+            lfs3_sizeattr(&lfs3, path, a) => 2;
+            uint8_t rbuf[256];
+            lfs3_getattr(&lfs3, path, a, rbuf, sizeof(rbuf)) => 2;
+            assert(rbuf[0] == a);
+            assert(rbuf[1] == (0xff ^ a));
+        }
+
+        if (remount == 0) {
+            if (FILETYPE == 1) {
+                lfs3_file_close(&lfs3, &file) => 0;
+            }
+            lfs3_unmount(&lfs3) => 0;
+            lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+        }
+    }
+
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test creating a bunch of attrs
 [cases.test_attrs_many]
 # type of file to attach attrs to
