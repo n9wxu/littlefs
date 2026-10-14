@@ -8168,11 +8168,20 @@ code = '''
     for (lfs3_size_t i = 0;; i++) {
         // check every file every 10 operations and at the end
         if (i % 10 == 0 || i == OPS) {
+            // once the mroot splits, the root needs the mtree, whose
+            // nodes are committed to new blocks without being read back,
+            // so a node in a bad block shows up here, if we can't open
+            // the root we've at least detected our corruption
             lfs3_dir_t dir;
-            lfs3_dir_open(&lfs3, &dir, "/") => 0;
+            int err = lfs3_dir_open(&lfs3, &dir, "/");
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (err) {
+                printf("detected at op %d\n", i);
+                goto done;
+            }
             while (true) {
                 struct lfs3_info info;
-                int err = lfs3_dir_read(&lfs3, &dir, &info);
+                err = lfs3_dir_read(&lfs3, &dir, &info);
                 assert(!err
                         || err == LFS3_ERR_NOENT
                         || err == LFS3_ERR_CORRUPT);
@@ -8258,13 +8267,19 @@ code = '''
         char name[256];
         unsigned x = -1;
         if (op != 0) {
+            // the root may need the mtree, see above
             lfs3_dir_t dir;
-            lfs3_dir_open(&lfs3, &dir, "/") => 0;
+            int err = lfs3_dir_open(&lfs3, &dir, "/");
+            assert(!err || err == LFS3_ERR_CORRUPT);
+            if (err) {
+                printf("detected at op %d\n", i);
+                goto done;
+            }
             lfs3_size_t count = 0;
             uint32_t pick = TEST_PRNG(&prng);
             while (true) {
                 struct lfs3_info info;
-                int err = lfs3_dir_read(&lfs3, &dir, &info);
+                err = lfs3_dir_read(&lfs3, &dir, &info);
                 assert(!err
                         || err == LFS3_ERR_NOENT
                         || err == LFS3_ERR_CORRUPT);
