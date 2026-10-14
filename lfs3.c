@@ -8648,16 +8648,19 @@ static void lfs3_fs_commitgdelta(lfs3_t *lfs3) {
     lfs3_data_fromgrm(&lfs3->grm, lfs3->grm_p);
 
     #ifdef LFS3_GBMAP
-    // keep track of the on-disk gbmap
+    // keep track of the on-disk gbmap, unless a salvage hasn't built one
+    // yet, then our commit left it as it was
     if (lfs3_f_isgbmap(lfs3->flags)) {
-        // keep track of both the committed gstate and btree for
-        // traversals
-        lfs3->gbmap.b_p = lfs3->gbmap.b;
-        lfs3_data_fromgbmap(&lfs3->gbmap, lfs3->gbmap_p);
+        if (lfs3_rbyd_trunk(&lfs3->gbmap.b.r)) {
+            // keep track of both the committed gstate and btree for
+            // traversals
+            lfs3->gbmap.b_p = lfs3->gbmap.b;
+            lfs3_data_fromgbmap(&lfs3->gbmap, lfs3->gbmap_p);
 
-        // any bad blocks marked are now on disk
-        if (lfs3->gbmap.badq.count == 0) {
-            lfs3->flags &= ~LFS3_I_BADBLOCKS;
+            // any bad blocks marked are now on disk
+            if (lfs3->gbmap.badq.count == 0) {
+                lfs3->flags &= ~LFS3_I_BADBLOCKS;
+            }
         }
 
     // if disabled, we still want to keep track of the on-disk gstate
@@ -8735,9 +8738,11 @@ static int lfs3_rbyd_appendgdelta(lfs3_t *lfs3, lfs3_rbyd_t *rbyd) {
         }
     }
 
-    // pending gbmap state?
+    // pending gbmap state? a salvage has no gbmap to name until it
+    // builds one, its last commit names that
     #ifdef LFS3_GBMAP
-    if (lfs3_f_isgbmap(lfs3->flags)) {
+    if (lfs3_f_isgbmap(lfs3->flags)
+            && lfs3_rbyd_trunk(&lfs3->gbmap.b.r)) {
         // lookahead and gbmap window offsets should always be in sync
         //
         // we probably don't need the duplicate fields, but it certainly
