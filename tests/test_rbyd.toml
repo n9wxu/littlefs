@@ -18112,3 +18112,89 @@ code = '''
     #undef TEST_ERASED_VALUES_FILL
     #undef TEST_ERASED_VALUES_CK
 '''
+
+# a commit chooses its perturb bit from the first byte after it, so what
+# an erase left there never parses as the next commit, if that byte
+# doesn't read, the commit must leave nothing after it to parse
+#
+# with ERASE_VALUE=-1 an erase is a noop: commit A then B, erase, and
+# commit A again, failing the n-th read of the commit with
+# LFS3_ERR_CORRUPT, B is still there after A, and fetch must find A alone
+[cases.test_rbyd_erased_unreadable]
+defines.ERASE_VALUE = -1
+defines.PROG_SIZE = [1, 16]
+defines.BLOCK_SIZE = 4096
+# payloads, each leaves different bytes after A
+defines.N = 16
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_init(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    #define TEST_ERASED_UNREADABLE_COMMIT(rbyd, type, v) do { \
+        uint8_t buf_[4]; \
+        lfs3_tole32((v), buf_); \
+        int err_ = lfs3_rbyd_commit(&lfs3, (rbyd), -1, LFS3_RATTRS( \
+                LFS3_RATTR(2, LFS3_TAG_ATTR(type), 0, \
+                    LFS3_FROM_BUF, 4), \
+                LFS3_RATTR_ARG(buf_), \
+                LFS3_RATTR_NULL)); \
+        assert(!err_ || err_ == LFS3_ERR_CORRUPT); \
+        err = err_; \
+    } while (0)
+
+    for (uint32_t v = 0; v < N; v++) {
+        int err;
+        lfs3_rbyd_t rbyd = {
+            .blocks[0] = 0,
+            .eoff = 0,
+            .cksum = 0,
+            .trunk = 0,
+            .weight = 0,
+        };
+        lfs3_bd_erase(&lfs3, rbyd.blocks[0]) => 0;
+        TEST_ERASED_UNREADABLE_COMMIT(&rbyd, 1, v);
+        assert(!err);
+        TEST_ERASED_UNREADABLE_COMMIT(&rbyd, 2, v);
+        assert(!err);
+
+        for (uint32_t n = 1;; n++) {
+            // B stays after A, the erase is a noop
+            lfs3_rbyd_t rbyd_ = {
+                .blocks[0] = 0,
+                .eoff = 0,
+                .cksum = 0,
+                .trunk = 0,
+                .weight = 0,
+            };
+            lfs3_bd_erase(&lfs3, rbyd_.blocks[0]) => 0;
+            lfs3_bd_droprcache(&lfs3);
+            lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, n,
+                    LFS3_ERR_CORRUPT) => 0;
+            TEST_ERASED_UNREADABLE_COMMIT(&rbyd_, 1, v);
+            bool done = lfs3_emubd_ioerror(CFG, LFS3_EMUBD_OP_READ) > 0;
+            lfs3_emubd_mkioerror(CFG, LFS3_EMUBD_OP_READ, 0, 0) => 0;
+
+            // A committed? fetch must find A, and not B
+            if (!err) {
+                lfs3_bd_droprcache(&lfs3);
+                lfs3_rbyd_t rbyd__;
+                lfs3_rbyd_fetch(&lfs3, &rbyd__, rbyd_.blocks[0], 0) => 0;
+                assert(rbyd__.trunk == rbyd_.trunk);
+                assert(rbyd__.cksum == rbyd_.cksum);
+                lfs3_data_t data;
+                lfs3_rbyd_lookup(&lfs3, &rbyd__, -1, LFS3_TAG_ATTR(1),
+                        &data) => LFS3_TAG_ATTR(1);
+                lfs3_rbyd_lookup(&lfs3, &rbyd__, -1, LFS3_TAG_ATTR(2),
+                        &data) => LFS3_ERR_NOENT;
+            }
+
+            if (done) {
+                break;
+            }
+        }
+    }
+
+    lfs3_deinit(&lfs3) => 0;
+    #undef TEST_ERASED_UNREADABLE_COMMIT
+'''
