@@ -89,7 +89,8 @@ fail once and pass later. Reads that fail are listed by
    remove them, or rewrite them from a copy kept elsewhere. A removal
    doesn't read the damage and leaves the other files as they were, and
    writes that needed a scan for free blocks work again once nothing
-   references the damage.
+   references the damage. A file whose metadata pair is damaged fails
+   `lfs3_file_ck` too, but removing it doesn't repair the pair, see 4.
 3. **Let the gbmap rebuild.** A gbmap that doesn't read is built again at
    the next write; until then `lfs3_fs_stat` reports `LFS3_I_MKGBMAP` and
    checks return `LFS3_ERR_CORRUPT`. The bad blocks it marked are marked

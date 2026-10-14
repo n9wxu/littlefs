@@ -1102,12 +1102,13 @@ Here's what survives a power loss:
 | written or flushed, not synced            | the previous synced version           |
 | opened with `LFS3_O_TRUNC`, not synced    | the old contents                      |
 | created, never synced                     | nothing: the file doesn't exist       |
-| written with `LFS3_O_SYNC`                | durable once the write returned        |
+| written, truncated or fruncated with `LFS3_O_SYNC` | durable once the call returned |
 | `lfs3_set` returned                       | contents as set                       |
 
-`LFS3_O_FLUSH` writes data out on every write, but doesn't make it durable;
-only a sync does that. Note also that a read on a writable handle may need to
-flush cached data first, so reads can write and can fail with write errors.
+`LFS3_O_FLUSH` writes data out on every write, truncate and fruncate, but
+doesn't make it durable; only a sync does that. Note also that a read on a
+writable handle may need to flush cached data first, so reads can write and
+can fail with write errors.
 
 ---
 
@@ -1154,6 +1155,10 @@ writes its contents. Until then:
 3. If power is lost, the stickynote is left behind invisible, and the next
    time the filesystem is written to (or when `lfs3_fs_mkconsistent` or gc
    runs) littlefs scans the mtree and removes it.
+4. A stickynote is an entry of its directory, listed or not, so removing
+   the directory returns `LFS3_ERR_NOTEMPTY` while the handle is open.
+   Removing the directory would throw away data the application hasn't
+   synced yet, without asking.
 
 Removing or renaming over a file that is still open reuses the same idea in
 reverse. The entry is turned back into a stickynote and the open handles
@@ -1375,10 +1380,13 @@ when to pay:
 | every data read                      | `LFS3_M_CKDATACKSUMS` (`LFS3_CKDATACKSUMS`)   |
 
 CKMETA checks metadata (mdirs and B-tree nodes), CKDATA checks metadata and
-data. The last four are compile-time options, so builds that don't use them
-don't pay for their code. Their runtime costs differ a lot: CKPROGS doubles
-the bus traffic of every write, and CKDATACKSUMS re-reads the whole
-checksummed prefix of a block on every read, up to a block per read.
+data. For one file, that's the mdir holding its entry, which also holds a
+small file's data, read again and compared with what the handle last saw,
+its B-tree nodes and, with CKDATA, its data blocks. The last four are
+compile-time options, so builds that don't use them don't pay for their
+code. Their runtime costs differ a lot: CKPROGS doubles the bus traffic of
+every write, and CKDATACKSUMS re-reads the whole checksummed prefix of a
+block on every read, up to a block per read.
 
 All of this is detection, not correction. A failed check returns
 `LFS3_ERR_CORRUPT`, unless a read retried within `ck_retries` passes, and

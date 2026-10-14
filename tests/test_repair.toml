@@ -857,6 +857,53 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that lfs3_file_ck reads the mdir holding the file ck_passes times,
+# and that more passes find an mdir that reads wrong only after the first
+# pass
+[cases.test_repair_passes_file]
+defines.CK_PASSES = [1, 2, 3]
+# in the mroot, or in an mdir of the mtree
+defines.MTREE = [false, true]
+code = '''
+    struct lfs3_cfg cfg;
+    test_repair_wrap(&cfg, CFG);
+
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR | LFS3_F_GBMAP, &cfg) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg) => 0;
+    lfs3_size_t n = 0;
+    while (MTREE && lfs3.mtree.r.weight == 0) {
+        assert(n < 4*BLOCK_COUNT);
+        char name[256];
+        sprintf(name, "spider%026d", (int)n);
+        lfs3_set(&lfs3, name, "", 0) => 0;
+        n += 1;
+    }
+    test_repair_write(&lfs3, "octopus", 0, 8);
+    lfs3_block_t blocks[2];
+    test_repair_mdirblocks(&lfs3, "octopus", blocks);
+    assert((lfs3_mptr_cmp(blocks, lfs3.mroot.r.blocks) != 0) == MTREE);
+
+    // count the reads of the newer block
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDONLY) => 0;
+    test_repair_break(blocks[0], 0, 0);
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA) => 0;
+    assert(test_repair_reads >= CK_PASSES);
+    assert(test_repair_reads % CK_PASSES == 0);
+    lfs3_size_t reads = test_repair_reads / CK_PASSES;
+
+    // fail every read after the first pass
+    test_repair_break(blocks[0], reads, -1);
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA)
+            => (CK_PASSES >= 2) ? LFS3_ERR_CORRUPT : 0;
+    test_repair_heal();
+    lfs3_file_ck(&lfs3, &file, LFS3_CK_CKMETA) => 0;
+    lfs3_file_close(&lfs3, &file) => 0;
+    test_repair_read_(&lfs3, "octopus", 0, 8);
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 # test that health is reported exactly, bad blocks, suspect blocks, and
 # free good blocks
 [cases.test_repair_health]

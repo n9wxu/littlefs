@@ -204,8 +204,8 @@ enum lfs3_type {
 #ifndef LFS3_RDONLY
 #define LFS3_O_APPEND   0x00000020  // Move to end of file on every write
 #endif
-#define LFS3_O_FLUSH    0x00000040  // Flush data on every write
-#define LFS3_O_SYNC     0x00000080  // Sync metadata on every write
+#define LFS3_O_FLUSH    0x00000040  // Flush data on every write and truncate
+#define LFS3_O_SYNC     0x00000080  // Sync on every write and truncate
 #define LFS3_O_DESYNC   0x00100000  // Do not sync or recieve file updates
 #define LFS3_O_CKMETA   0x00001000  // Check metadata checksums
 #define LFS3_O_CKDATA   0x00002000  // Check metadata + data checksums
@@ -906,14 +906,14 @@ struct lfs3_cfg {
     #endif
 
     // Number of times to read a block again when it fails a check, in
-    // lfs3_fs_ck, lfs3_fs_gc, traversals, and mounts with LFS3_M_CKMETA
-    // or LFS3_M_CKDATA, and when the block device fails a read that
-    // decides a metadata pair's latest state. Data blocks and B-tree
-    // nodes are read again where their checksums are recorded. A metadata
-    // pair is read again, at mount and while mounted, when a read of a
-    // revision count or of its newer block's log fails: littlefs never
-    // takes the older block for the latest because a read failed, the
-    // pair is damaged instead, see lfs3_mount.
+    // lfs3_fs_ck, lfs3_fs_gc, lfs3_file_ck, traversals, and mounts with
+    // LFS3_M_CKMETA or LFS3_M_CKDATA, and when the block device fails a
+    // read that decides a metadata pair's latest state. Data blocks and
+    // B-tree nodes are read again where their checksums are recorded. A
+    // metadata pair is read again, at mount and while mounted, when a read
+    // of a revision count or of its newer block's log fails: littlefs
+    // never takes the older block for the latest because a read failed,
+    // the pair is damaged instead, see lfs3_mount.
     //
     // A read can fail while the supply is low and pass later, so a failed
     // check doesn't prove the data is lost. With LFS3_GBMAP, a block that
@@ -935,7 +935,8 @@ struct lfs3_cfg {
 
     // Number of times lfs3_fs_ck, and mounts and formats with
     // LFS3_M_CKMETA, LFS3_M_CKDATA, LFS3_F_CKMETA or LFS3_F_CKDATA, check
-    // every block.
+    // every block, and lfs3_file_ck reads the metadata pair holding the
+    // file.
     //
     // A bit that reads differently each time, such as one left
     // metastable by a power loss, is more likely to be caught by more
@@ -1917,7 +1918,14 @@ int lfs3_set(lfs3_t *lfs3, const char *path,
 
 // Removes a file or directory
 //
-// If removing a directory, the directory must be empty.
+// If removing a directory, the directory must be empty. A file in it that
+// an open handle created and has never synced counts, though it's listed
+// as LFS3_TYPE_STICKYNOTE, or not at all while the handle is
+// desynchronized, since removing the directory would discard the file's
+// unsynced data. Once the handle is closed without a sync the file is
+// gone, once synced it's a regular file. A file removed while a handle
+// still has it open also counts, until the handle is closed.
+//
 // Returns 0 on success, or LFS3_ERR_NOENT if the path, or one of its
 // parents, doesn't exist, LFS3_ERR_NOTDIR if a parent isn't a directory,
 // LFS3_ERR_INVAL if the path is empty or climbs above the root, or the
@@ -1933,7 +1941,8 @@ int lfs3_remove(lfs3_t *lfs3, const char *path);
 // Rename or move a file or directory
 //
 // If the destination exists, it must match the source in type.
-// If the destination is a directory, the directory must be empty.
+// If the destination is a directory, the directory must be empty, as for
+// lfs3_remove.
 // A directory can not be moved into itself or one of its children.
 //
 // Returns 0 on success, or LFS3_ERR_NOENT if the source, or a parent of
@@ -2196,6 +2205,9 @@ lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file,
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
 //
+// With LFS3_O_FLUSH the file is then flushed, and with LFS3_O_SYNC synced,
+// as after lfs3_file_write.
+//
 // Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
 // LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_INVAL if the file was
 // opened read-only, as every file of a read-only mount is (see
@@ -2210,6 +2222,9 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 //
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
+//
+// With LFS3_O_FLUSH the file is then flushed, and with LFS3_O_SYNC synced,
+// as after lfs3_file_write.
 //
 // Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
 // LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_INVAL if the file was
@@ -2242,11 +2257,24 @@ int lfs3_file_rewind(lfs3_t *lfs3, lfs3_file_t *file);
 // With LFS3_THREADSAFE, also an error from lock or unlock.
 lfs3_soff_t lfs3_file_size(lfs3_t *lfs3, lfs3_file_t *file);
 
-// Check a file for errors and other work
+// Check a file for errors
+//
+// With LFS3_CK_CKMETA, the metadata pair holding the file's entry, which
+// also holds a small file's data, is read again and must read as this
+// handle last saw it, and the nodes of the file's B-tree are checked.
+// With LFS3_CK_CKDATA, the file's data blocks are checked too. As in
+// lfs3_fs_ck, what fails is read again, see ck_retries, and the metadata
+// pair is read ck_passes times. A metadata pair rolled back before the
+// file was opened reads as the handle saw it, lfs3_fs_ck finds that
+// through the global checksum.
+//
+// A check that fails changes nothing, so the handle can be used again
+// once its blocks read.
 //
 // Returns 0 on success, or LFS3_ERR_CORRUPT if a checksum mismatch is
-// found, LFS3_ERR_BADFD if the handle is torn, or LFS3_ERR_IO if the block
-// device fails. With LFS3_THREADSAFE, also an error from lock or unlock.
+// found that reading again doesn't fix, LFS3_ERR_BADFD if the handle is
+// torn, or LFS3_ERR_IO if the block device fails. With LFS3_THREADSAFE,
+// also an error from lock or unlock.
 int lfs3_file_ck(lfs3_t *lfs3, lfs3_file_t *file, uint32_t flags);
 
 
