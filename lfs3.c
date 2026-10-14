@@ -5487,20 +5487,34 @@ static int lfs3_rbyd_appendcompaction(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
 
     // connect every other trunk together, building layers of a perfectly
     // balanced binary tree upwards until we have a single trunk
+    //
+    // note this reads back what we just progged, and a block whose progs
+    // silently did nothing reads back whatever it held before, building
+    // on that need never end, so we check each layer is what we wrote:
+    // the first is our tags, one per trunk, each layer after has one or
+    // two alts and a null per trunk, as many trunks as the nulls that
+    // ended the layer before, and no trunk runs past its layer, anything
+    // else is a bad prog
     lfs3_size_t layer = off;
     lfs3_rid_t weight = 0;
     lfs3_tag_t tag_ = 0;
+    // trunks we wrote for this layer, -1 for our tags, which we can't
+    // count here
+    lfs3_size_t count = -1;
     while (true) {
         lfs3_size_t layer_ = lfs3_rbyd_eoff(rbyd);
+        lfs3_size_t count_ = 0;
+        lfs3_size_t nulls = 0;
         off = layer;
         while (off < layer_) {
             // connect two trunks together with a new binary trunk
             for (int i = 0; i < 2 && off < layer_; i++) {
                 lfs3_size_t trunk = off;
                 lfs3_tag_t tag = 0;
+                lfs3_tag_t tag__ = 0;
+                lfs3_size_t alts = 0;
                 weight = 0;
                 while (true) {
-                    lfs3_tag_t tag__;
                     lfs3_rid_t weight__;
                     lfs3_size_t size__;
                     lfs3_ssize_t d = lfs3_bd_readtag(lfs3,
@@ -5519,12 +5533,14 @@ static int lfs3_rbyd_appendcompaction(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
                     }
 
                     // ignore shrub trunks, unless we are actually compacting
-                    // a shrub tree
-                    if (!lfs3_tag_isalt(tag__)
+                    // a shrub tree, only our tags can have these
+                    if (count == (lfs3_size_t)-1
+                            && !lfs3_tag_isalt(tag__)
                             && lfs3_tag_isshrub(tag__)
                             && !lfs3_rbyd_isshrub(rbyd)) {
                         trunk = off;
                         weight = 0;
+                        alts = 0;
                         continue;
                     }
 
@@ -5543,10 +5559,31 @@ static int lfs3_rbyd_appendcompaction(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
                     if (!lfs3_tag_isalt(tag__)) {
                         break;
                     }
+                    alts += 1;
+                }
+
+                // not what we wrote? our block must be bad
+                count_ += 1;
+                if (off > layer_
+                        || count_ > count
+                        || ((count == (lfs3_size_t)-1)
+                            ? alts != 0
+                                || !(tag__ & ~LFS3_TAG_SHRUB)
+                            : alts < 1
+                                || alts > 2
+                                || tag__ != ((lfs3_rbyd_isshrub(rbyd)
+                                        ? LFS3_TAG_SHRUB
+                                        : 0)
+                                    | LFS3_TAG_NULL))) {
+                    return LFS3_ERR_CORRUPT;
                 }
 
                 // do we only have one trunk? we must be done
                 if (trunk == layer && off >= layer_) {
+                    // but did we write more?
+                    if (count != (lfs3_size_t)-1 && count != 1) {
+                        return LFS3_ERR_CORRUPT;
+                    }
                     goto done;
                 }
 
@@ -5586,9 +5623,16 @@ static int lfs3_rbyd_appendcompaction(lfs3_t *lfs3, lfs3_rbyd_t *rbyd,
             if (err) {
                 return err;
             }
+            nulls += 1;
+        }
+
+        // fewer trunks than we wrote? our block must be bad
+        if (count != (lfs3_size_t)-1 && count_ != count) {
+            return LFS3_ERR_CORRUPT;
         }
 
         layer = layer_;
+        count = nulls;
     }
 
 done:;
