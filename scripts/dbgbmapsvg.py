@@ -135,7 +135,7 @@ WCOMPAT_DIR         = 0x01000000 # Directory file types in use
 
 # the disk version we understand, see LFS3_DISK_VERSION
 DISK_VERSION_MAJOR = 0
-DISK_VERSION_MINOR = 0
+DISK_VERSION_MINOR = 1
 
 TAG_NULL        = 0x0000    ##  v--- ---- +--- ----
 TAG_INTERNAL    = 0x0000    ##  v--- ---- +ttt tttt

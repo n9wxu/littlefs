@@ -104,7 +104,9 @@ int main(void) {
 Detailed documentation (or at least as much detail as is currently available)
 can be found in the comments in [lfs3.h](lfs3.h). This is littlefs v3, whose
 API and on-disk format are not compatible with v2 and are not frozen yet:
-images are marked v0.0, which a released v3 will refuse.
+images are marked v0.1, the fork's alpha version, which a released v3 will
+refuse. A read-write mount upgrades an image of the v3-alpha's v0.0 before
+its first write, after which v0.0 drivers refuse it.
 
 littlefs takes in a configuration structure that defines how the filesystem
 operates. The configuration struct provides the filesystem with the block

@@ -184,9 +184,12 @@ always in use, as on Linux.
 ### `LFS3_ERR_NOTSUP`
 
 The disk, or the request, needs something this build or this filesystem
-doesn't have: an on-disk version or compat flag this build doesn't know, a
-block size other than the configuration's or more blocks than it, a file of
-an unknown type, or a bad-block call on a filesystem without a gbmap.
+doesn't have: another major on-disk version or a newer minor one, rcompat
+flags that differ from this build's own, by a flag it doesn't set or one it
+does that the disk lacks, a wcompat flag this build doesn't know
+(read-write only), a block size other than the configuration's or more
+blocks than it, a file of an unknown type, or a bad-block call on a
+filesystem without a gbmap.
 
 **Fail.** At mount, reformatting is a contingency only if losing the
 contents is acceptable; usually the firmware or its configuration is wrong.

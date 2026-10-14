@@ -231,6 +231,7 @@ static inline int lfs3_ckfound(int err) {
 #define LFS3_MSETTLE_NEEDED  0x07
 #define LFS3_MSETTLE_SEEN    0x08 // an mdir is a settled copy
 #define LFS3_MSETTLE_WCOMPAT 0x10 // the SETTLED wcompat flag is on disk
+#define LFS3_MSETTLE_VERSION 0x20 // the mroot's minor version is older
 #endif
 
 
@@ -12104,6 +12105,9 @@ eot:;
 }
 
 // needed in lfs3_mtree_gc
+#ifndef LFS3_RDONLY
+static int lfs3_fs_fixversion(lfs3_t *lfs3);
+#endif
 static int lfs3_fs_fixgrm(lfs3_t *lfs3);
 static int lfs3_mdir_mkconsistent(lfs3_t *lfs3, lfs3_mdir_t *mdir);
 static inline void lfs3_alloc_ckpoint_(lfs3_t *lfs3);
@@ -12133,6 +12137,20 @@ static int lfs3_mdir_rescue(lfs3_t *lfs3, lfs3_mgc_t *mgc,
 // mutation here
 static lfs3_stag_t lfs3_mtree_gc(lfs3_t *lfs3, lfs3_mgc_t *mgc,
         lfs3_bptr_t *bptr_) {
+    // upgrade an older minor version first, as lfs3_fs_mkconsistent does
+    #ifndef LFS3_RDONLY
+    if (lfs3_t_ismkconsistent(mgc->t.h.flags)
+            && (lfs3->msettle & LFS3_MSETTLE_VERSION)) {
+        uint32_t dirty = mgc->t.h.flags;
+        int err = lfs3_fs_fixversion(lfs3);
+        if (err) {
+            return err;
+        }
+        // reset dirty flag
+        mgc->t.h.flags &= ~LFS3_t_DIRTY | dirty;
+    }
+    #endif
+
     // check for pending grms every step, just in case some other
     // operation introduced new grms
     #ifndef LFS3_RDONLY
@@ -18613,8 +18631,18 @@ static int lfs3_mountmroot(lfs3_t *lfs3, const lfs3_mdir_t *mroot) {
         return LFS3_ERR_NOTSUP;
     }
 
-    // check for any rcompatflags, we must understand these to read
-    // the filesystem
+    // an older minor version? we upgrade it before our first write, see
+    // lfs3_fs_fixversion, a read-only mount never changes it
+    #ifndef LFS3_RDONLY
+    if (version[1] < LFS3_DISK_VERSION_MINOR
+            && !lfs3_m_isrdonly(lfs3->flags)) {
+        lfs3->msettle |= LFS3_MSETTLE_VERSION;
+    }
+    #endif
+
+    // check for any rcompatflags, these must match ours to read the
+    // filesystem, an image with fewer flags than ours is the work of
+    // another driver
     lfs3_rcompat_t rcompat_ = 0;
     tag = lfs3_mdir_lookup(lfs3, mroot, LFS3_TAG_RCOMPAT,
             &data);
@@ -20464,6 +20492,34 @@ int lfs3_fs_cksum(lfs3_t *lfs3, uint32_t *cksum) {
 
 // consistency stuff
 
+// an older minor version on disk? upgrade it to ours, in a commit of its
+// own before our first write, as v2 did, so the image says which drivers
+// wrote it
+//
+// this commits nothing else, so call it before any gstate is staged
+#ifndef LFS3_RDONLY
+static int lfs3_fs_fixversion(lfs3_t *lfs3) {
+    LFS3_INFO("Upgrading littlefs to v%"PRId32".%"PRId32,
+            LFS3_DISK_VERSION_MAJOR,
+            LFS3_DISK_VERSION_MINOR);
+
+    const uint8_t version[2] = {
+        LFS3_DISK_VERSION_MAJOR,
+        LFS3_DISK_VERSION_MINOR,
+    };
+    int err = lfs3_mdir_commit(lfs3, &lfs3->mroot, LFS3_RATTRS(
+            LFS3_RATTR(2, LFS3_TAG_VERSION, 0, LFS3_FROM_BUF, 2),
+            LFS3_RATTR_ARG(version),
+            LFS3_RATTR_NULL));
+    if (err) {
+        return err;
+    }
+
+    lfs3->msettle &= ~LFS3_MSETTLE_VERSION;
+    return 0;
+}
+#endif
+
 #ifndef LFS3_RDONLY
 static int lfs3_fs_fixgrm(lfs3_t *lfs3) {
     if (lfs3_grm_count(lfs3) == 2) {
@@ -20622,6 +20678,14 @@ static int lfs3_fs_fixorphans(lfs3_t *lfs3) {
 static int lfs3_fs_mkconsistent_(lfs3_t *lfs3) {
     // filesystem must be writeable
     LFS3_ASSERT(!lfs3_m_isrdonly(lfs3->flags));
+
+    // upgrade an older minor version first, as v2 did
+    if (lfs3->msettle & LFS3_MSETTLE_VERSION) {
+        int err = lfs3_fs_fixversion(lfs3);
+        if (err) {
+            return err;
+        }
+    }
 
     // fix pending grms
     if (lfs3_grm_count(lfs3) > 0) {
