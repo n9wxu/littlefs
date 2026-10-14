@@ -1395,8 +1395,8 @@ its trunk. No checksum covers the padding after a commit's checksum.
   B-BIG.
 - **Fail:** 0 is returned for a corrupted file.
 - **Verified by:** as listed; `ck::file_ckdata_blocks`.
-- **Status:** Tested on v3-integration (23b617c1). The file's own mdir entry
-  and inline data are open question Q13.
+- **Status:** Tested on v3-integration (23b617c1). The mdir holding the
+  file's entry and inline data: Q13 is decided, LFS3-INT-27.
 - **When:** every CI run.
 
 #### LFS3-INT-14
@@ -1708,6 +1708,54 @@ mounted.
 - **Status:** Tested on v3-integration (862e3695). Before it (issue #6),
   every permutation of `mount::readerror` with `LFS3_ERR_CORRUPT` and of
   `mount::readerror_mounted` found the older state.
+- **When:** every CI run.
+
+#### LFS3-INT-27
+
+littlefs shall, in `lfs3_file_ck` with `LFS3_CK_CKMETA` or
+`LFS3_CK_CKDATA`, and so in `lfs3_file_opencfg` with `LFS3_O_CKMETA` or
+`LFS3_O_CKDATA`, read again the metadata pair holding the file's entry,
+which holds its name and struct, and a small file's data and shrub, as
+`lfs3_fs_ck` reads a pair: again up to `ck_retries` times when a read
+fails, and `ck_passes` times; and return `LFS3_ERR_CORRUPT` when it
+doesn't read, or reads as other than the handle last saw it. A check that
+fails shall leave the handle as it was.
+
+- **Source:** Proposal, decided on 2026-10-13 (issue #11, Q13; 4-api
+  R29): a check of one file that passes while the block holding its name,
+  size and inline bytes doesn't read would report health that isn't there
+  (principle 2). At `00bba274` `lfs3_file_ck` checked the file's B-tree
+  nodes and data blocks only. The handle's view is the reference, so a
+  pair rolled back before the handle was opened is found by `lfs3_fs_ck`
+  through the global checksum, not by a check of one file.
+- **Measure:** `lfs3_file_ck` results with the pair intact, with bits
+  flipped, rolled back and failing reads; the reads of the pair per check;
+  the handle's size and content, and a write through it, after a check
+  that failed.
+- **Pass:** `ck::file_ckmeta_mdir` (NEW-163), with `LFS3_CK_CKMETA` and
+  with `LFS3_CK_CKDATA`, for files of 8 and 128 bytes held in the mdir and
+  of 8 blocks with a B-tree, in the mroot and in an mdir of the mtree,
+  gets 0 from a handle opened before the damage with the pair intact, and
+  `LFS3_ERR_CORRUPT` for each flip of the revision count, of the last bit
+  a checksum covers, of the first and last bit of the file's data and of
+  8 random covered bits of the newer block, for the pair rolled back to
+  before the file's sync, and for 2 failed reads of the newer block with
+  `ck_retries` 0 (0 with 3); a clobbered B-tree node still gives
+  `LFS3_ERR_CORRUPT`, a clobbered data block with `LFS3_CK_CKDATA` only;
+  with the damage undone the check passes and the file reads back.
+  `repair::passes_file` (NEW-163) counts `ck_passes` reads of the pair
+  for 1, 2 and 3 passes, and with 2 and 3 finds a pair whose reads go
+  wrong after the first pass. `ck::file_ck_heals` (NEW-164): after a check
+  that failed on the B-tree's root, failing reads or clobbered, the check
+  passes once the block reads, the handle reads the file whole, and a
+  write and close through it keep the rest of the file. In B-DEF, B-YGB
+  and B-BIG.
+- **Fail:** 0 for a pair damaged since the handle last saw it, a handle
+  changed by a check that failed, or fewer reads than `ck_passes`.
+- **Verified by:** NEW-163, NEW-164.
+- **Status:** Not implemented at `00bba274`, where a failed check of a
+  B-tree's root also left the handle with an empty file, which a sync
+  through it committed (D-36).
 - **When:** every CI run.
 
 ### 6.4 Flash failure handling (FAIL)
@@ -8846,6 +8894,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-33 | An mroot compaction that didn't fit tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` | `lfs3_mdir_compact___` | run (a 3896-byte root attr, then a create) | META-03, ERR-06 | 42e26e7e; `mtree::commit_too_big`, `attrs::setattr_huge` |
 | D-34 | A crystal that `crystal_thresh` left unaligned stayed marked uncrystallized, and the next crystallization asserted on its missing erased state | `lfs3_file_crystallize_` | run | CFG-10 | 431d2cda; `fwrite::rwtf_unaligned_fuzz` |
 | D-35 | A new crystal's block alignment used a fragment's offset in its rbyd as if it were an offset in a data block | `lfs3_file_flush_` | run | FILE-25 | abd076cb; `fwrite::align_fragment` |
+| D-36 | `lfs3_file_ck` checked the root of a file's B-tree in the handle's own rbyd, so a check that failed on it left the root half-fetched: once the block read again, the check passed, the handle saw an empty file, and a write and close through it committed the file as just that write | `lfs3_file_ck` | run (`ck::file_ck_heals` at `00bba274`: 8 of 8; a 32 KiB file became 16 bytes) | INT-27 | open |
 
 ### A.3 From the analyses
 
@@ -9270,7 +9319,7 @@ are mapped at the end of 6.4.
 | `lfs3_setattr` | GEN-06, PL-11, META-03, ATTR-01, ATTR-05, ATTR-06, ATTR-08 |
 | `lfs3_removeattr` | GEN-06, PL-11, ATTR-03, ATTR-08 |
 | `lfs3_file_open` | FILE-16, CFG-07, RES-08, BUILD-10, FILE-14, FILE-15 |
-| `lfs3_file_opencfg` | GEN-06, INT-13, META-03, FILE-15, DIR-14 |
+| `lfs3_file_opencfg` | GEN-06, INT-13, INT-27, META-03, FILE-15, DIR-14 |
 | `lfs3_file_close` | PL-04, PL-06, FILE-21, FILE-27, SYNC-19 |
 | `lfs3_file_sync` | PL-04, PL-06, SYNC-05, SYNC-06, SYNC-08, SYNC-09, SYNC-17, SYNC-20, FILE-27, MOUNT-17, PERF-06, PERF-07, PERF-10 |
 | `lfs3_file_flush` | PL-06, FILE-27, SYNC-05, SYNC-10 |
@@ -9284,7 +9333,7 @@ are mapped at the end of 6.4.
 | `lfs3_file_tell` | FILE-02, FILE-06, FILE-08, FILE-09, FILE-20 |
 | `lfs3_file_rewind` | FILE-20, BUILD-11 |
 | `lfs3_file_size` | FILE-02, FILE-19, FILE-22, SYNC-09 |
-| `lfs3_file_ck` | INT-13 |
+| `lfs3_file_ck` | INT-13, INT-27 |
 | `lfs3_mkdir` | GEN-06, PL-08, META-03, DIR-01, DIR-02, DIR-14 |
 | `lfs3_dir_open` | DIR-19 |
 | `lfs3_dir_close` | DIR-20 |
@@ -9351,8 +9400,8 @@ are mapped at the end of 6.4.
 | `fragment_size` | KV-09, CFG-01, CFG-12 |
 | `crystal_thresh` | KV-09, CFG-01, CFG-10, PERF-11 |
 | `lookgbmap_thresh` | ALLOC-11 |
-| `ck_retries` | GC-18, INT-26, DEG-10, DEG-14, BAD-17 |
-| `ck_passes` | GC-17 |
+| `ck_retries` | GC-18, INT-26, INT-27, DEG-10, DEG-14, BAD-17 |
+| `ck_passes` | GC-17, INT-27 |
 | `lfs3_file_cfg.fcache_buffer` | CFG-08, RES-01 |
 | `lfs3_file_cfg.fcache_size` | CFG-08 |
 | `lfs3_file_cfg.attrs`, `attr_count` | ATTR-08, ATTR-09, ATTR-10, ATTR-12, PL-11 |
