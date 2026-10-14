@@ -609,10 +609,14 @@ any block device operation, changing nothing.
 - **Verified by:** `mount::rdonly_mutate`, a death test, in B-DEF and
   B-BIG; `mount::rdonly_inval` in B-NA, through `make test-release` (job
   test-release) (NEW-49).
-- **Status:** Known defect (4-api R12). In B-DEF `mount::rdonly_mutate`
-  (696a539e) shows that every mutating call asserts before it writes. With
-  `LFS3_NO_ASSERT` the calls go unchecked and write. See also
-  LFS3-MOUNT-17.
+- **Status:** Tested on `v3-q-rdonly` (e71bd22c): `mount::rdonly_mutate`
+  passes 19 permutations in B-DEF, 21 in B-YGB and 44 in B-BIG;
+  `mount::rdonly_inval` passes 19 in B-NA (`make test-release`) and 44 in
+  B-BIG with `LFS3_NO_ASSERT`, and failed all 19 before the fix. The same
+  check makes a write through a file opened read-only return
+  `LFS3_ERR_INVAL` on a read-write mount too. Known defect at `b10efaa`
+  (4-api R12: with `LFS3_NO_ASSERT` the calls went unchecked and wrote).
+  See also LFS3-MOUNT-17.
 - **When:** every CI run.
 
 #### LFS3-GEN-07
@@ -5373,12 +5377,13 @@ with `LFS3_M_RDONLY`, whatever calls are made.
 - **Verified by:** `mount::rdonly_nowrite` (NEW-37),
   `attrs::fattr_rdonly_file`, `fsync::desync_wdrs`;
   `mount::rdonly_mutate` and `mount::rdonly_inval` (NEW-49).
-- **Status:** Partly tested on v3-integration (db987a31, 51436f17). Q1 is
-  decided (db987a31): syncing a read-only handle resyncs it and writes
-  nothing. Q2 is decided (2026-10-13): a call that would write asserts,
-  and with `LFS3_NO_ASSERT` returns `LFS3_ERR_INVAL`; until then such a
-  call writes in B-NA (4-api R12, LFS3-GEN-06). Known defect at `b10efaa`
-  (2-files B3: a probe issued one prog on an `LFS3_M_RDONLY` mount).
+- **Status:** Tested on v3-integration (db987a31, 51436f17) and
+  `v3-q-rdonly` (e71bd22c). Q1 is decided (db987a31): syncing a read-only
+  handle resyncs it and writes nothing. Q2 is decided (e71bd22c): a call
+  that would write asserts, and with `LFS3_NO_ASSERT` returns
+  `LFS3_ERR_INVAL` with no read, prog, erase or sync
+  (`mount::rdonly_inval`). Known defect at `b10efaa` (2-files B3: a probe
+  issued one prog on an `LFS3_M_RDONLY` mount).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-18
@@ -5426,11 +5431,12 @@ shall then report none of `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD`,
 - **Verified by:** `runners/rdonly_runner.c` through `make test-rdonly`,
   which fails any read-only mount that doesn't report the flag; B-DEF cases
   with `LFS3_M_RDONLY`; `mount::rdonly_workflags` (NEW-161), `mount::flags`.
-- **Status:** Partly tested on v3-integration (83f8cdea, c2dfab01): the
-  `LFS3_I_RDONLY` half. Known defect at `b10efaa` (4-api R25: an
-  `LFS3_RDONLY` build mounted with flags 0 reported 0x3000). Q16 is
-  decided, and a read-only mount still reports `LFS3_I_MKCONSISTENT`,
-  `LFS3_I_LOOKAHEAD`, `LFS3_I_PREERASE` and `LFS3_I_COMPACT`.
+- **Status:** Tested on v3-integration (83f8cdea, c2dfab01) and
+  `v3-q-rdonly` (291a1038): `mount::rdonly_workflags` passes 3
+  permutations in B-DEF and B-YGB and 6 in B-BIG, and failed before the
+  fix; `mount::flags` passes 144, 144 and 22,528. Known defect at
+  `b10efaa` (4-api R25: an `LFS3_RDONLY` build mounted with flags 0
+  reported 0x3000).
 - **When:** every CI run.
 
 #### LFS3-MOUNT-20
@@ -7274,7 +7280,10 @@ littlefs shall document which API misuses are checked only by
   `lfs3_mount` and in the "Returns" paragraph of each such call.
 - **Fail:** any is missing.
 - **Verified by:** review.
-- **Status:** Not implemented (planned).
+- **Status:** Not implemented (planned). The read-only half is done on
+  `v3-q-rdonly` (e71bd22c): `lfs3.h` states the precondition and its
+  error at `lfs3_mount` and in the "Returns" paragraph of each call that
+  would write; the other preconditions are not listed yet.
 - **When:** before v3-beta.
 
 #### LFS3-DOC-17
@@ -8304,8 +8313,8 @@ either an existing one (`LFS3_ERR_INVAL`, `LFS3_ERR_NOTSUP`) or a new
 read-only code; (c) both: an error code in all builds and an assert in
 debug builds.
 
-**Decided** on 2026-10-13 (issue #11): (c), with `LFS3_ERR_INVAL`. A call
-that would write to an `LFS3_M_RDONLY` mount asserts, and returns
+**Decided** on 2026-10-13 (issue #11; e71bd22c): (c), with `LFS3_ERR_INVAL`.
+A call that would write to an `LFS3_M_RDONLY` mount asserts, and returns
 `LFS3_ERR_INVAL` before any I/O when asserts are compiled out. A mount is
 read-only only when the application asks (a read-write mount that can't
 write fails with `LFS3_ERR_NOTSUP`), so a write to one is a caller bug,
@@ -8473,9 +8482,9 @@ change the cost of every write.
 on read-only mounts; (b) keep them, as "work the image needs", and document
 it. (`LFS3_I_RDONLY` itself is now always set, LFS3-MOUNT-19.)
 
-**Decided** on 2026-10-13 (issue #11): (a). A read-only mount reports none
-of `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD`, `LFS3_I_PREERASE` and
-`LFS3_I_COMPACT`. The flags are not stored on disk: mount sets them to
+**Decided** on 2026-10-13 (issue #11; 291a1038): (a). A read-only mount
+reports none of `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD`, `LFS3_I_PREERASE`
+and `LFS3_I_COMPACT`. The flags are not stored on disk: mount sets them to
 "assume there is work" and only the gc and traversal that do the work clear
 them, which a read-only mount can't run, so there they are always set and
 say nothing about the image. `LFS3_I_CKMETA` and `LFS3_I_CKDATA` stay, as
@@ -8684,7 +8693,6 @@ test in a new environment (9.2).
 | ID | Status | When | Test needed |
 |---|---|---|---|
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
-| LFS3-GEN-06 | Defect | every CI run | `mount::rdonly_inval` in B-NA: `LFS3_ERR_INVAL` and no block device operation from each call that would write on an `LFS3_M_RDONLY` mount |
 | LFS3-GEN-07 | Open question | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
 | LFS3-INT-08 | Untested | every CI run | fuzz: `lfs3_fs_cksum` changes after every model-changing call |
 | LFS3-META-17 | Untested | every CI run | internal check: estimate at least the compacted size |
@@ -8898,14 +8906,14 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 4-api R6 | `LFS3_RDONLY` with `LFS3_CKMETAPARITY`, `LFS3_GBMAP` or `LFS3_GC` does not compile | `lfs3.c:15206-15207, 10483-10509, 15097, 15143-15146` | run | BUILD-04 | cc461256; none (no job builds them) |
 | 4-api R7 | `lfs3_set` ignores `file_limit` | `lfs3.c:15045-15071` | probe | KV-04 | d88ee2fc; `kv::set_fbig` |
 | 4-api R8 | `lfs3_init` frees pointers it never set when an early allocation fails | `lfs3.c:15175-15222, 15400-15418` | probe | RES-06 | 90c12e41; `mount::nomem` |
-| 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | open: Q2 is decided, `LFS3_ERR_INVAL`; `mount::rdonly_mutate` checks the assert |
+| 4-api R12 | API preconditions are asserts; with `LFS3_NO_ASSERT` a mutating call on a read-only mount proceeds | `lfs3.c:16620` | code | GEN-06 | e71bd22c; `mount::rdonly_mutate`, `mount::rdonly_inval` |
 | 4-api R17 | `lfs3_fromleb128` shifts signed values (undefined behaviour for large fifth bytes) | `lfs3_util.c:37-56` | code | GEN-03 | fb675e5b; `make test-sanitize` |
 | 4-api R19 | `LFS3_THREADSAFE` adds `lock` and `unlock`, which are never called | `lfs3.h:495-503` | code | THR-01, THR-02 | ecf44d33; `threadsafe::*`, `make test-threadsafe` |
 | 4-api R20 | `lfs3_util.h` honours `LFS3_CFG`, `lfs3_util.c` checks `LFS3_CONFIG` | `lfs3_util.h:21`, `lfs3_util.c:11` | code | BUILD-08 | 7e5796c6; none (no build check) |
 | 4-api R21 | The `lfs3_strspn` fallback is wrong for sets of two or more characters | `lfs3_util.h:719-734` | code | BUILD-09 | afcabca0; none (no unit case) |
 | 4-api R22 | `lfs3_file_open` is defined under `LFS3_NO_MALLOC`, where the header hides it | `lfs3.h:1511` | code | BUILD-10 | 71a6f970; `make test-nomalloc` builds it |
 | 4-api R23 | Stale header text: `lfs3_fs_unck`, `lfs3_info.type`, the `gc_compact_thresh` percentage | `lfs3.h:1801-1810, 721, 625` | code | DOC-06, DOC-08, DOC-10 | 170f0110 (`lfs3_info.type`), the `lfs3.h` commit of issue #10 (`lfs3_fs_unck`); the percentage still reads "~88%" for 87.5% |
-| 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | 83f8cdea; `make test-rdonly`; the work flags of a read-only mount, Q16, are decided and still reported |
+| 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | 83f8cdea; `make test-rdonly`; and for the work flags of Q16, 291a1038; `mount::rdonly_workflags`, `mount::flags` |
 | 4-api R27 | `dirs::rm_many_2layers` under power loss with `N=4` is excluded as a known bug | `tests/test_dirs.toml:3442` | maintainer | PL-27 | caaea78c (the exclusion removed; the case passes); `dirs::rm_many_2layers` |
 | 4-api R28 | `lfs3_format` with `block_count` 1 writes block 0, then asserts in the bd wrapper | `lfs3.c:570` | probe | MOUNT-03 | dda5cc34, 67f5b135; `mount::format_tiny` |
 | 4-api §1.7 | Attribute type ranges in `lfs3.h` differ from #1111 | `lfs3.h:766-768` | code | DOC-14 | open (Q9) |
