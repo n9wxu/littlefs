@@ -8343,6 +8343,195 @@ done:;
     free(rbuf);
 '''
 
+# test splitting an mdir into blocks whose progs silently do nothing,
+# without prog checking
+#
+# we can't see a prog that does nothing, but a compaction reads back the
+# tags it progged to build its tree, and a block that kept what it held
+# reads back tags we never wrote, that is a bad prog, so we should
+# relocate, not take the block for too full and give up with
+# LFS3_ERR_NOSPC
+#
+# the blocks after the first the split allocates are bad, so the split
+# compacts into a bad block, and relocating past them leaves every
+# block we reference good, so everything should still be there
+[cases.test_badblocks_silent_split]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# bad blocks that were never written read back the erase value, or 0x00
+# with -1, 0x00 reads as null tags, 0xff doesn't parse as a tag
+defines.ERASE_VALUE = [0x00, 0xff, -1]
+defines.BADBLOCKS = [1, 8]
+defines.SIZE = 64
+defines.SEED = 42
+# we need the lookahead buffer to place our bad blocks
+ifndef = 'LFS3_YES_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+
+    // allocate from block 2, which a new mdir only reads, the blocks
+    // after it are the first we compact into
+    memset(lfs3.lookahead.buffer, 0, CFG->lookahead_size);
+    lfs3.lookahead.window = 2;
+    lfs3.lookahead.off = 0;
+    lfs3.lookahead.known = 0;
+    for (lfs3_block_t b = 3; b < 3+BADBLOCKS; b++) {
+        lfs3_emubd_mkbad(CFG, b) => 0;
+    }
+
+    // create files until the mroot splits, every write should succeed
+    uint32_t prng = SEED;
+    lfs3_file_t file;
+    char name[256];
+    uint8_t wbuf[SIZE];
+    lfs3_size_t count = 0;
+    for (; lfs3.mtree.r.weight == 0; count++) {
+        // a bit hacky, but this catches infinite loops
+        assert(count < BLOCK_SIZE);
+
+        sprintf(name, "amethyst%04d", count);
+        lfs3_file_open(&lfs3, &file, name,
+                LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_write(&lfs3, &file, wbuf, SIZE) => SIZE;
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+
+    // we should have relocated past our bad blocks, a new mdir only
+    // reads its block 2
+    for (lfs3_smid_t mid = 0;
+            mid < (lfs3_smid_t)lfs3.mtree.r.weight;
+            mid += 1 << lfs3.mbits) {
+        lfs3_mdir_t mdir;
+        lfs3_mtree_lookup(&lfs3, mid, &mdir) => 0;
+        for (int j = 0; j < 2; j++) {
+            assert(mdir.r.blocks[j] == 2
+                    || mdir.r.blocks[j] >= 3+BADBLOCKS);
+        }
+    }
+    assert(lfs3.mtree.r.blocks[0] >= 3+BADBLOCKS);
+
+    // everything should still be there after a remount
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
+    prng = SEED;
+    for (lfs3_size_t i = 0; i < count; i++) {
+        sprintf(name, "amethyst%04d", i);
+        for (lfs3_size_t j = 0; j < SIZE; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        uint8_t rbuf[SIZE];
+        lfs3_file_open(&lfs3, &file, name, LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3, &file, rbuf, SIZE) => SIZE;
+        assert(memcmp(rbuf, wbuf, SIZE) == 0);
+        lfs3_file_close(&lfs3, &file) => 0;
+    }
+    lfs3_unmount(&lfs3) => 0;
+'''
+
+# test B-tree nodes compacting into blocks whose progs silently do nothing,
+# without prog checking
+#
+# as with mdirs, a compaction reads back the tags it progged, and must
+# take tags it never wrote for a bad prog and relocate, a B-tree node
+# that didn't fit where it fit before tripped an assert
+#
+# the blocks after the B-tree's first block are bad, so the first time
+# the B-tree compacts it compacts into a bad block, and relocating past
+# them leaves every node good
+[cases.test_badblocks_silent_btree]
+defines.BADBLOCK_BEHAVIOR = [
+    'LFS3_EMUBD_BADBLOCK_PROGNOOP',
+    'LFS3_EMUBD_BADBLOCK_ERASENOOP',
+]
+# bad blocks that were never written read back the erase value, or 0x00
+# with -1, 0x00 reads as null tags, 0xff doesn't parse as a tag
+defines.ERASE_VALUE = [0x00, 0xff, -1]
+defines.BADBLOCKS = [1, 8]
+# appends after the first compaction
+defines.N = [0, 512]
+# maximize lookahead buffer to avoid alloc scans
+defines.LOOKAHEAD_SIZE = '(BLOCK_COUNT+8-1) / 8'
+# we need the lookahead buffer to place our bad blocks
+ifndef = 'LFS3_YES_GBMAP'
+in = 'lfs3.c'
+code = '''
+    lfs3_t lfs3;
+    lfs3_init(&lfs3, LFS3_M_RDWR, CFG) => 0;
+    // create free lookahead
+    memset(lfs3.lookahead.buffer, 0, CFG->lookahead_size);
+    lfs3.lookahead.window = 2;
+    lfs3.lookahead.off = 0;
+    lfs3.lookahead.known = lfs3_min(8*CFG->lookahead_size,
+            CFG->block_count-2);
+    lfs3_alloc_ckpoint(&lfs3);
+
+    // our B-tree starts in block 2, the blocks after it are the first
+    // we compact into
+    for (lfs3_block_t b = 3; b < 3+BADBLOCKS; b++) {
+        lfs3_emubd_mkbad(CFG, b) => 0;
+    }
+
+    // append to a B-tree until its root leaves block 2, that compaction
+    // goes to our bad blocks
+    lfs3_btree_t btree;
+    lfs3_btree_init(&btree);
+    lfs3_size_t count = 0;
+    for (; count == 0 || btree.r.blocks[0] == 2; count++) {
+        // a bit hacky, but this catches infinite loops
+        assert(count < BLOCK_SIZE);
+
+        lfs3_btree_commit(&lfs3, &btree, count, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_DATA, +1, LFS3_FROM_BUF, 1),
+                LFS3_RATTR_ARG(&(uint8_t){'a'+(count % 26)}),
+                LFS3_RATTR_NULL)) => 0;
+    }
+    printf("btree: w%d 0x%x.%x\n",
+            btree.r.weight,
+            btree.r.blocks[0],
+            btree.r.trunk);
+    // we should have relocated past our bad blocks
+    assert(btree.r.blocks[0] >= 3+BADBLOCKS);
+
+    // and keep going
+    for (lfs3_size_t i = 0; i < N; i++, count++) {
+        lfs3_btree_commit(&lfs3, &btree, count, LFS3_RATTRS(
+                LFS3_RATTR(2, LFS3_TAG_DATA, +1, LFS3_FROM_BUF, 1),
+                LFS3_RATTR_ARG(&(uint8_t){'a'+(count % 26)}),
+                LFS3_RATTR_NULL)) => 0;
+    }
+    assert(btree.r.weight == count);
+
+    // everything should still be there
+    for (lfs3_size_t i = 0; i < count; i++) {
+        lfs3_bid_t bid_;
+        lfs3_bid_t weight_;
+        lfs3_data_t data_;
+        lfs3_btree_lookupnext(&lfs3, &btree, i,
+                &bid_, &weight_, &data_) => LFS3_TAG_DATA;
+        assert(bid_ == i);
+        assert(weight_ == 1);
+        uint8_t buffer[4];
+        lfs3_data_read(&lfs3, &data_, buffer, 4) => 1;
+        assert(buffer[0] == 'a'+(i % 26));
+    }
+    lfs3_bid_t bid_;
+    lfs3_bid_t weight_;
+    lfs3_data_t data_;
+    lfs3_btree_lookupnext(&lfs3, &btree, count,
+            &bid_, &weight_, &data_) => LFS3_ERR_NOENT;
+
+    lfs3_deinit(&lfs3) => 0;
+'''
+
 # test pre-erasing blocks whose erases silently do nothing
 #
 # pre-erasing can't tell these apart from good blocks, so we only find
