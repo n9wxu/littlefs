@@ -2299,7 +2299,7 @@ last column gives its commits on `v3-integration`.
 | NEW-99 | `fsync::flush_stat` | SYNC-10 | `lfs3_stat` and other handles after a flush | no change until sync | – |
 | NEW-100 | `stickynotes::grm_overflow` | SYNC-16 | close three or more desynced uncreated handles | `LFS3_I_MKCONSISTENT` set; no stickynote after mkconsistent | – |
 | NEW-101 | `dirs::packing` | DIR-18 | 32 empty directories on 4096-byte blocks | `lfs3_fs_usage` grows by at most 4 blocks | – |
-| NEW-102 | `attrs::all_types` | ATTR-07 | distinct values for types 0x00 to 0xff | each reads back its own value | – |
+| NEW-102 | `attrs::all_types` | ATTR-07 | distinct values for types 0x00 to 0xff, all set at once, on a file, a stickynote, a directory and the root, on 16 KiB blocks; a remount | each reads back its own value | – |
 | NEW-103 | `attrs::fattr_remove` | ATTR-10 | `buffer_size = LFS3_ERR_NOATTR` in `lfs3_file_cfg.attrs` | `LFS3_ERR_NOATTR` after the sync | – |
 | NEW-104 | `kv::get_dir`, `kv::get_uncreat` | KV-05, KV-08 | `lfs3_get` and `lfs3_size` on a directory and on an open uncreated file | `LFS3_ERR_ISDIR`; 0 bytes and size 0 | – |
 | NEW-105 | `kv::set_one_commit` | KV-09 | internal; count commits of a 16-byte new `lfs3_set` | one commit | – |
@@ -2439,7 +2439,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-99 | P2 | `fsync::flush_stat` | as planned | – | not written |
 | NEW-100 | P2 | `stickynotes::grm_overflow` | as planned | – | not written |
 | NEW-101 | P2 | `dirs::packing` | as planned | – | not written |
-| NEW-102 | P2 | `attrs::all_types` | as planned | – | not written |
+| NEW-102 | P2 | `attrs::all_types` | as planned | 1087d526 | done |
 | NEW-103 | P2 | `attrs::fattr_remove` | as planned | – | not written |
 | NEW-104 | P2 | `kv::get_dir`, `kv::get_uncreat` | as planned | – | not written |
 | NEW-105 | P2 | `kv::set_one_commit` | as planned | – | not written |
