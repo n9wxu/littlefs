@@ -261,6 +261,27 @@ static void test_salvage_check(lfs3_t *lfs3, const lfs3_block_t pair[2],
     }
 }
 
+// erase a block, so it holds nothing
+//
+// with ERASE_VALUE=-1 an erase is a noop and would leave the block's
+// commits, so we also prog what an erase might leave, 0xff, and mark it
+// not programmed, as erased bytes are, for the prog-once check
+static void test_salvage_erase(const struct lfs3_cfg *cfg,
+        lfs3_block_t block) {
+    int err = cfg->erase(cfg, block);
+    assert(!err);
+    if (ERASE_VALUE == -1) {
+        uint8_t *fill = malloc(cfg->block_size);
+        assert(fill);
+        memset(fill, 0xff, cfg->block_size);
+        err = cfg->prog(cfg, block, 0, fill, cfg->block_size);
+        assert(!err);
+        free(fill);
+        err = lfs3_emubd_mkunprogged(cfg, block, 0, cfg->block_size);
+        assert(!err);
+    }
+}
+
 // damage the first or last mdir of the mtree
 //
 // DAMAGE=0 => its newer block fails every read
@@ -364,8 +385,7 @@ static void test_salvage_damage(lfs3_t *lfs3, const struct lfs3_cfg *cfg,
         }
     } else if (damage == 2) {
         for (int j = 0; j < 2; j++) {
-            err = cfg->erase(cfg, mdir.r.blocks[j]);
-            assert(!err);
+            test_salvage_erase(cfg, mdir.r.blocks[j]);
         }
     } else {
         for (int j = 0; j < 2; j++) {
@@ -598,7 +618,7 @@ code = '''
         if (KIND == 0) {
             lfs3_emubd_mkbad(CFG, pair[j]) => 0;
         } else {
-            CFG->erase(CFG, pair[j]) => 0;
+            test_salvage_erase(CFG, pair[j]);
         }
     }
 
