@@ -5913,6 +5913,7 @@ code = '''
     lfs3_file_open(&lfs3, &file, "octopus", LFS3_O_RDWR) => 0;
     assert(lfs3_bshrub_isbtree(&file.b));
     lfs3_block_t root = file.b.b.r.blocks[0];
+    lfs3_size_t root_eoff = lfs3_rbyd_eoff(&file.b.b.r);
     printf("root 0x%x\n", root);
     if (DAMAGE == 0) {
         lfs3_emubd_mktransient(CFG, root, CK_RETRIES+1) => 0;
@@ -5932,6 +5933,11 @@ code = '''
     } else {
         CFG->erase(CFG, root) => 0;
         CFG->prog(CFG, root, 0, saved, BLOCK_SIZE) => 0;
+        // the bytes after the root's commits are still erased
+        if (root_eoff < BLOCK_SIZE) {
+            lfs3_emubd_mkunprogged(CFG, root,
+                    root_eoff, BLOCK_SIZE-root_eoff) => 0;
+        }
     }
     lfs3_bd_droprcache(&lfs3);
     lfs3_file_ck(&lfs3, &file, CK) => 0;
