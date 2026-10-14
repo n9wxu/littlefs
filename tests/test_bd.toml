@@ -392,6 +392,15 @@ code = '''
     memset(buffer, 0x55, PROG);
     CFG->prog(CFG, 1, 0, buffer, PROG) => 0;
     lfs3_emubd_blockprogs(CFG, 1) => 1;
+
+    // bytes marked unprogrammed can be programmed again, as if the
+    // block's last erase had left what they hold
+    CFG->erase(CFG, 2) => 0;
+    memset(buffer, (uint8_t)ERASE_VALUE, PROG);
+    CFG->prog(CFG, 2, 0, buffer, PROG) => 0;
+    lfs3_emubd_mkunprogged(CFG, 2, 0, PROG) => 0;
+    CFG->prog(CFG, 2, 0, buffer, PROG) => 0;
+    lfs3_emubd_blockprogs(CFG, 2) => 2;
 '''
 
 # an interrupted prog or erase that then continues must not trip the
@@ -907,6 +916,25 @@ code = '''
 
     lfs3_emubd_simreset(CFG) => 0;
     CFG->prog(CFG, 0, 0, buffer, PROG) => 0;
+'''
+death_code = '''
+    assert(TEST_DEATH.progged == 0);
+'''
+
+# lfs3_emubd_mkunprogged unmarks only the bytes it's given
+[cases.test_bd_death_progonce_mkunprogged]
+defines.CKPROGONCE = true
+death = 'prog-once check failed'
+code = '''
+    uint8_t buffer[BLOCK_SIZE];
+    memset(buffer, (uint8_t)ERASE_VALUE, BLOCK_SIZE);
+    CFG->erase(CFG, 0) => 0;
+    CFG->prog(CFG, 0, 0, buffer, BLOCK_SIZE) => 0;
+    lfs3_emubd_mkunprogged(CFG, 0, PROG_SIZE, BLOCK_SIZE-PROG_SIZE) => 0;
+    CFG->prog(CFG, 0, PROG_SIZE, buffer, BLOCK_SIZE-PROG_SIZE) => 0;
+
+    lfs3_emubd_simreset(CFG) => 0;
+    CFG->prog(CFG, 0, 0, buffer, PROG_SIZE) => 0;
 '''
 death_code = '''
     assert(TEST_DEATH.progged == 0);

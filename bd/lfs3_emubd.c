@@ -1477,6 +1477,42 @@ int lfs3_emubd_mkprogged(const struct lfs3_cfg *cfg, lfs3_block_t block) {
     return 0;
 }
 
+int lfs3_emubd_mkunprogged(const struct lfs3_cfg *cfg, lfs3_block_t block,
+        lfs3_off_t off, lfs3_size_t size) {
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkunprogged(%p, "
+                "0x%"PRIx32", %"PRIu32", %"PRIu32")",
+            (void*)cfg, block, off, size);
+    lfs3_emubd_t *bd = cfg->context;
+
+    // check if range is valid
+    LFS3_ASSERT(block < cfg->block_count);
+    LFS3_ASSERT(off+size <= cfg->block_size);
+
+    // without ck_progonce, or a block never erased, there is nothing
+    // programmed to unmark
+    if (!bd->cfg->ck_progonce || !bd->blocks[block] || size == 0) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_mkunprogged -> %d", 0);
+        return 0;
+    }
+
+    // mutate the block
+    lfs3_emubd_block_t *b = lfs3_emubd_mutblock(cfg, bd->blocks[block]);
+    if (!b) {
+        LFS3_EMUBD_TRACE("lfs3_emubd_mkunprogged -> %d", LFS3_ERR_NOMEM);
+        return LFS3_ERR_NOMEM;
+    }
+    bd->blocks[block] = b;
+
+    // mark the range as not programmed
+    uint8_t *progged = &b->data[cfg->block_size];
+    for (lfs3_off_t i = off; i < off+size; i++) {
+        progged[i/8] &= ~(1 << (i%8));
+    }
+
+    LFS3_EMUBD_TRACE("lfs3_emubd_mkunprogged -> %d", 0);
+    return 0;
+}
+
 int lfs3_emubd_mkbad(const struct lfs3_cfg *cfg,
         lfs3_block_t block) {
     LFS3_EMUBD_TRACE("lfs3_emubd_mkbad(%p, %"PRIu32")",
