@@ -417,7 +417,7 @@ a test.
 | global block map (gbmap) | ALLOC-05, ALLOC-09, ALLOC-10, ALLOC-11, ALLOC-12, ALLOC-13, ALLOC-14, ALLOC-15, ALLOC-16, PL-19, INT-22 | `gbmap::files`, `gbmap::gc_files`, `alloc::*`, `gbmap::set_*`, `gbmap::set_ecksum_*`, `powerloss::*` and 8 more; since `b10efaa`: NEW-30, NEW-51, NEW-79, NEW-80, NEW-06, NEW-64 | ALLOC-12 (P) → NEW-06 |
 | pre-erase | PRE-01, PRE-02, PRE-03, PRE-04, PRE-05, PRE-06, PRE-07, PRE-08, PRE-09 | `gc::preerase_progress`, `gc::preerase_relaxed`, `gc::preerase_decreasing`, `gbmap::gc_files`, `gc::preerase_*`, `mount::t_preerase` and 1 more; since `b10efaa`: NEW-81, NEW-23, NEW-24, NEW-11, NEW-22, NEW-25, NEW-60 | – |
 | power-loss resilience | PL-01, PL-02, PL-03, PL-04, PL-05, PL-06, PL-07, PL-08, PL-09, PL-10, PL-11, PL-12, PL-13, PL-14, PL-15, PL-16, PL-17, PL-18, PL-19, PL-20, PL-21, PL-22, PL-23, PL-24, PL-25, PL-26, PL-27 | `powerloss::*`, `dirs::*`, `files::pl_fuzz`, `relocations::spam_*_pl_fuzz`, `grow::incr_spam_*_pl_fuzz`, `stickynotes::*_pl` and 31 more; since `b10efaa`: NEW-08, NEW-58, NEW-59, NEW-55, NEW-02, NEW-03, NEW-04, NEW-56, NEW-57, NEW-06, NEW-05, NEW-01, NEW-09, NEW-10, NEW-52 | PL-02 (P) → J-PL; PL-21 (P) → J-PL; PL-23 (U) → J-PL; PL-24 (U) → J-PL |
-| bad-block handling | FAIL-01, FAIL-02, FAIL-03, FAIL-04, FAIL-05, FAIL-06, FAIL-07, FAIL-08, FAIL-09, FAIL-10, FAIL-11, FAIL-12, FAIL-13, FAIL-14, FAIL-15, FAIL-16, FAIL-17, FAIL-18, FAIL-19, FAIL-20 | `badblocks::every_*`, `badblocks::region_*`, `badblocks::alternating_*`, `badblocks::*`, `exhaustion::*`, `badblocks::region_spam_file_fuzz` and 18 more; since `b10efaa`: NEW-13, NEW-14, NEW-62, NEW-15, NEW-61, NEW-16, NEW-17, NEW-18, NEW-19 | FAIL-20 (P) → J-YGB |
+| bad-block handling | FAIL-01, FAIL-02, FAIL-03, FAIL-04, FAIL-05, FAIL-06, FAIL-07, FAIL-08, FAIL-09, FAIL-10, FAIL-11, FAIL-12, FAIL-13, FAIL-14, FAIL-15, FAIL-16, FAIL-17, FAIL-18, FAIL-19, FAIL-20 | `badblocks::every_*`, `badblocks::region_*`, `badblocks::alternating_*`, `badblocks::*`, `exhaustion::*`, `badblocks::region_spam_file_fuzz` and 18 more; since `b10efaa`: NEW-13, NEW-14, NEW-62, NEW-15, NEW-61, NEW-16, NEW-17, NEW-18, NEW-19, NEW-180 | FAIL-20 (P) → J-YGB |
 | bad-block tracking | BAD-01, BAD-02, BAD-03, BAD-04, BAD-05, BAD-06, BAD-07, BAD-08, BAD-09, BAD-10, BAD-11, BAD-12, BAD-13, BAD-14, BAD-15, BAD-18 | `badblocks_gbmap::*`, `exhaustion::*`; since `b10efaa`: NEW-90, NEW-79, NEW-22, NEW-28 | – |
 | power-loss settling (dirty marks, `LFS3_M_SETTLE`) | DEG-01, DEG-11, DEG-12, DEG-13, DEG-14, PL-03 | NEW-08, NEW-130, NEW-131, NEW-137, NEW-138, and the behaviour-4 permutations of NEW-01, NEW-05, NEW-06, NEW-11 | – |
 | damage: the degraded mount, `LFS3_M_SALVAGE`, repairs and health | INT-26, DEG-02, DEG-03, DEG-04, DEG-08, DEG-09, DEG-10, DEG-15, DEG-16, BAD-16, BAD-17, GC-17, GC-18 | NEW-139 to NEW-151, NEW-157 | – |
@@ -763,8 +763,8 @@ Injection: `BADBLOCK_BEHAVIOR=3`: progs silently do nothing.
 | O4 write | T | `badblocks::*_spam_fwrite_fuzz`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::resume_append` (NEW-20) | C with CKPROGS; D without |
 | O5 sync | T | `badblocks::*_spam_file_*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
 | O6 truncate | T | `badblocks::*_spam_fwrite_fuzz`, in B-BIG; `badblocks::fruncate_append` (NEW-21) | C |
-| O7 mdir | T | `badblocks::*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
-| O8 btree | T | `badblocks::*_btree_many`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
+| O7 mdir | T | `badblocks::*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::silent_split` (NEW-180, a split compacting into the block) | C with CKPROGS; D without, C for a compaction |
+| O8 btree | T | `badblocks::*_btree_many`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::silent_btree` (NEW-180, a node compacting into the block) | C with CKPROGS; D without, C for a compaction |
 | O9 relocation | T | `badblocks::*`, in B-BIG | C |
 | O12 gbmap | T | `badblocks::gbmap_mkrm` (NEW-28) | C |
 | O13 grow | – |  | N/A: the only write of grow is an mroot commit, covered by O7 |
@@ -782,8 +782,8 @@ Injection: `BADBLOCK_BEHAVIOR=4`: erases (and progs) silently do nothing.
 | O4 write | T | `badblocks::*_spam_fwrite_fuzz`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::resume_append` (NEW-20) | C with CKPROGS; D without |
 | O5 sync | T | `badblocks::*_spam_file_*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
 | O6 truncate | T | `badblocks::*_spam_fwrite_fuzz`, in B-BIG; `badblocks::fruncate_append` (NEW-21) | C |
-| O7 mdir | T | `badblocks::*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
-| O8 btree | T | `badblocks::*_btree_many`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14) | C with CKPROGS; D without |
+| O7 mdir | T | `badblocks::*`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::silent_split` (NEW-180, a split compacting into the block) | C with CKPROGS; D without, C for a compaction |
+| O8 btree | T | `badblocks::*_btree_many`, in B-BIG; `badblocks::silent_nockprogs` (NEW-14); `badblocks::silent_btree` (NEW-180, a node compacting into the block) | C with CKPROGS; D without, C for a compaction |
 | O9 relocation | T | `badblocks::*`, in B-BIG | C |
 | O11 pre-erase | T | `badblocks::preerase_erasenoop` (NEW-25) | C |
 | O12 gbmap | T | `badblocks::gbmap_mkrm` (NEW-28) | C |
@@ -2207,6 +2207,7 @@ and first numbered NEW-130 to NEW-134, which section 6.2 also used.
 | NEW-154 | `make test-dbg` (`scripts/test_dbg.py`) | DOC-20 | done (cc19a932), job `test-dbg` | B-DEF and B-YGB runners write the image cases (`test.py -d`), including a B-tree file and an mroot chain; every dbg script must decode each with `-e`. Checksum-valid variants break one rule each: bit 7 in an alt, a leaf and a gcksumdelta, CKSUM phase and size, leb128 limits, a torn B-tree and mtree commit, a shrub null tag, VERSION bytes and incompatible versions, a one-block mptr, exact struct and magic tags. Pass: every variant is rejected (`-e` exits 2) or shown as the driver sees it; valid images decode as before |
 | NEW-155 | `make test-release` (J-NA); `mount::noassert` | BUILD-16 | done (e529bb20), job `test-release` | the full suite built with `LFS3_NO_ASSERT`, where `LFS3_ASSERT` in `lfs3.c` and `lfs3_util.c` is left to the preprocessor (it compiles out) and test code, emubd and the runner keep their asserts; `mount::noassert`, internal and built only in B-NA, reaches the line after an `LFS3_ASSERT` that is false. Pass: every case passes; the CI job runs it on every push |
 | NEW-156 | `ck::reserved_bit`, `ck::root_bookmark` | GEN-09 | done (7d27de3d), internal | after the mroot is fetched, set bit 7 of each tag of its last commit in turn, then stat, get, setattr, shrink and create files next to it; flip each low bit of the root bookmark's did in turn, then make directories. Pass: every call returns 0 or an `enum lfs3_err` code, nothing asserts, in B-DEF, B-YGB and B-BIG |
+| NEW-180 | `badblocks::silent_split`, `badblocks::silent_btree` | FAIL-07 | done (8d2e05a1, 19e20a74), internal | without `LFS3_M_CKPROGS`, `BADBLOCK_BEHAVIOR` PROGNOOP and ERASENOOP, `ERASE_VALUE` 0x00, 0xff and -1; the allocator starts at block 2 and the next 1 or 8 blocks are bad, so the first block an mroot split, or a B-tree relocation, compacts into is bad; create files until the mroot splits, or append to a B-tree until its root leaves block 2 and 0 or 512 times more. Every write and commit succeeds, the mdirs, mtree and B-tree are past the bad blocks, and everything reads back, after a remount and `lfs3_fs_ck` for the split. Before 19e20a74 the split's close returns `LFS3_ERR_NOSPC` and the B-tree trips `LFS3_ASSERT(err != LFS3_ERR_RANGE)` with 0x00 and -1 (D-41) |
 
 ### 6.4 Extensions to emubd and the runner
 
@@ -2506,6 +2507,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-167 | P1 | `fsync::sync_o_tsrr` | as planned | 08b5e4d6 | done |
 | NEW-168 | P1 | `ck::file_ckmeta_mdir`, `repair::passes_file` | as planned | 159c1f23 | done |
 | NEW-169 | P1 | `ck::file_ck_heals` | as planned | 0487ffd3 | done |
+| NEW-180 | P0 | `badblocks::silent_split`, `badblocks::silent_btree` | as planned | 8d2e05a1, 19e20a74 | done |
 
 ### 6.8 Tests of error handling, degradation and thread safety
 
@@ -2869,8 +2871,8 @@ modelled device, and the assumptions say which real devices that covers.
   If the decisions take long, those tests should be written against the
   current behaviour and marked, rather than left out.
 - **Test-side defects.** Seven defects in test code (F-4 to F-10) were found
-  in a few days of running the suite under new conditions, and eight more
-  (F-11 to F-18) while resolving the fork's issues, two of them in emubd's
+  in a few days of running the suite under new conditions, and nine more
+  (F-11 to F-19) while resolving the fork's issues, two of them in emubd's
   own fault models. New conditions (ASan, FORTIFY, B-BIG) are likely to
   find more; they are defects to fix like any other (8.7).
 - **Extensions change the device model.** E-1, E-4 and E-5 change emubd.

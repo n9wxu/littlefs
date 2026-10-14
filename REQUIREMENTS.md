@@ -1957,20 +1957,39 @@ block when an erase silently does nothing.
 
 littlefs shall, without `LFS3_M_CKPROGS`, either mount and return
 previously synced data or return `LFS3_ERR_CORRUPT`, after progs or erases
-silently did nothing.
+silently did nothing. A compaction that reads back tags it did not write
+shall take its block for bad and relocate, so that such a block never
+makes a write fail with `LFS3_ERR_NOSPC` or an assert while free good
+blocks remain.
 
 - **Source:** Derived: without read-back, a lost prog looks like a power
-  loss before the commit, or like a rollback that the gcksum catches.
-- **Measure:** mount result and data returned.
+  loss before the commit, or like a rollback that the gcksum catches. A
+  compaction is the exception: it builds its tree from the tags it has
+  just progged, read back from its block (`lfs3_rbyd_appendcompaction`),
+  so it sees a block that kept what it held.
+- **Measure:** mount result and data returned; the result of writes whose
+  compaction goes to such a block.
 - **Pass:** `badblocks::silent_nockprogs`, a fuzz with `BADBLOCK_BEHAVIOR`
   in {3, 4} and no `LFS3_M_CKPROGS`, finishes with every read returning
-  either data that some sync committed or `LFS3_ERR_CORRUPT`, with no
-  assert, in B-DEF.
-- **Fail:** an assert, a crash, or data that no sync committed.
-- **Verified by:** `badblocks::silent_nockprogs` (NEW-14).
-- **Status:** Tested on v3-integration (9f136f90). The limitation is
-  documented by LFS3-DOC-12.
-- **When:** nightly.
+  either data that some sync committed or `LFS3_ERR_CORRUPT`, and every
+  write its size or `LFS3_ERR_CORRUPT`, with no assert, in B-DEF.
+  `badblocks::silent_split` and `badblocks::silent_btree`, with the blocks
+  that an mroot split or a B-tree first compacts into bad, reading back
+  0x00, 0xff or what they held, find every write and commit succeed, the
+  mdirs and B-tree in good blocks, and everything readable after.
+- **Fail:** an assert, a crash, data that no sync committed, or
+  `LFS3_ERR_NOSPC` while free good blocks remain.
+- **Verified by:** `badblocks::silent_nockprogs` (NEW-14);
+  `badblocks::silent_split`, `badblocks::silent_btree` (NEW-180).
+- **Status:** Tested on v3-integration (9f136f90, 19e20a74). Known defect
+  before 19e20a74 (D-41): a compaction that read back zeros built its tree
+  over them until the block ran out, and the `LFS3_ERR_RANGE` that
+  followed made an mdir split return `LFS3_ERR_NOSPC` and a B-tree
+  relocation assert. A block whose old bytes frame tags of the same shape
+  where ours end still reads back as ours; its commit then fails its
+  checksum when fetched, the `LFS3_ERR_CORRUPT` this allows. The
+  limitation is documented by LFS3-DOC-12.
+- **When:** nightly; `silent_split` and `silent_btree` every CI run.
 
 #### LFS3-FAIL-08
 
@@ -9167,6 +9186,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | F-16 | Tooling: the debug scripts accepted images the driver rejects: VERSION as leb128s, unchecked CKSUM phase and size, leb128 limits, redundancy bits, mptr length, an unvalidated trunk, a shrub null tag, a `BLOCK` "e" bit (issue #13) | `scripts/dbg*.py` | run (248 of 537 checks) | DOC-20 | cc19a932; `make test-dbg` |
 | F-17 | Test and build: zero-length VLAs and other UBSan reports in test code; `-Wtype-limits` in `test_alloc`; 32-bit `-Werror` breaks in the tests; a GCC `-Werror` break without `LFS3_GBMAP`; test cases that leaked what they allocated | `tests/*.toml`, `lfs3.c` | run (UBSan, LSan, GCC) | GEN-03, BUILD-01, CI-09 | 4e9ea5d4, efd03916, 152f20c2, 345c40f7, 6fad1a62; `make test-sanitize`, the `-Werror` jobs |
 | F-18 | Tooling: GCC-only flags broke clang builds; `PERFBDGEN` passed a trace flag the scripts reject; invalid escape sequences warned on Python 3.12 | `Makefile`, `scripts/*.py` | run | CI-08 | 1ee68320, 9115a2ab; job `test-clang` |
+| F-19 | Test: `badblocks::silent_nockprogs` required `lfs3_dir_open("/")` to succeed, but once the mroot splits the root is looked up in the mtree, whose new nodes nothing reads back, so a node in a block whose progs did nothing failed it with `LFS3_ERR_CORRUPT`, which LFS3-FAIL-07 allows: SEEDs 338 and 435 of `-DSEED='range(1000)'`, 4 permutations each at `ERASE_VALUE` -1 and 0x00 | `tests/test_badblocks.toml` | run | FAIL-07 | ccd5d60a; the case with `-DSEED='range(1000)'` |
 
 ### A.2 Found while writing this document and resolving its issues
 
@@ -9212,6 +9232,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | D-38 | A salvage that found an entry no name reaches removed the entries of its did by looking the did up, and scanned again; with entries out of order the lookup led elsewhere, nothing was removed, and the scan never ended. A bookmark the salvage recreated but couldn't find again would be recreated without end. Past an mdir with no entries, as damage can leave an mroot without the root's bookmark, the salvage stepped back to the same mdir without end; and recreating the root's bookmark, at mid 0, moved the empty grm to mid 1, so the next mount removed the entry there | `lfs3_salvage_orphans`, `lfs3_salvage_bookmarks`, `lfs3_salvage_next`, `lfs3_mdir_commit_` | run (`crafted::mutate`, 6 of 160 salvaging runs hung; in B-BIG, 2 of 600) | DEG-16, GEN-07 | ba67125f, 8e61fd48; `crafted::salvage_order`, `crafted::salvage_empty` |
 | D-39 | A salvage that dropped an mdir before it could build its gbmap appended a gbmap delta without a root: `lfs3_rbyd_appendgdelta` asserted that the windows matched, and `lfs3_data_frombranch` that block 0xffffffff was a block | `lfs3_salvage_drop`, `lfs3_rbyd_appendgdelta`, `lfs3_fs_commitgdelta` | run (`crafted::mutate` in B-BIG, 28 permutations) | DEG-16 | b2ac4ca0; `crafted::mutate` in B-YGB and B-BIG |
 | D-40 | With `LFS3_BLEAFCACHE` and `LFS3_M_CKFETCHES`, a B-tree commit that failed after appending to its leaf left the cached leaf claiming the appended bytes erased, and the next commit programmed them again | `lfs3_btree_commit`, `lfs3_bshrub_commit` | run (`crafted::mutate` in B-BIG, emubd's erase check) | CFG-15 | 79b5fcb1; `crafted::mutate` in B-BIG |
+| D-41 | Without `LFS3_M_CKPROGS`, a compaction into a block whose progs silently did nothing read back the block's old bytes, 0x00 on a block never written, as null tags, and built its tree over them until the block ran out; the `LFS3_ERR_RANGE` made an mdir split return `LFS3_ERR_NOSPC` ("an entry can't be split") on a disk about a quarter full, and tripped `LFS3_ASSERT(err != LFS3_ERR_RANGE)` in a B-tree relocation: `badblocks::silent_nockprogs` with `ERASE_VALUE` -1 or 0x00, 2 of 2,400 permutations with `-DSEED='range(200)'` (SEED 7), 6 of 12,000 with `range(1000)` (also SEEDs 576 and 831) | `lfs3_rbyd_appendcompaction` | run (the B-tree assert: `badblocks::silent_btree` before 19e20a74) | FAIL-07 | 19e20a74; `badblocks::silent_split`, `badblocks::silent_btree` (8d2e05a1), `badblocks::silent_nockprogs` with `-DSEED='range(1000)'` |
 
 ### A.3 From the analyses
 
