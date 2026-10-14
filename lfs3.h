@@ -197,8 +197,8 @@ enum lfs3_type {
 #ifndef LFS3_RDONLY
 #define LFS3_O_APPEND   0x00000020  // Move to end of file on every write
 #endif
-#define LFS3_O_FLUSH    0x00000040  // Flush data on every write
-#define LFS3_O_SYNC     0x00000080  // Sync metadata on every write
+#define LFS3_O_FLUSH    0x00000040  // Flush data on every write and truncate
+#define LFS3_O_SYNC     0x00000080  // Sync on every write and truncate
 #define LFS3_O_DESYNC   0x00100000  // Do not sync or recieve file updates
 #define LFS3_O_CKMETA   0x00001000  // Check metadata checksums
 #define LFS3_O_CKDATA   0x00002000  // Check metadata + data checksums
@@ -2143,6 +2143,9 @@ lfs3_soff_t lfs3_file_seek(lfs3_t *lfs3, lfs3_file_t *file,
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
 //
+// With LFS3_O_FLUSH the file is then flushed, and with LFS3_O_SYNC synced,
+// as after lfs3_file_write.
+//
 // Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
 // LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_NOSPC if the disk is full,
 // or LFS3_ERR_IO or LFS3_ERR_CORRUPT if a read or write fails. With
@@ -2155,6 +2158,9 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size);
 //
 // If size is larger than the current file size, a hole is created, appearing
 // as if the file was filled with zeros.
+//
+// With LFS3_O_FLUSH the file is then flushed, and with LFS3_O_SYNC synced,
+// as after lfs3_file_write.
 //
 // Returns 0 on success, or LFS3_ERR_FBIG if size is larger than file_limit,
 // LFS3_ERR_BADFD if the handle is torn, LFS3_ERR_NOSPC if the disk is full,

@@ -17733,6 +17733,22 @@ int lfs3_file_truncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
         lfs3_file_discardcache(file);
     }
 
+    // flush and sync if requested, a truncate changes the file as much
+    // as a write does
+    if (lfs3_o_isflush(file->b.h.flags)) {
+        err = lfs3_file_flush(lfs3, file);
+        if (err) {
+            goto failed;
+        }
+    }
+
+    if (lfs3_o_issync(file->b.h.flags)) {
+        err = lfs3_file_sync(lfs3, file);
+        if (err) {
+            goto failed;
+        }
+    }
+
     // did a sync fail after a commit we kept?
     err = lfs3_fs_syncerr(lfs3, 0);
     if (err) {
@@ -17855,6 +17871,21 @@ int lfs3_file_fruncate(lfs3_t *lfs3, lfs3_file_t *file, lfs3_off_t size_) {
     file->pos -= lfs3_smin(
             size - size_,
             file->pos);
+
+    // flush and sync if requested, as after a write
+    if (lfs3_o_isflush(file->b.h.flags)) {
+        err = lfs3_file_flush(lfs3, file);
+        if (err) {
+            goto failed;
+        }
+    }
+
+    if (lfs3_o_issync(file->b.h.flags)) {
+        err = lfs3_file_sync(lfs3, file);
+        if (err) {
+            goto failed;
+        }
+    }
 
     // did a sync fail after a commit we kept?
     err = lfs3_fs_syncerr(lfs3, 0);

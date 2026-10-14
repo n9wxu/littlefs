@@ -649,6 +649,151 @@ code = '''
     lfs3_unmount(&lfs3) => 0;
 '''
 
+# test that LFS3_O_SYNC/LFS3_O_FLUSH flags work on truncates and
+# fruncates as they do on writes
+#
+# With LFS3_O_SYNC or LFS3_M_SYNC, a truncate or fruncate is on disk when
+# it returns, an open reader and a second mount see it. With
+# LFS3_O_FLUSH or LFS3_M_FLUSH it leaves nothing to flush, but isn't
+# synced
+[cases.test_fsync_sync_o_tsrr]
+# SYNC=0 => no sync, readers not updated
+# SYNC=2 => sync via LFS3_O_SYNC
+# SYNC=3 => sync via LFS3_M_SYNC
+defines.SYNC = [0, 2, 3]
+# FLUSH=0 => no flush
+# FLUSH=2 => flush via LFS3_O_FLUSH
+# FLUSH=3 => flush via LFS3_M_FLUSH
+defines.FLUSH = [0, 2, 3]
+# FRUNCATE=false => lfs3_file_truncate
+# FRUNCATE=true => lfs3_file_fruncate
+defines.FRUNCATE = [false, true]
+defines.SIZE = [
+    'FCACHE_SIZE/2',
+    '2*FCACHE_SIZE',
+    'BLOCK_SIZE/2',
+    '2*BLOCK_SIZE',
+]
+code = '''
+    lfs3_t lfs3;
+    lfs3_format(&lfs3, LFS3_F_RDWR, CFG) => 0;
+    lfs3_mount(&lfs3,
+            LFS3_M_RDWR
+                | ((FLUSH == 3) ? LFS3_M_FLUSH : 0)
+                | ((SYNC == 3) ? LFS3_M_SYNC : 0),
+            CFG) => 0;
+
+    // create a file
+    uint32_t prng = 42;
+    uint8_t sim[2*SIZE];
+    for (lfs3_size_t i = 0; i < SIZE; i++) {
+        sim[i] = 'a' + (TEST_PRNG(&prng) % 26);
+    }
+    lfs3_size_t sim_size = SIZE;
+    uint8_t synced[2*SIZE];
+    memcpy(synced, sim, SIZE);
+    lfs3_size_t synced_size = SIZE;
+
+    lfs3_file_t file;
+    lfs3_file_open(&lfs3, &file, "jello",
+            LFS3_O_WRONLY | LFS3_O_CREAT | LFS3_O_EXCL) => 0;
+    lfs3_file_write(&lfs3, &file, sim, SIZE) => SIZE;
+    lfs3_file_close(&lfs3, &file) => 0;
+
+    // a - truncater
+    // b - reader kept open, recvs updates from a
+    // c - reader in a second mount, checks disk state
+    lfs3_file_t a;
+    lfs3_file_t b;
+    lfs3_file_t c;
+    uint8_t rbuf[2*SIZE+1];
+    lfs3_file_open(&lfs3, &a, "jello",
+            LFS3_O_WRONLY
+                | ((FLUSH == 2) ? LFS3_O_FLUSH : 0)
+                | ((SYNC == 2) ? LFS3_O_SYNC : 0)) => 0;
+    lfs3_file_open(&lfs3, &b, "jello", LFS3_O_RDONLY) => 0;
+
+    // shrink, grow past where we started, then shrink to nothing, each
+    // after a write, so a has something cached
+    lfs3_size_t sizes[3] = {SIZE/2, 2*SIZE, 0};
+    for (lfs3_size_t k = 0; k < 3; k++) {
+        uint8_t wbuf[SIZE/4+1];
+        for (lfs3_size_t j = 0; j < SIZE/4+1; j++) {
+            wbuf[j] = 'a' + (TEST_PRNG(&prng) % 26);
+        }
+        lfs3_file_rewind(&lfs3, &a) => 0;
+        lfs3_file_write(&lfs3, &a, wbuf, SIZE/4+1) => SIZE/4+1;
+        memcpy(sim, wbuf, SIZE/4+1);
+        sim_size = lfs3_max(sim_size, SIZE/4+1);
+
+        lfs3_size_t size = sizes[k];
+        if (!FRUNCATE) {
+            lfs3_file_truncate(&lfs3, &a, size) => 0;
+            if (size > sim_size) {
+                memset(&sim[sim_size], 0, size - sim_size);
+            }
+        } else {
+            lfs3_file_fruncate(&lfs3, &a, size) => 0;
+            if (size > sim_size) {
+                memmove(&sim[size - sim_size], sim, sim_size);
+                memset(sim, 0, size - sim_size);
+            } else {
+                memmove(sim, &sim[sim_size - size], size);
+            }
+        }
+        sim_size = size;
+        if (SYNC) {
+            memcpy(synced, sim, sim_size);
+            synced_size = sim_size;
+        }
+
+        // flushed? then there's nothing left to flush
+        if (FLUSH) {
+            lfs3_emubd_sio_t progs = lfs3_emubd_progs(CFG);
+            lfs3_emubd_sio_t erases = lfs3_emubd_erases(CFG);
+            lfs3_file_flush(&lfs3, &a) => 0;
+            assert(lfs3_emubd_progs(CFG) == progs);
+            assert(lfs3_emubd_erases(CFG) == erases);
+        }
+
+        // b should see the truncate only if synced
+        lfs3_file_size(&lfs3, &b) => synced_size;
+        lfs3_file_rewind(&lfs3, &b) => 0;
+        lfs3_file_read(&lfs3, &b, rbuf, sizeof(rbuf)) => synced_size;
+        assert(memcmp(rbuf, synced, synced_size) == 0);
+        struct lfs3_info info;
+        lfs3_stat(&lfs3, "jello", &info) => 0;
+        assert(info.size == synced_size);
+
+        // and so should a second mount, so it's on disk, read-only, a
+        // second read-write mount could settle what a is writing
+        lfs3_t lfs3_;
+        lfs3_mount(&lfs3_, LFS3_M_RDONLY, CFG) => 0;
+        lfs3_file_open(&lfs3_, &c, "jello", LFS3_O_RDONLY) => 0;
+        lfs3_file_read(&lfs3_, &c, rbuf, sizeof(rbuf)) => synced_size;
+        assert(memcmp(rbuf, synced, synced_size) == 0);
+        lfs3_file_close(&lfs3_, &c) => 0;
+        lfs3_unmount(&lfs3_) => 0;
+    }
+
+    // close a, now everyone should see everything
+    lfs3_file_close(&lfs3, &a) => 0;
+
+    lfs3_file_size(&lfs3, &b) => sim_size;
+    lfs3_file_rewind(&lfs3, &b) => 0;
+    lfs3_file_read(&lfs3, &b, rbuf, sizeof(rbuf)) => sim_size;
+    assert(memcmp(rbuf, sim, sim_size) == 0);
+    lfs3_file_close(&lfs3, &b) => 0;
+
+    lfs3_unmount(&lfs3) => 0;
+    lfs3_mount(&lfs3, LFS3_M_RDONLY, CFG) => 0;
+    lfs3_file_open(&lfs3, &c, "jello", LFS3_O_RDONLY) => 0;
+    lfs3_file_read(&lfs3, &c, rbuf, sizeof(rbuf)) => sim_size;
+    assert(memcmp(rbuf, sim, sim_size) == 0);
+    lfs3_file_close(&lfs3, &c) => 0;
+    lfs3_unmount(&lfs3) => 0;
+'''
+
 [cases.test_fsync_sync_wwrr_zero]
 code = '''
     lfs3_t lfs3;
@@ -2333,8 +2478,8 @@ code = '''
                             size - between_size[rw]);
                 }
                 between_size[rw] = size;
-                // note LFS3_O_SYNC does _not_ sync truncates
-                if (SYNC == 1) {
+                // LFS3_O_SYNC syncs truncates, as it does writes
+                if (SYNC) {
                     broadcast = true;
                 }
 
@@ -2366,8 +2511,8 @@ code = '''
                             size);
                 }
                 between_size[rw] = size;
-                // note LFS3_O_SYNC does _not_ sync fruncates
-                if (SYNC == 1) {
+                // LFS3_O_SYNC syncs fruncates, as it does writes
+                if (SYNC) {
                     broadcast = true;
                 }
             }

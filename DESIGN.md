@@ -1100,12 +1100,13 @@ Here's what survives a power loss:
 | written or flushed, not synced            | the previous synced version           |
 | opened with `LFS3_O_TRUNC`, not synced    | the old contents                      |
 | created, never synced                     | nothing: the file doesn't exist       |
-| written with `LFS3_O_SYNC`                | durable once the write returned        |
+| written, truncated or fruncated with `LFS3_O_SYNC` | durable once the call returned |
 | `lfs3_set` returned                       | contents as set                       |
 
-`LFS3_O_FLUSH` writes data out on every write, but doesn't make it durable;
-only a sync does that. Note also that a read on a writable handle may need to
-flush cached data first, so reads can write and can fail with write errors.
+`LFS3_O_FLUSH` writes data out on every write, truncate and fruncate, but
+doesn't make it durable; only a sync does that. Note also that a read on a
+writable handle may need to flush cached data first, so reads can write and
+can fail with write errors.
 
 ---
 
