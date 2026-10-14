@@ -2107,8 +2107,9 @@ fails, waits in a RAM queue of `LFS3_BADQ_SIZE` runs; the allocator skips
 queued blocks; once a traversal shows a queued block is no longer referenced,
 it is written into the gbmap as a BMBAD range, which the next mdir commit
 persists. `lfs3_fs_mkbad`, `lfs3_fs_mkgood` and `lfs3_fs_nextbad` mark, clear
-and list bad blocks. The suite is `test_badblocks_gbmap`, compiled with
-`LFS3_GBMAP` (B-YGB and B-BIG).
+and list bad blocks, and `lfs3_fs_rmgbmap` refuses to remove the gbmap
+while it holds any (LFS3-BAD-18). The suite is `test_badblocks_gbmap`,
+compiled with `LFS3_GBMAP` (B-YGB and B-BIG).
 
 A failed read is different: it does not prove the media is bad, since reads
 can fail while the supply is low (issue #19). Blocks that fail a read or a
@@ -2504,6 +2505,36 @@ if it does not, or if it needs repairing again in the same mount.
 - **Verified by:** `repair::reuse`, `repair::twice`.
 - **Status:** Tested on v3-integration (f09acb9d; mdirs since e78b4263,
   mtree nodes since 7aa70764). Not implemented at `b10efaa`.
+- **When:** every CI run.
+
+#### LFS3-BAD-18
+
+littlefs shall refuse `lfs3_fs_rmgbmap` with `LFS3_ERR_BUSY`, writing
+nothing, while the gbmap marks a bad block or one is waiting to be marked
+(`LFS3_I_BADBLOCKS`), and remove the gbmap once `lfs3_fs_mkgood` has
+cleared every mark.
+
+- **Source:** Derived (Q17, decided on 2026-10-13): the marks live in the
+  gbmap, so removing it would put blocks that failed back in use
+  (principle 2). The application clears the marks with `lfs3_fs_mkgood`
+  first if it means to. Until then, `lfs3_fs_rmgbmap` dropped them, and
+  `lfs3.h` documented the loss (9c0769c3).
+- **Measure:** return value; emubd prog and erase counts; `LFS3_I_GBMAP`,
+  `LFS3_I_BADBLOCKS` and `lfs3_fs_nextbad` after the call.
+- **Pass:** `badblocks_gbmap::rmgbmap`: with a mark waiting in RAM, with
+  marks on disk, and with them after a remount, `lfs3_fs_rmgbmap` returns
+  `LFS3_ERR_BUSY` with no prog or erase, `LFS3_I_GBMAP` stays set and
+  `lfs3_fs_nextbad` lists the same blocks; after `lfs3_fs_mkgood` of each,
+  it returns 0, and a new gbmap starts without marks.
+  `badblocks::gbmap_mkrm`: on a device with bad blocks, `lfs3_fs_rmgbmap`
+  returns `LFS3_ERR_BUSY` while `lfs3_fs_nextbad` lists any, and 0 once
+  they are cleared. In B-BIG, the build CI runs with `LFS3_GBMAP` and
+  without `LFS3_YES_GBMAP`.
+- **Fail:** the gbmap is removed, or anything written, while a mark
+  remains; or the call fails once none remains.
+- **Verified by:** `badblocks_gbmap::rmgbmap`, `badblocks::gbmap_mkrm`.
+- **Status:** Tested on v3-integration (b069c232), in B-BIG. Not
+  implemented at `00bba274`: `lfs3_fs_rmgbmap` dropped the marks.
 - **When:** every CI run.
 
 ### 6.6 Metadata (META)
@@ -4030,10 +4061,9 @@ littlefs shall store the attributes of all 256 type values independently.
 - **Pass:** a NEW case sets a distinct value for every type 0x00 to 0xff on
   one file and reads each back, in B-DEF.
 - **Fail:** any type reads another type's value.
-- **Verified by:** NEW. Whether reserved types should be refused is open
-  question Q9.
-- **Status:** Untested. Whether reserved types should be refused is open
-  question Q9.
+- **Verified by:** `attrs::all_types` (NEW-102). Q9 is decided: every
+  type is accepted, the reserved ranges included (LFS3-DOC-14).
+- **Status:** Untested.
 - **When:** every CI run.
 
 #### LFS3-ATTR-08
@@ -5070,6 +5100,34 @@ read passes; and `lfs3.h` shall recommend a value.
   `b10efaa`.
 - **When:** every CI run.
 
+#### LFS3-GC-19
+
+littlefs shall return 0 from `lfs3_fs_gc` without a read, prog, erase or
+sync when `gc_flags` is 0, whatever work is pending, and `lfs3.h` shall say
+so.
+
+- **Source:** Derived (Q20, decided on 2026-10-13): `gc_flags` says what
+  work the application allows in its idle time, and 0 allows none. Until
+  then, gc with no flags still marked queued bad blocks and committed the
+  gbmap when nothing else was pending, and at `b10efaa` pre-erased too
+  (`lfs3.c:16748-16780` at `b10efaa`).
+- **Measure:** emubd read, prog and erase counts and syncs around the call;
+  the `LFS3_I_*` flags, the bad-block queue and the gbmap's state after it.
+- **Pass:** `gc::noflags` (NEW-161): with `GC_FLAGS` 0 and `GC_STEPS` 1
+  and -1, after a mount and writes that leave the compact and check flags
+  set and, with the gbmap, a bad block marked in the gbmap but not on
+  disk and another queued, repeated `lfs3_fs_gc` calls return 0 with the
+  emubd read, prog and erase counts and the sync count unchanged, and
+  leave the flags, the queue and the gbmap as they were; `lfs3_fs_ck`
+  then does the work. With and without the gbmap, in B-BIG
+  (`lfs3_fs_gc` exists only with `LFS3_GC`).
+- **Fail:** any device operation, or a change of state.
+- **Verified by:** `gc::noflags` (NEW-161).
+- **Status:** Tested on v3-integration (9db06859), in B-BIG. Not
+  implemented at `00bba274`: gc with no flags marked queued bad blocks and
+  committed the gbmap.
+- **When:** every CI run.
+
 ### 6.15 Format, mount, grow, compatibility and versioning (MOUNT)
 
 #### LFS3-MOUNT-01
@@ -5523,9 +5581,11 @@ the writes made during format.
 
 `lfs3.h:1400-1402` says the configuration "must be zeroed for defaults and
 backwards compatibility". littlefs checks configuration with `LFS3_ASSERT` in
-`lfs3_init` (`lfs3.c:15082-15393`). Whether some checks should return
-`LFS3_ERR_INVAL` instead is open question Q14. The Pass conditions below
-accept either, and need a death-test harness where they rely on an assert.
+`lfs3_init` (`lfs3.c:15082-15393`). Q14 is decided: configuration errors
+are asserts, checked before any block device operation, since a
+configuration is fixed when the firmware is built. The Pass conditions
+below that accept an error were written before the decision; the asserts
+are checked by death tests (TEST_PLAN.md E-6).
 
 #### LFS3-CFG-01
 
@@ -5569,19 +5629,30 @@ block device operation, a zero `read_size`, `prog_size`, `rcache_size` or
 
 #### LFS3-CFG-03
 
-littlefs shall document a minimum `block_size`, and refuse smaller values
-in `lfs3_format` and `lfs3_mount`.
+littlefs shall refuse a `block_size` below 512 bytes in `lfs3_format` and
+`lfs3_mount`, before any block device operation, and `lfs3.h` shall state
+the minimum.
 
-- **Source:** Proposal. There is no lower bound; `mbits = nlog2(block_size)
+- **Source:** Proposal. There was no lower bound; `mbits = nlog2(block_size)
   - 3` underflows below 8 bytes (`lfs3.c:15357`), and small blocks limit
-  names (LFS3-DIR-02). See open question Q14.
-- **Measure:** documentation; assert or error.
-- **Pass:** `lfs3.h` states the minimum, and a NEW death test finds a
-  smaller value refused before any bd operation.
-- **Fail:** no documented minimum, or a smaller value accepted.
-- **Verified by:** NEW.
-- **Status:** Untested.
-- **When:** before v3-beta.
+  names (LFS3-DIR-02): at 256 bytes a B-tree split leaves room for names
+  of 4 bytes, and below 248 for none. Q14 is decided: the minimum is 512
+  bytes, the smallest the suites run, asserted in `lfs3_init`, which format
+  and mount both call. `block_size` may be any multiple of the erase size,
+  so flash with smaller erase units groups them.
+- **Measure:** `lfs3.h`; the assert; emubd read, prog and erase counts.
+- **Pass:** `lfs3.h` states the minimum at `block_size`, and
+  `mount::block_size_min` (NEW-115), a death test, finds `lfs3_format` and
+  `lfs3_mount` with `block_size` 256 and 511 stopped by the assert with no
+  read, prog or erase issued, in B-DEF, B-YGB and B-BIG. No case in
+  `tests/` or `benches/` configures a smaller `block_size`.
+- **Fail:** no documented minimum, a smaller value accepted, or a bd
+  operation before the refusal.
+- **Verified by:** `mount::block_size_min` (NEW-115), a death test; review
+  of `lfs3.h`.
+- **Status:** Tested on v3-integration (23edd347). Not implemented at
+  `00bba274`: any `block_size` was accepted.
+- **When:** every CI run.
 
 #### LFS3-CFG-04
 
@@ -7182,20 +7253,28 @@ littlefs shall document the limits of its error detection.
 
 #### LFS3-DOC-14
 
-littlefs shall document the maximum attribute size and the reserved
-attribute types consistently in `lfs3.h` and the design documents.
+littlefs shall document the maximum attribute size and the attribute type
+ranges of #1111 consistently in `lfs3.h` and the design documents: 0x00-0x7f
+for the application, 0x80-0xbf reserved for standard attributes, 0xc0-0xff
+suggested for system attributes, and every type accepted.
 
 - **Source:** Stated: #1111 "Standard custom attributes" (0x00-0x7f user,
   0x80-0xbf reserved standard, 0xc0-0xff system); `lfs3.h:766-768` says
-  0x80-0xff "May be assigned a standard attribute".
-- **Measure:** the header and document text.
-- **Pass:** both give the same ranges and the maximum size of
+  0x80-0xff "May be assigned a standard attribute". Q9 is decided (a): the
+  ranges are documented and not enforced, since a refusal would break an
+  application that already uses a type before any standard attribute is
+  assigned to it.
+- **Measure:** the text of `lfs3.h`, SPEC.md and DESIGN.md.
+- **Pass:** `lfs3.h` (`struct lfs3_attr`), SPEC.md (Custom attributes, the
+  `SATTR` tag and its open points) and DESIGN.md give the three ranges and
+  say every type is accepted, and `lfs3.h` gives the maximum size of
   LFS3-ATTR-05.
 - **Fail:** they differ, or the size is missing.
 - **Verified by:** review.
-- **Status:** Open question (Q9). Q3 decided the size half: no fixed
-  maximum, `LFS3_ERR_NOSPC` (LFS3-ATTR-05), which `lfs3.h` states; the type
-  ranges still differ from #1111 (4-api §1.7).
+- **Status:** Tested by review on v3-integration (552f88a4). Q3 decided
+  the size half, no fixed maximum and `LFS3_ERR_NOSPC` (LFS3-ATTR-05),
+  which `lfs3.h` states. Known defect at `00bba274`: the type ranges
+  differed from #1111 (4-api §1.7).
 - **When:** before v3-beta.
 
 #### LFS3-DOC-15
@@ -8253,7 +8332,16 @@ proceed with `LFS3_NO_ASSERT` (LFS3-GEN-06). Options: (a) keep the assert
 and document it as a precondition (LFS3-DOC-16); (b) return an error code,
 either an existing one (`LFS3_ERR_INVAL`, `LFS3_ERR_NOTSUP`) or a new
 read-only code; (c) both: an error code in all builds and an assert in
-debug builds. Open.
+debug builds.
+
+**Decided** on 2026-10-13 (issue #11): (c), with `LFS3_ERR_INVAL`. A call
+that would write to an `LFS3_M_RDONLY` mount asserts, and returns
+`LFS3_ERR_INVAL` before any I/O when asserts are compiled out. A mount is
+read-only only when the application asks (a read-write mount that can't
+write fails with `LFS3_ERR_NOTSUP`), so a write to one is a caller bug,
+which is what `LFS3_ERR_INVAL` means (LFS3-ERR-03). The assert finds the bug
+in development, and the error keeps a release build from writing to a
+filesystem the application chose to protect (principle 1).
 
 **Q3. The error for an operation whose metadata cannot fit in an empty
 block.** Long names on small blocks and large attributes tripped an assert
@@ -8274,12 +8362,22 @@ and never reaches the application (LFS3-ERR-06, principle 1).
 "understood". The code requires exact equality, so an image that uses fewer
 features than the driver writes (for example no mtree) is refused, even
 read-only (4-api R10). Options: (a) exact match, documented; (b) accept any
-subset of the flags the driver knows. Open.
+subset of the flags the driver knows.
+
+**Decided** on 2026-10-13 (issue #11): (a). A mount, read-only or not,
+refuses an image whose rcompat flags differ from the driver's with
+`LFS3_ERR_NOTSUP`, and `lfs3.h` and SPEC.md say "match", not "understood".
+An rcompat flag changes how the image is read, so a driver reads only the
+layout it writes and tests, and an image with fewer features is the work of
+a different driver, which can read it.
 
 **Q5. A missing version tag.** It is read as version 0.0
 (`lfs3.c:15572-15594` at `b10efaa`). Options: (a) accept, and document the
 default in SPEC.md; (b) refuse with `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP`.
-Open.
+
+**Decided** on 2026-10-13 (issue #11): (b), with `LFS3_ERR_CORRUPT`, as for
+a missing geometry (Q22). Format always writes a version, so an mroot
+without one is damage, not an older format.
 
 **Q6. A degraded mount.** At `b10efaa` a gcksum mismatch, an undecodable grm
 or gbmap, or an unreadable metadata block failed the mount or blocked all
@@ -8300,20 +8398,37 @@ call (principle 4).
 **Q7. Is an open, never-synced file a child of its directory?** `lfs3_remove`
 of the directory returns `LFS3_ERR_NOTEMPTY` (1-meta F16). Options: (a) yes,
 as now, and document it; (b) no: remove the directory and make the handle a
-zombie, as removing an open file does. Open.
+zombie, as removing an open file does.
+
+**Decided** on 2026-10-13 (issue #11): (a). `lfs3_remove` of a directory
+holding an open, never-synced file returns `LFS3_ERR_NOTEMPTY`, and
+`lfs3.h` says so. The file is a sticky note in the directory
+(`LFS3_TYPE_STICKYNOTE`, section 8.2), and removing the directory would
+discard the application's unsynced data without asking.
 
 **Q8. `LFS3_O_SYNC` and `LFS3_O_FLUSH` with truncate and fruncate.** They do
 not sync or flush after `lfs3_file_truncate` and `lfs3_file_fruncate`
 ("note LFS3_O_SYNC does _not_ sync truncates", `tests/test_fsync.toml`).
 Options: (a) keep, and document that the flags apply to writes only;
-(b) apply them to every call that changes the file. Open.
+(b) apply them to every call that changes the file.
+
+**Decided** on 2026-10-13 (issue #11): (b). `LFS3_O_SYNC` syncs and
+`LFS3_O_FLUSH` flushes after `lfs3_file_truncate` and `lfs3_file_fruncate`,
+as after a write. An application that opens a file `LFS3_O_SYNC` expects
+every change it makes to be on disk when the call returns (principle 3).
 
 **Q9. Reserved attribute types.** #1111 reserves 0x80-0xbf for standard
 attributes and suggests 0xc0-0xff for system attributes; `lfs3.h` says
 0x80-0xff "May be assigned a standard attribute". The API accepts every
 type. Options: (a) document the #1111 split and accept every type;
 (b) refuse the reserved range in `lfs3_setattr` and in file-attached
-attributes; (c) refuse only 0x80-0xbf. Open.
+attributes; (c) refuse only 0x80-0xbf.
+
+**Decided** on 2026-10-13 (issue #11; 552f88a4): (a). `lfs3.h` documents
+0x00-0x7f for the application, 0x80-0xbf reserved for standard attributes
+and 0xc0-0xff suggested for system attributes, and every type is accepted
+(LFS3-DOC-14). A refusal would break an application that already uses a type
+before any standard attribute is assigned to it.
 
 **Q10. `lfs3_remove` and `lfs3_rename` after a failed cleanup commit.** When
 the second commit (fixgrm) fails, the call logs a warning and returns 0; the
@@ -8344,7 +8459,13 @@ keeping it costs them nothing.
 **Q13. The scope of `lfs3_file_ck`.** It checks the file's B-tree and data
 blocks but not the file's own mdir entry or inline data (4-api R29).
 Options: (a) document the scope; (b) also re-fetch and check the file's
-mdir. Open.
+mdir.
+
+**Decided** on 2026-10-13 (issue #11): (b). With `LFS3_CK_CKMETA`,
+`lfs3_file_ck` also re-fetches the mdir that holds the file's entry and
+checks it, which covers inline data and the shrub. A check of one file
+that passes while the block holding its name, size and inline bytes doesn't
+read would report health that isn't there (principle 2).
 
 **Q14. How configuration errors are reported, and the minimum geometry.**
 Configuration is checked with asserts. At `b10efaa` some invalid values were
@@ -8358,6 +8479,13 @@ are the minimum `block_size` and `block_count`?
 minimum. A configuration is fixed when the firmware is built, so an error a
 deployed unit could act on adds nothing an assert in development doesn't
 catch. The minimum `block_size` is still open (LFS3-CFG-03).
+
+**Decided** on 2026-10-13 (issue #11; 23edd347): the minimum `block_size` is
+512 bytes, asserted in `lfs3_init` and documented in `lfs3.h`. `block_size`
+is a runtime field of `struct lfs3_cfg`, not a build option, and it may be
+any multiple of the erase size, so flash with smaller erase units groups
+them. 512 is the smallest size the suites run; at 256 a B-tree split leaves
+room for names of 4 bytes, and below 248 for none.
 
 **Q15. `fcache_size` of 0.** It called `lfs3_malloc(0)` at `b10efaa`.
 Options: (a) "no file cache", as `lfs3_get` already uses internally
@@ -8373,7 +8501,15 @@ change the cost of every write.
 `LFS3_M_RDONLY` mount reports `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD` and
 `LFS3_I_COMPACT`, work that cannot run (4-api R25). Options: (a) clear them
 on read-only mounts; (b) keep them, as "work the image needs", and document
-it. Open. (`LFS3_I_RDONLY` itself is now always set, LFS3-MOUNT-19.)
+it. (`LFS3_I_RDONLY` itself is now always set, LFS3-MOUNT-19.)
+
+**Decided** on 2026-10-13 (issue #11): (a). A read-only mount reports none
+of `LFS3_I_MKCONSISTENT`, `LFS3_I_LOOKAHEAD`, `LFS3_I_PREERASE` and
+`LFS3_I_COMPACT`. The flags are not stored on disk: mount sets them to
+"assume there is work" and only the gc and traversal that do the work clear
+them, which a read-only mount can't run, so there they are always set and
+say nothing about the image. `LFS3_I_CKMETA` and `LFS3_I_CKDATA` stay, as
+those checks run read-only.
 
 **Q17. Disabling the gbmap while bad blocks are recorded.** Bad-block
 records live in the gbmap, so `lfs3_fs_rmgbmap` drops them. Options:
@@ -8382,6 +8518,12 @@ records live in the gbmap, so `lfs3_fs_rmgbmap` drops them. Options:
 `badblocks_gbmap::rmgbmap` tests it. Open: the choice was made when the
 tracking was written (9c0769c3), not decided, and principle 2 could argue
 for (a).
+
+**Decided** on 2026-10-13 (issue #11; b069c232): (a). `lfs3_fs_rmgbmap`
+returns `LFS3_ERR_BUSY`, changing nothing, while the gbmap records a bad
+block or one is waiting to be marked (`LFS3_I_BADBLOCKS`); the application
+clears the marks with `lfs3_fs_mkgood` first if it means to. Forgetting a
+block that failed would put it back in use (principle 2).
 
 **Q18. Bad blocks detected in read-only contexts, and the bad-block API.**
 The maintainer's own open question (#1111 "Bad block tracking"). Options for
@@ -8422,13 +8564,24 @@ metadata log on its first writes (Appendix B.4, LFS3-PERF-14).
 
 **Q20. gc with no work flags.** `lfs3_fs_gc` with `gc_flags` 0 still
 pre-erases and commits the gbmap when nothing is pending
-(`lfs3.c:16748-16780` at `b10efaa`). Is that intended? Open.
+(`lfs3.c:16748-16780` at `b10efaa`). Is that intended?
+
+**Decided** on 2026-10-13 (issue #11; 9db06859): no. `lfs3_fs_gc` with
+`gc_flags` 0 returns 0 without reading or writing. The flags say what work
+the application allows in its idle time, and 0 allows none.
 
 **Q21. Untrusted images.** Several decoders assert on on-disk values, which
 becomes undefined behaviour with `LFS3_NO_ASSERT` (LFS3-GEN-07). Is
 robustness against checksum-valid but malformed images in scope for v3?
-Open. Metadata that reads differently from its fetch, and bit-7 tags, now
+Metadata that reads differently from its fetch, and bit-7 tags, now
 return `LFS3_ERR_CORRUPT` instead of asserting (LFS3-GEN-09).
+
+**Decided** on 2026-10-13 (issue #11): yes. An image whose checksums pass
+but whose values are malformed is damage, and littlefs reports it as
+`LFS3_ERR_CORRUPT`, or mounts degraded where a read-only mount can,
+without an assert or undefined behaviour in any build (LFS3-GEN-07,
+principle 2). Removable media, images built on a host, and bit flips that
+a checksum misses all reach the driver this way.
 
 **Q22. The error for a missing geometry tag.** `LFS3_ERR_INVAL` at
 `b10efaa`; `LFS3_ERR_CORRUPT` or `LFS3_ERR_NOTSUP` would match the other
@@ -8454,9 +8607,15 @@ flash out (principle 2). The other PERF bounds are still ours to propose.
 **Q24. Telling alpha formats apart.** Every alpha image claims version 0.0,
 so images from incompatible alpha commits cannot be told apart (4-api R24).
 Options: (a) accept this until v3-beta; (b) bump the minor version on every
-format change during the alpha. Open. This fork's format additions (the
+format change during the alpha. This fork's format additions (the
 `DIRTY` tag, the settled generation and wcompat `SETTLED`) are guarded so
 that older v0.0 drivers either ignore them or refuse to write (SPEC.md).
+
+**Decided** on 2026-10-13 (issue #11): (b). This driver is v0.1: format
+writes v0.1, a mount accepts v0.0 and v0.1, and the first commit of a
+read-write mount to a v0.0 mroot upgrades its `VERSION` to v0.1, as v2 did
+for its minor versions. Each later format change during the alpha bumps the
+minor version again, so an image says which drivers wrote it.
 
 **Q25. `LFS3_ERR_BUSY` for the root.** `lfs3_remove` and `lfs3_rename` of
 the root return `LFS3_ERR_BUSY`, as Linux does; v2 returned
@@ -8508,13 +8667,8 @@ since its last compaction, and only a pair no block reads is dropped
 
 ### 8.1 Still open
 
-Q2 (mutating calls on a read-only mount), Q4 (rcompat matching), Q5 (a
-missing version tag), Q7 (open uncreated files in a directory being
-removed), Q8 (`LFS3_O_SYNC` with truncate), Q9 (reserved attribute types),
-Q11 (`LFS3_M_CKREADS`), Q13 (the scope of `lfs3_file_ck`), Q14's minimum
-`block_size`, Q16 (work flags on a read-only mount), Q17 (rmgbmap with
-bad blocks recorded), Q20 (gc with no work flags), Q21 (untrusted images)
-and Q24 (telling alpha formats apart).
+Q11 (`LFS3_M_CKREADS`), which is the maintainer's plan. The owner decided
+the other open questions on 2026-10-13 (issue #11).
 
 ### 8.2 Decisions without a question number
 
@@ -8585,7 +8739,6 @@ test in a new environment (9.2).
 | LFS3-MOUNT-24 | Not implemented | before v3-beta | v0.0 image refused by the release |
 | LFS3-MOUNT-27 | Partly | every CI run | plain mount after formatting with every flag |
 | LFS3-CFG-02 | Untested | every CI run | death test: invalid sizes |
-| LFS3-CFG-03 | Untested | before v3-beta | death test: `block_size` below the minimum |
 | LFS3-CFG-04 | Untested | every CI run | `block_recycles` bounds |
 | LFS3-CFG-06 | Untested | every CI run | unknown `gc_flags` bits |
 | LFS3-CFG-07 | Untested | every CI run | `FCACHE_SIZE=0` with a `malloc(0)` that returns NULL |
@@ -8784,7 +8937,7 @@ means `v3-integration` does not fix it. Line numbers are those of `b10efaa`.
 | 4-api R25 | An `LFS3_RDONLY` build does not report `LFS3_I_RDONLY` | `lfs3.c:15156-15170` | probe | MOUNT-19, Q16 | 83f8cdea; `make test-rdonly` |
 | 4-api R27 | `dirs::rm_many_2layers` under power loss with `N=4` is excluded as a known bug | `tests/test_dirs.toml:3442` | maintainer | PL-27 | caaea78c (the exclusion removed; the case passes); `dirs::rm_many_2layers` |
 | 4-api R28 | `lfs3_format` with `block_count` 1 writes block 0, then asserts in the bd wrapper | `lfs3.c:570` | probe | MOUNT-03 | dda5cc34, 67f5b135; `mount::format_tiny` |
-| 4-api §1.7 | Attribute type ranges in `lfs3.h` differ from #1111 | `lfs3.h:766-768` | code | DOC-14 | open (Q9) |
+| 4-api §1.7 | Attribute type ranges in `lfs3.h` differ from #1111 | `lfs3.h:766-768` | code | DOC-14 | 552f88a4 (Q9); review |
 | 5-verif §0.6 | Tooling: `PERFBDGEN` passes `--trace-freq`; `test.py -j` is Linux-only; invalid escape sequences; `test_compat.toml` names a runner flag that does not exist | `Makefile:161-162`, `scripts/test.py` | run | CI-08 | 1ee68320, 9115a2ab (F-18); `test.py -j` is still Linux-only |
 
 ## Appendix B. Measurements
@@ -9181,13 +9334,13 @@ are mapped at the end of 6.4.
 | `lfs3_fs_cksum` | GEN-02, INT-07, INT-08, INT-09, META-10, DOC-13 |
 | `lfs3_fs_mkconsistent` | GEN-06, META-09, META-14, SYNC-15, SYNC-16, GC-12 |
 | `lfs3_fs_ck` | GEN-04, PL-19, PL-20, INT-10, INT-11, INT-21, INT-22, FAIL-18, BAD-03, BAD-17, META-03, SYNC-09, DIR-05, PRE-05, PRE-06, GC-02, GC-05, GC-06, GC-17, GC-18, MOUNT-17, CFG-05, DEG-10 |
-| `lfs3_fs_gc` | PL-20, INT-15, BAD-10, PRE-05, PRE-06, GC-01, GC-02, CFG-06, DOC-17 |
+| `lfs3_fs_gc` | PL-20, INT-15, BAD-10, PRE-05, PRE-06, GC-01, GC-02, GC-19, CFG-06, DOC-17 |
 | `lfs3_fs_unck` | INT-16, DOC-06 |
 | `lfs3_fs_grow` | GEN-06, GEN-08, PL-18, BAD-06, MOUNT-20, MOUNT-21, MOUNT-22, MOUNT-23, DOC-16 |
 | `lfs3_fs_mkgbmap` | PL-19, ALLOC-13, DOC-07 |
-| `lfs3_fs_rmgbmap` | PL-19, ALLOC-05, ALLOC-14, DOC-07 |
+| `lfs3_fs_rmgbmap` | PL-19, ALLOC-05, ALLOC-14, BAD-18, DOC-07 |
 | `lfs3_fs_mkbad` | BAD-11, BAD-14 |
-| `lfs3_fs_mkgood` | BAD-12 |
+| `lfs3_fs_mkgood` | BAD-12, BAD-18 |
 | `lfs3_fs_nextbad` | BAD-13, BAD-14, DEG-06 |
 | `lfs3_fs_nextsuspect` | BAD-16 |
 | `lfs3_fs_health` | DEG-09, ALLOC-17 |
@@ -9216,7 +9369,7 @@ are mapped at the end of 6.4.
 | `pcache_size` | PRE-09, CFG-01, CFG-02, PERF-14 |
 | `fcache_size` | CFG-01, CFG-07, CFG-08, RES-08, FILE-27 |
 | `lookahead_size` | ALLOC-06, CFG-01 |
-| `gc_flags` | INT-15, GC-03, CFG-06 |
+| `gc_flags` | INT-15, GC-03, GC-19, CFG-06 |
 | `gc_steps` | GC-01, GC-02 |
 | `gc_lookahead_thresh` | CFG-16 |
 | `gc_lookgbmap_thresh` | CFG-17, DOC-09 |

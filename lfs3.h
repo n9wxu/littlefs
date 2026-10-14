@@ -635,7 +635,9 @@ struct lfs3_cfg {
 
     // Size of an erasable block in bytes. This does not impact ram consumption
     // and may be larger than the physical erase size. Must be a multiple of
-    // the read and program sizes.
+    // the read and program sizes, and at least 512 bytes, smaller blocks
+    // leave little or no room for names. Flash with a smaller erase size
+    // can use a multiple of it.
     lfs3_size_t block_size;
 
     // Number of erasable blocks on the device. Formatting needs at least
@@ -706,6 +708,10 @@ struct lfs3_cfg {
     #endif
 
     // Flags indicating what gc work to do during lfs3_gc calls.
+    //
+    // With any flag set, gc also marks queued bad blocks and writes the
+    // gbmap to disk once that work is done. With none, 0, lfs3_fs_gc does
+    // nothing, it returns 0 without reading or writing.
     #ifdef LFS3_GC
     uint32_t gc_flags;
     #endif
@@ -1009,7 +1015,11 @@ struct lfs3_attr {
     //
     // Note some of this range is reserved:
     // 0x00-0x7f - Free for custom attributes
-    // 0x80-0xff - May be assigned a standard attribute
+    // 0x80-0xbf - Reserved for standard attributes
+    // 0xc0-0xff - Suggested for system attributes
+    //
+    // littlefs accepts every type, but a type in 0x80-0xbf may be
+    // assigned a standard attribute in the future.
     uint8_t type;
 
     // Flags that control how attr is read/written/removed
@@ -2383,6 +2393,7 @@ int lfs3_fs_ck(lfs3_t *lfs3, uint32_t flags);
 // Perform any janitorial work that may be pending
 //
 // The exact janitorial work depends on the configured flags and steps.
+// With gc_flags 0 this does nothing, see gc_flags.
 //
 // Calling this function is not required, but may allow the offloading of
 // expensive janitorial work to a less time-critical code path.
@@ -2436,9 +2447,13 @@ int lfs3_fs_mkgbmap(lfs3_t *lfs3);
 
 // Disable the global on-disk block-map
 //
-// Note this forgets any bad blocks, see lfs3_fs_mkbad.
+// Bad blocks are marked in the gbmap, and without it nothing keeps them
+// out of use, so this refuses while any are marked, including those not
+// yet on disk (LFS3_I_BADBLOCKS), see lfs3_fs_mkbad. Clear the marks with
+// lfs3_fs_mkgood first, if they are no longer wanted.
 //
 // Returns 0 on success, or LFS3_ERR_NOENT if no gbmap is found,
+// LFS3_ERR_BUSY, changing nothing, if lfs3_fs_nextbad lists a bad block,
 // LFS3_ERR_NOSPC if the disk is full, or LFS3_ERR_IO or LFS3_ERR_CORRUPT if
 // a read or write fails. With LFS3_THREADSAFE, also an error from lock or
 // unlock.

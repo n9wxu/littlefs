@@ -1790,6 +1790,10 @@ steps, each roughly one block of work, of whichever kinds of work
    (by default 7/8 of a block), before a write has to.
 5. **ckmeta** and **ckdata**: check checksums.
 
+Once that work is done, gc also marks queued bad blocks and writes the gbmap
+to disk. With `gc_flags` 0 the application allows no work, and a call
+returns without reading or writing anything.
+
 Internally, gc is just a traversal object, the same one behind the traversal
 API, stored in `lfs3_t`. It's opt-in because it makes `lfs3_t` bigger. The
 same work can be done to completion with `lfs3_fs_ck` or at mount with the
@@ -1935,8 +1939,11 @@ after format, before anything else is written.
 refusing blocks in use with `LFS3_ERR_BUSY`; `lfs3_fs_mkgood` clears a mark,
 say after a bench test; and `lfs3_fs_nextbad` lists bad blocks, including
 those still queued. `LFS3_I_BADBLOCKS` says some are queued but not yet on
-disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap` drops
-every mark, and `lfs3_fs_mkgbmap` starts without any.
+disk, and `lfs3_fs_usage` counts bad blocks as used. `lfs3_fs_rmgbmap`
+refuses with `LFS3_ERR_BUSY` while any block is marked, queued or on disk,
+since without the gbmap nothing would keep the blocks out of use; the
+application clears the marks with `lfs3_fs_mkgood` first if it means to.
+`lfs3_fs_mkgbmap` starts without any marks.
 
 **No compat flag** guards the bad state. Drivers that understand the gbmap
 already treat a bad range as in use when allocating from it, and an older
@@ -2368,9 +2375,11 @@ lessons from v2 are built into the format:
    migrator" ([#1114]).
 
 Custom attributes keep their single-byte types, but the upper half of the
-type space is now set aside for future standard attributes, which is much
-easier to do while the format is changing anyway. [SPEC.md](SPEC.md) has the
-details of every one of these.
+type space is now set aside, which is much easier to do while the format is
+changing anyway: `0x80-0xbf` for future standard attributes, and
+`0xc0-0xff` suggested for system attributes. The ranges are a convention,
+littlefs accepts every type. [SPEC.md](SPEC.md) has the details of every one
+of these.
 
 ## What's next
 

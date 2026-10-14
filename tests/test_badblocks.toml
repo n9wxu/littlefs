@@ -8669,11 +8669,26 @@ code = '''
     uint32_t prng = SEED;
     uint8_t wbuf[SIZE];
     uint8_t rbuf[SIZE];
+    lfs3_size_t busy = 0;
     for (lfs3_size_t round = 0; round < 2*ROUNDS; round++) {
         // alternate making and removing the gbmap
         if (round % 2 == 0) {
             lfs3_fs_mkgbmap(&lfs3) => 0;
         } else {
+            // removing the gbmap would forget our bad blocks, so it's
+            // refused until we clear them, clearing them may find more
+            for (lfs3_block_t i = 0;; i++) {
+                assert(i < 2*BLOCK_COUNT);
+                lfs3_sblock_t bad = lfs3_fs_nextbad(&lfs3, 0);
+                if (bad == LFS3_ERR_NOENT) {
+                    break;
+                }
+                assert(bad >= 2);
+
+                lfs3_fs_rmgbmap(&lfs3) => LFS3_ERR_BUSY;
+                busy += 1;
+                lfs3_fs_mkgood(&lfs3, bad) => 0;
+            }
             lfs3_fs_rmgbmap(&lfs3) => 0;
         }
         struct lfs3_fsinfo fsinfo;
@@ -8720,6 +8735,8 @@ code = '''
         }
         lfs3_fs_ck(&lfs3, LFS3_CK_CKMETA | LFS3_CK_CKDATA) => 0;
     }
+    // with every other block bad we must have found some to clear
+    assert(busy > 0 || BADBLOCKS != 1);
 
     lfs3_unmount(&lfs3) => 0;
 '''

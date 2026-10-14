@@ -171,14 +171,17 @@ since the last successful `lfs3_file_sync`.
 
 The target of the call is in use: the root directory, which can't be
 removed or renamed; a block that holds live data, which `lfs3_fs_mkbad`
-can't mark bad; or a traversal opened with `LFS3_T_EXCL`, under which the
-filesystem changed.
+can't mark bad; the gbmap, which `lfs3_fs_rmgbmap` won't remove while it
+marks bad blocks, including marks not yet on disk; or a traversal opened
+with `LFS3_T_EXCL`, under which the filesystem changed.
 
 **Rebuild:** free the target, then retry: rewind the traversal with
-`lfs3_trv_rewind`, or move the data off the block (rewriting or removing
-the file that holds it moves it). If the target can't be freed, as the root
-never can, **Fail**. The root returns BUSY rather than INVAL because it is
-always in use, as on Linux.
+`lfs3_trv_rewind`, move the data off the block (rewriting or removing
+the file that holds it moves it), or clear the bad-block marks that
+`lfs3_fs_nextbad` lists with `lfs3_fs_mkgood`, if those blocks are to be
+used again. If the target can't be freed, as the root never can, or the
+marks are to be kept, **Fail**. The root returns BUSY rather than INVAL
+because it is always in use, as on Linux.
 
 ### `LFS3_ERR_NOTSUP`
 

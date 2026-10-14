@@ -241,6 +241,46 @@ death_code = '''
     assert(TEST_DEATH.erases == 0);
 '''
 
+# test that format and mount refuse a block_size below 512 bytes before
+# touching the device
+[cases.test_mount_block_size_min]
+# MOUNT=false => format
+# MOUNT=true  => mount a formatted image
+defines.MOUNT = [false, true]
+defines.TINY_BLOCK_SIZE = [256, 511]
+# other geometries would trip the read/prog size asserts first
+if = [
+    'TINY_BLOCK_SIZE % READ_SIZE == 0',
+    'TINY_BLOCK_SIZE % PROG_SIZE == 0',
+]
+death = 'block_size >= 512'
+code = '''
+    lfs3_t lfs3;
+    if (MOUNT) {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                CFG) => 0;
+    }
+
+    struct lfs3_cfg cfg = *CFG;
+    cfg.block_size = TINY_BLOCK_SIZE;
+    lfs3_emubd_simreset(CFG) => 0;
+    if (MOUNT) {
+        lfs3_mount(&lfs3, LFS3_M_RDWR, &cfg);
+    } else {
+        lfs3_format(&lfs3,
+                LFS3_F_RDWR
+                    | ((GBMAP) ? LFS3_IFDEF_GBMAP(LFS3_F_GBMAP, -1) : 0),
+                &cfg);
+    }
+'''
+death_code = '''
+    assert(TEST_DEATH.reads == 0);
+    assert(TEST_DEATH.progs == 0);
+    assert(TEST_DEATH.erases == 0);
+'''
+
 # test that nothing on a rdonly mount writes to the disk, including
 # syncing rdonly files with writable attrs
 [cases.test_mount_rdonly_nowrite]
