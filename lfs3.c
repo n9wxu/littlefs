@@ -10799,7 +10799,11 @@ static int lfs3_mdir_commit_(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         // adjust pending grms?
         } else {
             for (int j = 0; j < 2; j++) {
-                if (lfs3_mbid(lfs3, lfs3->grm.queue[j]) == lfs3_mbid(lfs3, mid_)
+                // a grm of mid 0 is no grm, a salvage that recreates the
+                // root's bookmark inserts at mid 0
+                if (lfs3->grm.queue[j] != 0
+                        && lfs3_mbid(lfs3, lfs3->grm.queue[j])
+                            == lfs3_mbid(lfs3, mid_)
                         && lfs3->grm.queue[j] >= mid_) {
                     // deleting a pending grm doesn't really make sense,
                     // our grm must be corrupt
@@ -19719,8 +19723,12 @@ static int lfs3_salvage_mtree(lfs3_t *lfs3) {
 static lfs3_stag_t lfs3_salvage_next(lfs3_t *lfs3, lfs3_mdir_t *mdir,
         lfs3_did_t *did_) {
     while (lfs3_mrid(lfs3, mdir->mid) >= (lfs3_srid_t)mdir->r.weight) {
+        // the next mdir follows the one holding mid-1, our last entry,
+        // unless mid starts an mdir with no entries, then it follows
+        // mid's, damage can leave an mroot without the root's bookmark
         int err = lfs3_mtree_lookup(lfs3,
-                lfs3_mbid(lfs3, mdir->mid-1) + 1,
+                lfs3_mbid(lfs3, mdir->mid
+                    - (lfs3_mrid(lfs3, mdir->mid) > 0)) + 1,
                 mdir);
         if (err) {
             return err;
