@@ -286,7 +286,7 @@ a test.
 | `lfs3_crc32c` | INT-05 | `ck::crc32c`, `ck::crc32c_incr`, `ck::crc32c_mul`, `ck::crc32c_mul_dist` | INT-05 (P) → NEW-53, J-BUILD |
 | `lfs3_crc32c_mul` | INT-05 | `ck::crc32c`, `ck::crc32c_incr`, `ck::crc32c_mul`, `ck::crc32c_mul_dist` | INT-05 (P) → NEW-53, J-BUILD |
 | `lfs3_toleb128` | GEN-02, DOC-02 | none; since `b10efaa`: NEW-91 | DOC-02 (P) → NEW-127 |
-| `lfs3_fromleb128` | GEN-03, GEN-07, DOC-02 | `mtree::truncated_*`; since `b10efaa`: NEW-54 | GEN-07 (Q) → NEW-68; DOC-02 (P) → NEW-127 |
+| `lfs3_fromleb128` | GEN-03, GEN-07, DOC-02 | `mtree::truncated_*`; since `b10efaa`: NEW-54 | GEN-07 (U) → NEW-68; DOC-02 (P) → NEW-127 |
 
 ### 3.2 Configuration fields
 
@@ -428,7 +428,7 @@ a test.
 | resource bounds | RES-01, RES-02, RES-03, RES-04, RES-05, RES-06, RES-07, RES-08 | none; since `b10efaa`: NEW-87, NEW-50, NEW-88 | RES-02 (P) → NEW-118; RES-03 (P) → NEW-118; RES-04 (P) → NEW-118; RES-05 (P) → NEW-118 |
 | performance | PERF-01, PERF-02, PERF-03, PERF-04, PERF-05, PERF-06, PERF-07, PERF-08, PERF-09, PERF-10, PERF-11, PERF-12, PERF-13, PERF-14 | none; since `b10efaa`: NEW-121 | PERF-01 (U) → NEW-119; PERF-02 (U) → NEW-119; PERF-03 (U) → NEW-119; PERF-04 (U) → NEW-119; PERF-05 (U) → NEW-119; PERF-06 (P) → NEW-120; PERF-07 (K) → NEW-120; PERF-11 (P) → NEW-120; PERF-12 (U) → NEW-122; PERF-13 (U) → NEW-123 |
 | thread safety | THR-01, THR-02, THR-03, THR-04 | none; since `b10efaa`: NEW-89, NEW-118 | THR-03 (U) → NEW-124 |
-| portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*`; since `b10efaa`: NEW-91, NEW-54, NEW-93, NEW-47 | GEN-04 (U) → NEW-92; GEN-06 (Q) → NEW-49; GEN-07 (Q) → NEW-68 |
+| portability | GEN-01, GEN-02, GEN-03, GEN-04, GEN-05, GEN-06, GEN-07, GEN-08 | `mtree::truncated_*`; since `b10efaa`: NEW-91, NEW-54, NEW-93, NEW-47 | GEN-04 (U) → NEW-92; GEN-06 (Q) → NEW-49; GEN-07 (U) → NEW-68 |
 | build configurations | BUILD-01, BUILD-02, BUILD-03, BUILD-04, BUILD-05, BUILD-06, BUILD-07, BUILD-08, BUILD-09, BUILD-10, BUILD-11, BUILD-12, BUILD-13, BUILD-14, BUILD-15, BUILD-16, BUILD-17, BUILD-18, BUILD-19, BUILD-20 | `ck::crc32c*`, `paths::*`, `fwrite::*fbig`, `files::*`, `dirs::*`, `attrs::*`; since `b10efaa`: NEW-53, NEW-46 | BUILD-02 (P) → NEW-53; BUILD-03 (P) → NEW-53; BUILD-04 (P) → NEW-53; BUILD-05 (P) → NEW-53; BUILD-06 (P) → NEW-53; BUILD-07 (U) → NEW-53; BUILD-08 (U) → NEW-53; BUILD-09 (U) → NEW-53; BUILD-10 (U) → NEW-53; BUILD-11 (U) → NEW-53; BUILD-12 (U) → NEW-125; BUILD-15 (U) → J-YES; BUILD-17 (P) → J-NBNS; BUILD-18 (U) → NEW-126; BUILD-20 (U) → NEW-53 |
 
 At `b10efaa`, 250 of 357 requirements had a gap. On `v3-integration`, 93
@@ -2241,7 +2241,7 @@ last column gives its commits on `v3-integration`.
 | NEW-65 | `ck::rollback` | INT-06, INT-09, INT-21 | deterministic: commit X to mdir A, Y to mdir B; restore A's older block (mount must fail); restore B's (mount succeeds, `lfs3_fs_cksum` differs); restore A after mount (`lfs3_fs_ck` fails); also namespace operations after the rollback | as the three requirements; no assert | – |
 | NEW-66 | `rbyd::erased_values`, `mtree::ecksum_disturb` | INT-03, INT-04 | fill the erased region after each commit with every byte value and with random data; flip a bit in the prog unit after the last commit and commit again | no extra commit is accepted; the disturbed block is compacted, not appended | – |
 | NEW-67 | `ck::file_ckdata_blocks` | INT-13 | flip bits in each data block of a B-tree file; `lfs3_file_ck(LFS3_CK_CKDATA)` and open with `LFS3_O_CKDATA` | `LFS3_ERR_CORRUPT` | – |
-| NEW-68 | `mount::crafted_*` | GEN-07 | internal; checksum-valid images with an out-of-range block, offset, size, weight and alt jump, built by committing raw tags | `LFS3_ERR_CORRUPT`, no assert (B-DEF), no sanitizer report (B-NA). Waits on open question Q21 | – |
+| NEW-68 | `crafted::*` (`tests/test_crafted.toml`) | GEN-07 | internal; checksum-valid images with each malformed value GEN-07 lists, built by committing raw tags with `lfs3_mdir_commit` and by writing rbyds the test signs; and `crafted::mutate`, seeded: change a byte in 1 or 3 metadata blocks, sign them again keeping the gcksum, then mount read-only, read-write and read-only again, read, list, traverse, check and write, with plain mounts, salvaging and checking mounts, and in B-BIG mounts with `LFS3_M_CKFETCHES`, `LFS3_M_CKMETAPARITY` and `LFS3_M_CKDATACKSUMS` | `LFS3_ERR_CORRUPT` from the first call that needs the value, or a degraded read-only mount for an mdir of the mtree, the grm and the gbmap; in the mutation test only `enum lfs3_err` codes the changed image accounts for; no assert in B-DEF, B-YGB and B-BIG, no hang, no sanitizer report under `make test-sanitize` and in B-NA with ASan and UBSan (Q21 decided) | – |
 | NEW-69 | `make test-balance`, nightly job `test-balance` | META-02 | build with `-DLFS3_DBGRBYDBALANCE`; run `rbyd::*`, `btree::*`, `mtree::*` | the balance check never fires | – |
 | NEW-70 | `mtree::rev_wrap` | META-12 | internal; set an mdir pair's revision counts to 0xfffffffe and 0xffffffff; compact across the wrap repeatedly | the newest commit is always fetched | – |
 | NEW-71 | `stickynotes::cleanup_drop` | META-14 | orphaned stickynotes as the only entries of several consecutive mdirs, adding orphans until a scan finds at least two such mdirs in a row (packing differs between builds); `lfs3_fs_mkconsistent` | no orphan left, every other entry present, in B-DEF, B-YGB and B-BIG | – |
@@ -2390,7 +2390,7 @@ REQUIREMENTS.md cites that case. Commits are on `v3-integration`.
 | NEW-65 | P1 | `ck::rollback` | as planned | 6d53943f | done |
 | NEW-66 | P1 | `rbyd::erased_values`, `mtree::ecksum_disturb` | as planned | f6e23134, 1a17402f | done |
 | NEW-67 | P1 | `ck::file_ckdata_blocks` | as planned | 23b617c1 | done |
-| NEW-68 | P1 | `mount::crafted_*` | as planned | – | waits on Q21 |
+| NEW-68 | P1 | `crafted::*` | as planned | – | specified, Q21 decided |
 | NEW-69 | P1 | `make test-balance`, nightly job `test-balance` | as planned | 35d965ef | done, nightly; not yet run on GitHub |
 | NEW-70 | P1 | `mtree::rev_wrap` | as planned | ef18a87f | done |
 | NEW-71 | P1 | `stickynotes::cleanup_drop` | as planned | 4a129857, 68039c4d | done |

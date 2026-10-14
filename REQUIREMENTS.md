@@ -595,27 +595,59 @@ made on a filesystem mounted with `LFS3_M_RDONLY`, including in builds with
 
 #### LFS3-GEN-07
 
-littlefs shall return `LFS3_ERR_CORRUPT`, without asserting and without
-accessing memory or storage out of range, when a checksum-valid image
-contains an out-of-range block address, offset, size, weight or alt jump.
+littlefs shall treat a checksum-valid image whose values are malformed as
+damage: a call that needs a malformed value shall return
+`LFS3_ERR_CORRUPT`, and a read-only mount shall mount degraded where it can
+do without the value (LFS3-DEG-03). No call shall assert, loop without end,
+or access memory or storage out of range because of such a value, in any
+build, including `LFS3_NO_ASSERT`. The values are: a block address outside
+the filesystem or in the mroot anchor; an offset, size or checksummed size
+outside its block or outside what its checksum covers; a trunk outside its
+block; a weight that disagrees with what it weighs; an alt jump that leaves
+the rbyd, and a walk of alts or of B-tree branches that comes back to
+where it was; a tag littlefs never writes, when it would be copied; a grm
+or gbmap outside the filesystem; an mdir with more rids than it has mids,
+or an empty one in the mtree; an mtree leaf that is not one mdir's mids; a
+geometry without room for the mroot anchor; a B-tree node too full to
+split; a name longer than `LFS3_NAME_MAX`; and a file larger than the file
+limit.
 
-- **Source:** Proposal. The decoders do not range-check on-disk values and
-  assert instead (2-files B13, 1-meta 7.7, 4-api R12). littlefs is often
-  used on removable media and with images built elsewhere.
-- **Measure:** return value and sanitizer reports while mounting, reading
-  and traversing crafted images.
-- **Pass:** for each field in the list, a crafted image with that field out
-  of range gives `LFS3_ERR_CORRUPT` from the first call that uses it, with no
-  assert in B-DEF and no sanitizer report in B-NA.
-- **Fail:** an assert, a crash, a sanitizer report or a result other than
-  `LFS3_ERR_CORRUPT`.
-- **Verified by:** NEW: crafted-image suite (extends `mtree::truncated_*`).
-- **Status:** Open question (Q21). Untested: no crafted-image suite exists
-  (NEW-68 waits on Q21). 42e7f9eb, e5646435 and 7d27de3d turned the asserts
-  on alts, on metadata that reads differently and on bit-7 tags into
-  `LFS3_ERR_CORRUPT`; the range asserts in the decoders remain
-  (`lfs3_data_readshrub`, `lfs3_data_readgrm`, block pointers, branches).
-- **When:** before v3-beta.
+- **Source:** Proposal, decided by Q21 (principle 2): removable media,
+  images built on a host, and bit flips that a checksum misses all reach
+  the driver this way. At `b10efaa` the decoders did not range-check
+  on-disk values and asserted instead (2-files B13, 1-meta 7.7), which
+  becomes undefined behaviour with `LFS3_NO_ASSERT`.
+- **Measure:** return values, asserts, hangs and sanitizer reports while
+  mounting, reading, listing, traversing, checking and writing crafted
+  images, and images whose metadata blocks are changed at random and
+  signed again.
+- **Pass:** for each value in the list, a crafted image gives
+  `LFS3_ERR_CORRUPT` from the first call that needs the value, and a
+  read-only mount succeeds with `LFS3_I_DEGRADED` when the value is in an
+  mdir of the mtree, the grm or the gbmap; a gbmap that marks the mroot
+  anchor free, or whose erased-state checksum is larger than a block, is
+  dropped and rebuilt by the allocation that reads it, and writes
+  succeed. In the mutation test every call returns 0 or an `enum lfs3_err`
+  code the changed image accounts for (`LFS3_ERR_CORRUPT`, or what the
+  change made the image say, such as `LFS3_ERR_NOTSUP` for a changed
+  config tag or `LFS3_ERR_INVAL` for a seek past a changed file limit).
+  Nothing asserts in B-DEF, B-YGB and B-BIG, nothing hangs, and nothing
+  gives a sanitizer report under `make test-sanitize` or in B-NA built
+  with ASan and UBSan.
+- **Fail:** an assert, a crash, a hang, a sanitizer report, or any other
+  result.
+- **Verified by:** `crafted::*` (NEW-68): one case per class of value,
+  built by committing raw tags with `lfs3_mdir_commit` and by writing
+  rbyds the test signs; and `crafted::mutate`, which changes bytes of
+  metadata blocks at random, signs them again keeping the gcksum, then
+  reads, lists, traverses, checks and writes, with plain mounts, salvaging
+  and checking mounts, and in B-BIG mounts that check fetches, parity and
+  data checksums.
+- **Status:** Untested; Q21 is decided. 42e7f9eb, e5646435 and 7d27de3d
+  turned the asserts on alts, on metadata that reads differently and on
+  bit-7 tags into `LFS3_ERR_CORRUPT` (LFS3-GEN-09); the range asserts in
+  the decoders remain (`lfs3_data_readshrub`, block pointers, branches).
+- **When:** every CI run.
 
 #### LFS3-GEN-08
 
@@ -8636,7 +8668,7 @@ test in a new environment (9.2).
 |---|---|---|---|
 | LFS3-GEN-04 | Untested | every CI run | two `lfs3_t` on two emubd instances, interleaved fuzz |
 | LFS3-GEN-06 | Open question | every CI run | death-test harness; prog/erase counters around mutating calls on an `LFS3_M_RDONLY` mount, B-DEF and B-NA |
-| LFS3-GEN-07 | Open question | before v3-beta | crafted-image suite: out-of-range block, offset, size, weight, alt jump |
+| LFS3-GEN-07 | Untested | every CI run | crafted-image suite: out-of-range block, offset, size, weight, alt jump; mutation test |
 | LFS3-INT-08 | Untested | every CI run | fuzz: `lfs3_fs_cksum` changes after every model-changing call |
 | LFS3-META-17 | Untested | every CI run | internal check: estimate at least the compacted size |
 | LFS3-FILE-02 | Untested | every CI run | zero-size write changes nothing |
